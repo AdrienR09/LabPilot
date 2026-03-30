@@ -237,8 +237,8 @@ def main():
     if args.instrument:
         # Launch specific instrument window
         try:
-            from authentic_qudi_windows import create_instrument_window
-            from session_manager import session_manager
+            from .instrument_windows import create_instrument_window
+            from .session_manager import session_manager
 
             # Create mock instrument data for the specific instrument
             instrument_data = {
@@ -368,8 +368,8 @@ def main():
     if args.instrument:
         # Launch specific instrument window
         try:
-            from authentic_qudi_windows import create_instrument_window
-            from session_manager import session_manager
+            from .instrument_windows import create_instrument_window
+            from .session_manager import session_manager
 
             # Create mock instrument data for the specific instrument
             instrument_data = {

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import json
 
 # Import existing structures
-from main import DashboardInstrument, InstrumentKind
+from .main import DashboardInstrument, InstrumentKind
 
 class DeviceCard(QFrame):
     """Material Design device card with connection controls"""

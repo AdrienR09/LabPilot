@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize
 from PyQt6.QtGui import QFont, QAction, QIcon, QPalette, QColor
 import pyqtgraph as pg
-from main import DashboardInstrument
+from .main import DashboardInstrument
 
 class QudiStyle:
     """Qudi-inspired color scheme and styling constants"""

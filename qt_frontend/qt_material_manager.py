@@ -34,7 +34,7 @@ import pyqtgraph as pg
 import qdarkstyle
 
 # Import existing components
-from main import DashboardInstrument, InstrumentKind
+from .main import DashboardInstrument, InstrumentKind
 
 class PageType(Enum):
     """Page types matching the React manager"""

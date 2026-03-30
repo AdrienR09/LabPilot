@@ -14,8 +14,8 @@ from PyQt6.QtCore import QUrl
 import requests
 
 # Import data structures
-from main import DashboardInstrument
-from workflows_page import Workflow
+from .main import DashboardInstrument
+from .workflows_page import Workflow
 
 @dataclass
 class ApiResponse:

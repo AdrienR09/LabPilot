@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QFont, QIcon, QPalette, QColor
-from session_manager import session_manager, SessionData
+from .session_manager import session_manager, SessionData
 
 class SessionInfoWidget(QWidget):
     """Widget to display session information"""

@@ -13,8 +13,8 @@ from PyQt6.QtGui import QPixmap, QFont, QPainter, QColor
 import qdarkstyle
 
 # Import the main manager window and API client
-from qt_material_manager import LabPilotMaterialManager, PageType, SessionState
-from api_client import create_api_client
+from .qt_material_manager import LabPilotMaterialManager, PageType, SessionState
+from .api_client import create_api_client
 
 class LabPilotSplashScreen(QSplashScreen):
     """Custom splash screen for LabPilot"""

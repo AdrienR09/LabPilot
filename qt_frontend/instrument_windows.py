@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize
 from PyQt6.QtGui import QFont, QAction, QIcon
 import pyqtgraph as pg
-from main import DashboardInstrument, LabPilotStyle
+from .main import DashboardInstrument, LabPilotStyle
 
 class PyQtGraphWidget(pg.PlotWidget):
     """Enhanced PyQtGraph widget with professional scientific features"""

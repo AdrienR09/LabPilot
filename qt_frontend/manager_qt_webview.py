@@ -13,7 +13,7 @@ from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
 from PyQt6.QtWebChannel import QWebChannel
 
-from qt_bridge import QtBridge
+from .qt_bridge import QtBridge
 
 
 class LabPilotManagerWindow(QMainWindow):
