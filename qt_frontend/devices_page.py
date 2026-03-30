@@ -576,7 +576,7 @@ class DevicesPage(QWidget):
         device = next((d for d in self.devices if d.id == device_id), None)
         if device and device.connected:
             try:
-                from instrument_windows import create_instrument_window
+                from .instrument_windows import create_instrument_window
                 window = create_instrument_window(device)
                 window.show()
                 print(f"Launched UI for: {device.name}")

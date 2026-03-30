@@ -204,7 +204,7 @@ class QtSessionManager(QObject):
         try:
             # Import here to avoid circular imports
             from main import DashboardInstrument
-            from authentic_qudi_windows import create_instrument_window
+            from .instrument_windows import create_instrument_window
 
             # Create instrument data
             instrument_data = {
