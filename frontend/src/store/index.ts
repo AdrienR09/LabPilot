@@ -311,12 +311,13 @@ export const useLabPilotStore = create<LabPilotState>()(
       });
 
       try {
-        // Try to connect to backend, but use fake data if it fails
+        // Try to connect to backend and fetch devices
         try {
-          const response = await fetch('/api/devices', { signal: AbortSignal.timeout(2000) });
+          const response = await fetch('/api/dashboard/instruments', { signal: AbortSignal.timeout(2000) });
           if (response.ok) {
             const data = await response.json();
             const devices = data.data || [];
+            console.log('✅ Loaded devices from backend:', devices.length);
             set((state) => {
               state.devices = devices;
             });
