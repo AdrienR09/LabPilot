@@ -16,40 +16,65 @@ router = APIRouter(tags=["devices", "workflows"])
 _connected_devices: Dict[str, Dict[str, Any]] = {}
 _workflows: Dict[str, Dict[str, Any]] = {}
 
-# Initialize with mock devices for testing
+# Initialize with comprehensive mock devices organized by category
 _connected_devices = {
-    "mock_detector_1": {
-        "adapter_type": "MockSpectrometer",
-        "kind": "detector",
-        "dimensionality": "1D",
-        "tags": ["Spectroscopy", "UV-Vis"],
-        "status": "Ready",
-        "connected": True
-    },
-    "mock_camera_1": {
-        "adapter_type": "MockCamera",
-        "kind": "detector",
-        "dimensionality": "2D",
-        "tags": ["Imaging", "CCD"],
-        "status": "Ready",
-        "connected": True
-    },
-    "mock_motor_1": {
-        "adapter_type": "MockMotor",
-        "kind": "motor",
-        "dimensionality": "1D",
-        "tags": ["Positioning", "Linear"],
-        "status": "Ready",
-        "connected": True
-    },
-    "mock_photodiode": {
-        "adapter_type": "MockPhotodiode",
-        "kind": "detector",
-        "dimensionality": "0D",
-        "tags": ["Point-Detector", "Reference"],
-        "status": "Ready",
-        "connected": True
-    }
+    # Spectrometers
+    "spec-ocean-001": {"adapter_type": "MockSpectrometer", "kind": "detector", "dimensionality": "1D", "category": "Spectrometer", "manufacturer": "Ocean Insights", "tags": ["Spectroscopy", "UV-Vis"], "status": "Ready", "connected": True},
+    "spec-ocean-002": {"adapter_type": "MockSpectrometer", "kind": "detector", "dimensionality": "1D", "category": "Spectrometer", "manufacturer": "Ocean Insights", "tags": ["Spectroscopy"], "status": "Ready", "connected": True},
+    "spec-princeton-001": {"adapter_type": "MockHighResSpectrometer", "kind": "detector", "dimensionality": "1D", "category": "Spectrometer", "manufacturer": "Princeton Instruments", "tags": ["High-Resolution"], "status": "Ready", "connected": False},
+    "spec-agilent-001": {"adapter_type": "MockUVVISSpectrometer", "kind": "detector", "dimensionality": "1D", "category": "Spectrometer", "manufacturer": "Agilent", "tags": ["UV-VIS"], "status": "Ready", "connected": True},
+    "spec-jasco-001": {"adapter_type": "MockIRSpectrometer", "kind": "detector", "dimensionality": "1D", "category": "Spectrometer", "manufacturer": "JASCO", "tags": ["IR"], "status": "Ready", "connected": False},
+    "spec-raman-001": {"adapter_type": "MockRamanSpectrometer", "kind": "detector", "dimensionality": "1D", "category": "Spectrometer", "manufacturer": "Roper", "tags": ["Raman"], "status": "Ready", "connected": True},
+
+    # Cameras
+    "cam-andor-001": {"adapter_type": "MockCCDCamera", "kind": "detector", "dimensionality": "2D", "category": "Camera", "manufacturer": "Andor", "tags": ["CCD", "Imaging"], "status": "Ready", "connected": True},
+    "cam-andor-002": {"adapter_type": "MockEMCCDCamera", "kind": "detector", "dimensionality": "2D", "category": "Camera", "manufacturer": "Andor", "tags": ["EM-CCD"], "status": "Ready", "connected": True},
+    "cam-hamamatsu-001": {"adapter_type": "MockScientificCamera", "kind": "detector", "dimensionality": "2D", "category": "Camera", "manufacturer": "Hamamatsu", "tags": ["sCMOS"], "status": "Ready", "connected": False},
+    "cam-highspeed-001": {"adapter_type": "MockHighSpeedCamera", "kind": "detector", "dimensionality": "2D", "category": "Camera", "manufacturer": "Vision Research", "tags": ["High-Speed"], "status": "Ready", "connected": True},
+    "cam-thermal-001": {"adapter_type": "MockThermalCamera", "kind": "detector", "dimensionality": "2D", "category": "Camera", "manufacturer": "FLIR", "tags": ["Thermal"], "status": "Ready", "connected": False},
+
+    # Motors/Stages
+    "motor-xyz-001": {"adapter_type": "MockXYZStage", "kind": "motor", "dimensionality": "3D", "category": "Stage", "manufacturer": "Thorlabs", "tags": ["XYZ", "Positioning"], "status": "Ready", "connected": True},
+    "motor-xy-001": {"adapter_type": "MockXYStage", "kind": "motor", "dimensionality": "2D", "category": "Stage", "manufacturer": "Newport", "tags": ["XY"], "status": "Ready", "connected": True},
+    "motor-z-001": {"adapter_type": "MockFocusMotor", "kind": "motor", "dimensionality": "1D", "category": "Stage", "manufacturer": "Zaber", "tags": ["Focus", "Z-stage"], "status": "Ready", "connected": True},
+    "motor-rotation-001": {"adapter_type": "MockRotationalStage", "kind": "motor", "dimensionality": "1D", "category": "Stage", "manufacturer": "Thorlabs", "tags": ["Rotation"], "status": "Ready", "connected": False},
+    "motor-piezo-001": {"adapter_type": "MockPiezosStage", "kind": "motor", "dimensionality": "3D", "category": "Stage", "manufacturer": "PI", "tags": ["Piezo", "High-Precision"], "status": "Ready", "connected": True},
+
+    # Power Meters
+    "pm-thorlabs-001": {"adapter_type": "MockPowerMeter", "kind": "detector", "dimensionality": "0D", "category": "Power Meter", "manufacturer": "Thorlabs", "tags": ["Power"], "status": "Ready", "connected": True},
+    "pm-uv-001": {"adapter_type": "MockUVPowerMeter", "kind": "detector", "dimensionality": "0D", "category": "Power Meter", "manufacturer": "Thorlabs", "tags": ["UV"], "status": "Ready", "connected": True},
+    "pm-ir-001": {"adapter_type": "MockIRPowerMeter", "kind": "detector", "dimensionality": "0D", "category": "Power Meter", "manufacturer": "Thorlabs", "tags": ["IR"], "status": "Ready", "connected": False},
+    "pm-array-001": {"adapter_type": "MockArrayPowerMeter", "kind": "detector", "dimensionality": "1D", "category": "Power Meter", "manufacturer": "Ophir", "tags": ["Array"], "status": "Ready", "connected": False},
+
+    # Lock-in Amplifiers
+    "lockin-srs-001": {"adapter_type": "MockLockInAmplifier", "kind": "detector", "dimensionality": "0D", "category": "Lock-in", "manufacturer": "SRS", "tags": ["Lock-in", "Measurement"], "status": "Ready", "connected": True},
+    "lockin-srs-002": {"adapter_type": "MockDualChannelLockin", "kind": "detector", "dimensionality": "0D", "category": "Lock-in", "manufacturer": "SRS", "tags": ["Dual-Channel"], "status": "Ready", "connected": False},
+
+    # Source Meters
+    "smu-keithley-001": {"adapter_type": "MockSourceMeter", "kind": "detector", "dimensionality": "0D", "category": "Source Meter", "manufacturer": "Keithley", "tags": ["Source", "Meter"], "status": "Ready", "connected": True},
+    "smu-hv-001": {"adapter_type": "MockHighVoltageSource", "kind": "detector", "dimensionality": "0D", "category": "Source Meter", "manufacturer": "Keithley", "tags": ["High-Voltage"], "status": "Ready", "connected": False},
+    "smu-current-001": {"adapter_type": "MockCurrentSource", "kind": "detector", "dimensionality": "0D", "category": "Source Meter", "manufacturer": "Yoko", "tags": ["Current"], "status": "Ready", "connected": True},
+
+    # Temperature Controllers
+    "temp-lakeshore-001": {"adapter_type": "MockTemperatureController", "kind": "detector", "dimensionality": "0D", "category": "Temperature", "manufacturer": "Lakeshore", "tags": ["Temperature"], "status": "Ready", "connected": True},
+    "temp-cryo-001": {"adapter_type": "MockCryostat", "kind": "detector", "dimensionality": "0D", "category": "Temperature", "manufacturer": "Janis", "tags": ["Cryogenic"], "status": "Ready", "connected": False},
+    "temp-tec-001": {"adapter_type": "MockThermoElectricCooler", "kind": "detector", "dimensionality": "0D", "category": "Temperature", "manufacturer": "Thorlabs", "tags": ["TEC"], "status": "Ready", "connected": True},
+
+    # Oscilloscopes
+    "adc-keysight-001": {"adapter_type": "MockOscilloscope", "kind": "detector", "dimensionality": "1D", "category": "Oscilloscope", "manufacturer": "Keysight", "tags": ["Oscilloscope"], "status": "Ready", "connected": True},
+    "adc-usb-001": {"adapter_type": "MockUSBOscilloscope", "kind": "detector", "dimensionality": "1D", "category": "Oscilloscope", "manufacturer": "Picoscope", "tags": ["USB"], "status": "Ready", "connected": True},
+}
+
+# Initialize with comprehensive mock workflows
+_workflows = {
+    "wf-spec-scan": {"name": "Spectroscopy Scan", "type": "Spectroscopy", "status": "ready", "tags": ["Spectroscopy"]},
+    "wf-temp-sweep": {"name": "Temperature Sweep", "type": "Temperature Control", "status": "ready", "tags": ["Temperature"]},
+    "wf-xy-mapping": {"name": "XY Mapping", "type": "Imaging", "status": "ready", "tags": ["Imaging"]},
+    "wf-lockin-meas": {"name": "Lock-in Measurement", "type": "Signal Detection", "status": "ready", "tags": ["Measurement"]},
+    "wf-iv-curve": {"name": "I-V Curve", "type": "Characterization", "status": "ready", "tags": ["Electronics"]},
+    "wf-thermal-scan": {"name": "Thermal Imaging Scan", "type": "Thermal", "status": "ready", "tags": ["Thermal"]},
+    "wf-fluorescence": {"name": "Fluorescence Lifetime", "type": "Spectroscopy", "status": "ready", "tags": ["Fluorescence"]},
+    "wf-raman-map": {"name": "Raman Map", "type": "Spectroscopy", "status": "ready", "tags": ["Raman"]},
 }
 
 class DeviceConnectRequest(BaseModel):
