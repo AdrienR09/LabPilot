@@ -16,6 +16,42 @@ router = APIRouter(tags=["devices", "workflows"])
 _connected_devices: Dict[str, Dict[str, Any]] = {}
 _workflows: Dict[str, Dict[str, Any]] = {}
 
+# Initialize with mock devices for testing
+_connected_devices = {
+    "mock_detector_1": {
+        "adapter_type": "MockSpectrometer",
+        "kind": "detector",
+        "dimensionality": "1D",
+        "tags": ["Spectroscopy", "UV-Vis"],
+        "status": "Ready",
+        "connected": True
+    },
+    "mock_camera_1": {
+        "adapter_type": "MockCamera",
+        "kind": "detector",
+        "dimensionality": "2D",
+        "tags": ["Imaging", "CCD"],
+        "status": "Ready",
+        "connected": True
+    },
+    "mock_motor_1": {
+        "adapter_type": "MockMotor",
+        "kind": "motor",
+        "dimensionality": "1D",
+        "tags": ["Positioning", "Linear"],
+        "status": "Ready",
+        "connected": True
+    },
+    "mock_photodiode": {
+        "adapter_type": "MockPhotodiode",
+        "kind": "detector",
+        "dimensionality": "0D",
+        "tags": ["Point-Detector", "Reference"],
+        "status": "Ready",
+        "connected": True
+    }
+}
+
 class DeviceConnectRequest(BaseModel):
     name: str
     adapter_type: str
@@ -65,15 +101,16 @@ async def get_dashboard_instruments():
         instruments = []
 
         # Get connected devices
-        for device_name, device_info in _connected_devices.items():
+        for device_id, device_info in _connected_devices.items():
             instruments.append({
-                "id": device_name,
-                "name": device_name,
+                "id": device_id,
+                "name": device_info.get("adapter_type", device_id),
                 "adapter_type": device_info.get("adapter_type"),
                 "kind": device_info.get("kind", "generic"),
                 "dimensionality": device_info.get("dimensionality", "0D"),
                 "tags": device_info.get("tags", []),
-                "connected": True,
+                "connected": device_info.get("connected", True),
+                "status": device_info.get("status", "Ready"),
                 "data": None
             })
 
