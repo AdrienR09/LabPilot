@@ -1,0 +1,277 @@
+# LabPilot Configuration Template
+#
+# This is the default configuration template for LabPilot laboratory automation.
+# Copy this file and customize it for your specific laboratory setup.
+#
+# All settings are optional - LabPilot will use sensible defaults if not specified.
+# Settings marked with [REQUIRED] must be configured for your specific hardware.
+
+[session]
+# Session identification and metadata
+session_id = "default_lab_session"
+name = "Laboratory Automation Session"
+description = "Default LabPilot configuration for laboratory experiments"
+
+# Auto-save configuration
+auto_save_enabled = true
+auto_save_interval_seconds = 60
+backup_count = 10  # Keep 10 backup copies
+
+[ai]
+# AI provider configuration
+provider = "ollama"  # Options: "ollama", "openai", "anthropic"
+model = "mistral"    # Recommended: mistral (best function calling), qwen2.5-coder (code generation)
+
+# Ollama-specific settings
+[ai.ollama]
+base_url = "http://localhost:11434"
+timeout = 120.0
+keep_alive = "5m"
+
+# OpenAI-specific settings (if using OpenAI provider)
+[ai.openai]
+api_key = ""  # [REQUIRED if using OpenAI] Set your OpenAI API key
+base_url = "https://api.openai.com/v1"
+model = "gpt-4"
+max_tokens = 4000
+
+# Anthropic-specific settings (if using Anthropic provider)
+[ai.anthropic]
+api_key = ""  # [REQUIRED if using Anthropic] Set your Anthropic API key
+model = "claude-3-sonnet-20240229"
+max_tokens = 4000
+
+# RAG (Retrieval-Augmented Generation) settings
+[ai.rag]
+enabled = true
+embedding_model = "nomic-embed-text"
+vector_store_path = "./rag_data"
+seed_documents_path = "./seed_docs"
+
+# Collection settings for different types of knowledge
+[ai.rag.collections]
+dsl_examples = { max_documents = 1000, similarity_threshold = 0.7 }
+instrument_docs = { max_documents = 500, similarity_threshold = 0.8 }
+workflow_patterns = { max_documents = 300, similarity_threshold = 0.75 }
+error_corrections = { max_documents = 200, similarity_threshold = 0.8 }
+
+[server]
+# Web server configuration
+host = "0.0.0.0"
+port = 8000
+reload = false  # Set to true for development
+log_level = "info"
+
+# CORS settings for browser access
+[server.cors]
+allowed_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+allow_credentials = true
+
+[qt]
+# Qt GUI configuration
+enabled = true
+bridge_timeout = 30.0  # Timeout for Qt operations
+default_style = "labpilot"  # Qt style: "labpilot", "fusion", "windows"
+
+# Default window settings
+[qt.defaults]
+window_size = [800, 600]
+plot_update_rate = 30  # Hz
+colormap = "inferno"
+font_size = 12
+
+[data]
+# Data storage configuration
+base_path = "./data"
+format = "hdf5"  # Options: "hdf5", "zarr", "json"
+compression = "gzip"
+metadata_format = "json"
+
+# Automatic data organization
+auto_organize = true
+organize_by = "date"  # Options: "date", "experiment", "instrument"
+
+# Data retention policy
+[data.retention]
+enabled = false
+max_age_days = 365
+archive_old_data = true
+archive_path = "./archive"
+
+[workflow]
+# Workflow engine configuration
+database_path = "./workflows/workflows.db"
+max_concurrent_workflows = 5
+default_timeout = 3600  # seconds
+
+# Workflow execution limits
+[workflow.limits]
+max_nodes = 100
+max_execution_time = 7200  # 2 hours
+memory_limit_mb = 1024
+
+[security]
+# Security and sandboxing configuration
+sandbox_enabled = true
+restricted_python = true
+
+# Code execution limits
+[security.limits]
+max_execution_time = 30  # seconds
+max_memory_mb = 256
+allowed_modules = [
+    "numpy", "scipy", "matplotlib", "pandas",
+    "time", "datetime", "math", "statistics"
+]
+
+# Network access restrictions
+network_access = false
+allowed_hosts = []
+
+[logging]
+# Logging configuration
+level = "INFO"
+format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+file_path = "./logs/labpilot.log"
+max_file_size_mb = 10
+backup_count = 5
+
+# Component-specific logging levels
+[logging.components]
+"labpilot_core.adapters" = "INFO"
+"labpilot_core.ai" = "DEBUG"
+"labpilot_core.qt" = "INFO"
+"labpilot_core.workflow" = "INFO"
+
+[instruments]
+# Default instrument configuration
+auto_discovery = true
+connection_timeout = 10.0  # seconds
+read_timeout = 5.0
+max_reconnect_attempts = 3
+
+# Example instrument configurations
+# Copy and modify these sections for your specific instruments
+
+[[instruments.devices]]
+name = "main_spectrometer"
+type = "OceanOpticsSpectrometer"  # [REQUIRED] Adapter type
+enabled = false  # Set to true to auto-connect on startup
+
+[instruments.devices.connection]
+# [REQUIRED] Connection parameters specific to your instrument
+serial_number = "SPEC001"
+integration_time_ms = 100
+
+[[instruments.devices]]
+name = "camera_1"
+type = "ThorlabsCamera"
+enabled = false
+
+[instruments.devices.connection]
+serial_number = "CAM001"
+exposure_time_ms = 50
+
+[[instruments.devices]]
+name = "laser_controller"
+type = "CoherentLaser"
+enabled = false
+
+[instruments.devices.connection]
+ip_address = "192.168.1.100"
+port = 8080
+
+[[instruments.devices]]
+name = "stage_xy"
+type = "ThorlabsStage"
+enabled = false
+
+[instruments.devices.connection]
+serial_number = "STAGE001"
+step_size_um = 1.0
+
+[calibration]
+# Calibration and reference data
+auto_calibrate = false
+calibration_interval_hours = 24
+
+# Wavelength calibration for spectrometers
+[calibration.wavelength]
+enabled = false
+reference_peaks = [435.8, 546.1, 579.0]  # Mercury lines (nm)
+polynomial_order = 3
+
+# Stage calibration
+[calibration.stages]
+enabled = false
+reference_positions = []
+accuracy_threshold_um = 0.1
+
+[experiments]
+# Default experiment settings
+template_path = "./templates"
+results_path = "./results"
+auto_generate_filename = true
+
+# Default measurement parameters
+[experiments.defaults]
+integration_time_ms = 100
+averaging_count = 1
+measurement_delay_ms = 100
+
+[ui]
+# User interface preferences
+theme = "dark"  # Options: "light", "dark", "auto"
+show_tooltips = true
+confirm_destructive_actions = true
+
+# Panel layout preferences
+[ui.layout]
+default_layout = "vertical"
+panel_spacing = 10
+toolbar_position = "top"
+
+[advanced]
+# Advanced configuration options
+debug_mode = false
+performance_monitoring = false
+memory_profiling = false
+
+# Plugin system (future feature)
+[advanced.plugins]
+enabled = false
+plugin_path = "./plugins"
+allowed_plugins = []
+
+[notifications]
+# Notification system configuration
+enabled = true
+channels = ["desktop", "log"]  # Options: "desktop", "email", "slack", "log"
+
+# Email notifications (if enabled)
+[notifications.email]
+enabled = false
+smtp_server = ""
+smtp_port = 587
+username = ""
+password = ""
+recipients = []
+
+# Desktop notifications
+[notifications.desktop]
+enabled = true
+duration_seconds = 5
+sound_enabled = false
+
+[backup]
+# Backup and recovery configuration
+enabled = true
+interval_hours = 6
+max_backups = 20
+backup_path = "./backups"
+
+# What to backup
+include_data = false  # Data files can be large
+include_configs = true
+include_workflows = true
+include_ai_history = true

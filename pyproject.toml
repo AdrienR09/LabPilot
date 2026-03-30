@@ -1,0 +1,180 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "labpilot-core"
+version = "0.1.0"
+description = "Next-generation Python data acquisition framework for laboratory instruments"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "LabPilot Development Team" }
+]
+keywords = ["data-acquisition", "DAQ", "laboratory", "instruments", "async", "automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Framework :: AsyncIO",
+]
+
+dependencies = [
+    "anyio >= 4.0.0",
+    "pydantic >= 2.0.0",
+    "tomli-w >= 1.0.0",
+    "numpy >= 1.24.0",
+    "xarray >= 2023.1.0",
+    "h5py >= 3.8.0",
+    "aiosqlite >= 0.19.0",
+    "fastapi >= 0.104.0",
+    "uvicorn[standard] >= 0.24.0",
+    "httpx >= 0.25.0",
+    "RestrictedPython >= 7.0",  # Code sandbox for AnalyseNode
+    "chromadb >= 0.5",  # RAG vector store for AI context
+]
+
+[project.optional-dependencies]
+# Hardware communication backends
+visa = [
+    "pyvisa >= 1.13.0",
+    "pyvisa-py >= 0.7.0",
+]
+ni = [
+    "nidaqmx >= 0.9.0",
+]
+serial = [
+    "pyserial >= 3.5",
+]
+epics = [
+    "ophyd-async >= 0.1.0",
+]
+
+# Instrument driver libraries
+pymeasure = [
+    "pymeasure >= 0.14",
+]
+pylablib = [
+    "pylablib >= 1.4",
+]
+
+# Qt visualization layer
+gui = [
+    "PyQt6 >= 6.5.0",
+    "pyqtgraph >= 0.13",
+    "PyOpenGL >= 3.1",
+    "vispy >= 0.14",
+]
+
+# Command-line interface
+cli = [
+    "click >= 8.1",  # As per spec (replaces typer)
+    "rich >= 13.0.0",
+]
+
+# Grouped optionals
+all-drivers = [
+    "labpilot-core[visa,ni,serial,epics,pymeasure,pylablib]",
+]
+full = [
+    "labpilot-core[all-drivers,cli,gui]",
+]
+dev = [
+    "pytest >= 7.4.0",
+    "pytest-anyio >= 0.0.0",
+    "pytest-asyncio >= 0.21.0",
+    "ruff >= 0.1.0",
+    "mypy >= 1.6.0",
+    "httpx >= 0.25.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/labpilot/labpilot"
+Documentation = "https://labpilot.readthedocs.io"
+Repository = "https://github.com/labpilot/labpilot"
+Issues = "https://github.com/labpilot/labpilot/issues"
+
+[project.scripts]
+labpilot = "labpilot_core.cli:main"
+labpilot-gui = "labpilot_core.gui.main_window:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/labpilot_core"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "SIM",    # flake8-simplify
+    "TCH",    # flake8-type-checking
+    "RUF",    # ruff-specific rules
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # function call in argument defaults (used by Pydantic)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # allow unused imports in __init__.py
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+minversion = "7.4"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning",
+]
+markers = [
+    "hardware: tests that require physical hardware",
+    "visa: tests that require VISA instruments",
+    "ni: tests that require NI hardware",
+    "serial: tests that require serial devices",
+    "epics: tests that require EPICS",
+    "server: tests that require HTTP server",
+]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["src/labpilot_core"]
+omit = [
+    "*/tests/*",
+    "*/__init__.py",
+    "*/cli.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "^\\s*@",
+]

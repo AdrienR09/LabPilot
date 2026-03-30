@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/labpilot-icon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LabPilot - AI Laboratory Automation</title>
+    <meta name="description" content="AI-native laboratory experiment operating system" />
+
+    <!-- Preload fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <!-- Theme script to prevent flash -->
+    <script>
+      try {
+        const theme = localStorage.getItem('labpilot-theme') || 'dark';
+        document.documentElement.classList.toggle('dark', theme === 'dark');
+      } catch (e) {
+        console.warn('Failed to load theme preference');
+      }
+    </script>
+
+    <!-- Qt WebChannel for Qt-React communication (only loaded in Qt WebEngine) -->
+    <script>
+      // Dynamically load qwebchannel.js if running in Qt
+      if (typeof qt !== 'undefined' && typeof qt.webChannelTransport !== 'undefined') {
+        console.log('Running in Qt WebEngine - Loading QWebChannel');
+        const script = document.createElement('script');
+        script.src = 'qrc:///qtwebchannel/qwebchannel.js';
+        document.head.appendChild(script);
+      } else {
+        console.log('Running in browser - Qt Bridge will use mock mode');
+      }
+    </script>
+  </head>
+  <body class="bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
