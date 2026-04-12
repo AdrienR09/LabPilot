@@ -1,35 +1,214 @@
-"""Mock Motor Adapters"""
-from src.labpilot_core.adapters._base import InstrumentAdapter
+"""Mock Motor Adapters for LabPilot testing and development."""
 
-class MockMotor(InstrumentAdapter):
-    def __init__(self, name="Mock Motor"):
-        super().__init__(name)
+from typing import Any
+from labpilot_core.adapters._base import AdapterBase, adapter_registry
+from labpilot_core.device.schema import DeviceSchema
+
+
+class MockMotor(AdapterBase):
+    """Single-axis motor mock."""
+
+    def __init__(self, name: str = "mock_motor") -> None:
+        super().__init__()
+        self._name = name
         self.position = 0.0
         self.velocity = 1.0
 
-class MockXYStage(InstrumentAdapter):
-    def __init__(self, name="Mock XY Stage"):
-        super().__init__(name)
+    @property
+    def schema(self) -> DeviceSchema:
+        return DeviceSchema(
+            name=self._name,
+            kind="motor",
+            readable={"position": "float64", "moving": "bool"},
+            settable={"position": "float64", "velocity": "float64"},
+            units={"position": "mm", "velocity": "mm/s"},
+            limits={"position": (0.0, 100.0), "velocity": (0.1, 10.0)},
+            tags=["Mock", "Motor", "1D"],
+        )
+
+    def _connect_sync(self) -> None:
+        pass
+
+    def _disconnect_sync(self) -> None:
+        pass
+
+    def _read_sync(self) -> dict[str, Any]:
+        return {"position": self.position, "moving": False}
+
+
+class MockXYStage(AdapterBase):
+    """XY stage mock (2-axis motor)."""
+
+    def __init__(self, name: str = "mock_xy_stage") -> None:
+        super().__init__()
+        self._name = name
         self.x_position = 0.0
         self.y_position = 0.0
+        self.velocity = 1.0
 
-class MockXYZStage(InstrumentAdapter):
-    def __init__(self, name="Mock XYZ Stage"):
-        super().__init__(name)
-        self.x, self.y, self.z = 0.0, 0.0, 0.0
+    @property
+    def schema(self) -> DeviceSchema:
+        return DeviceSchema(
+            name=self._name,
+            kind="motor",
+            readable={"x": "float64", "y": "float64", "moving": "bool"},
+            settable={"x": "float64", "y": "float64", "velocity": "float64"},
+            units={"x": "mm", "y": "mm", "velocity": "mm/s"},
+            limits={"x": (0.0, 50.0), "y": (0.0, 50.0), "velocity": (0.1, 10.0)},
+            tags=["Mock", "Stage", "XY", "2D"],
+        )
 
-class MockRotationalStage(InstrumentAdapter):
-    def __init__(self, name="Mock Rotational Stage"):
-        super().__init__(name)
+    def _connect_sync(self) -> None:
+        pass
+
+    def _disconnect_sync(self) -> None:
+        pass
+
+    def _read_sync(self) -> dict[str, Any]:
+        return {"x": self.x_position, "y": self.y_position, "moving": False}
+
+
+class MockXYZStage(AdapterBase):
+    """XYZ stage mock (3-axis motor)."""
+
+    def __init__(self, name: str = "mock_xyz_stage") -> None:
+        super().__init__()
+        self._name = name
+        self.x = 0.0
+        self.y = 0.0
+        self.z = 0.0
+        self.velocity = 1.0
+
+    @property
+    def schema(self) -> DeviceSchema:
+        return DeviceSchema(
+            name=self._name,
+            kind="motor",
+            readable={"x": "float64", "y": "float64", "z": "float64", "moving": "bool"},
+            settable={"x": "float64", "y": "float64", "z": "float64", "velocity": "float64"},
+            units={"x": "mm", "y": "mm", "z": "mm", "velocity": "mm/s"},
+            limits={
+                "x": (0.0, 50.0),
+                "y": (0.0, 50.0),
+                "z": (0.0, 20.0),
+                "velocity": (0.1, 10.0),
+            },
+            tags=["Mock", "Stage", "XYZ", "3D"],
+        )
+
+    def _connect_sync(self) -> None:
+        pass
+
+    def _disconnect_sync(self) -> None:
+        pass
+
+    def _read_sync(self) -> dict[str, Any]:
+        return {"x": self.x, "y": self.y, "z": self.z, "moving": False}
+
+
+class MockRotationalStage(AdapterBase):
+    """Rotational motor mock."""
+
+    def __init__(self, name: str = "mock_rotational_stage") -> None:
+        super().__init__()
+        self._name = name
         self.angle = 0.0
+        self.velocity = 5.0
 
-class MockPiezosStage(InstrumentAdapter):
-    def __init__(self, name="Mock Piezo Stage"):
-        super().__init__(name)
-        self.x, self.y, self.z = 0.0, 0.0, 0.0
-        self.voltage_range = (0, 150)
+    @property
+    def schema(self) -> DeviceSchema:
+        return DeviceSchema(
+            name=self._name,
+            kind="motor",
+            readable={"angle": "float64", "moving": "bool"},
+            settable={"angle": "float64", "velocity": "float64"},
+            units={"angle": "degrees", "velocity": "degrees/s"},
+            limits={"angle": (0.0, 360.0), "velocity": (0.1, 30.0)},
+            tags=["Mock", "Motor", "Rotational"],
+        )
 
-class MockFocusMotor(InstrumentAdapter):
-    def __init__(self, name="Mock Focus Motor"):
-        super().__init__(name)
+    def _connect_sync(self) -> None:
+        pass
+
+    def _disconnect_sync(self) -> None:
+        pass
+
+    def _read_sync(self) -> dict[str, Any]:
+        return {"angle": self.angle % 360.0, "moving": False}
+
+
+class MockPiezoStage(AdapterBase):
+    """Piezo XYZ stage mock (high precision)."""
+
+    def __init__(self, name: str = "mock_piezo_stage") -> None:
+        super().__init__()
+        self._name = name
+        self.x = 0.0
+        self.y = 0.0
+        self.z = 0.0
+        self.voltage_range = (0.0, 150.0)
+
+    @property
+    def schema(self) -> DeviceSchema:
+        return DeviceSchema(
+            name=self._name,
+            kind="motor",
+            readable={"x": "float64", "y": "float64", "z": "float64"},
+            settable={"x": "float64", "y": "float64", "z": "float64"},
+            units={"x": "um", "y": "um", "z": "um"},
+            limits={
+                "x": (0.0, 100.0),
+                "y": (0.0, 100.0),
+                "z": (0.0, 20.0),
+            },
+            tags=["Mock", "Stage", "Piezo", "HighPrecision"],
+        )
+
+    def _connect_sync(self) -> None:
+        pass
+
+    def _disconnect_sync(self) -> None:
+        pass
+
+    def _read_sync(self) -> dict[str, Any]:
+        return {"x": self.x, "y": self.y, "z": self.z}
+
+
+class MockFocusMotor(AdapterBase):
+    """Focus (Z-axis) motor mock."""
+
+    def __init__(self, name: str = "mock_focus_motor") -> None:
+        super().__init__()
+        self._name = name
         self.z_position = 0.0
+        self.velocity = 0.5
+
+    @property
+    def schema(self) -> DeviceSchema:
+        return DeviceSchema(
+            name=self._name,
+            kind="motor",
+            readable={"z": "float64", "moving": "bool"},
+            settable={"z": "float64", "velocity": "float64"},
+            units={"z": "mm", "velocity": "mm/s"},
+            limits={"z": (-10.0, 10.0), "velocity": (0.1, 5.0)},
+            tags=["Mock", "Motor", "Focus", "Z"],
+        )
+
+    def _connect_sync(self) -> None:
+        pass
+
+    def _disconnect_sync(self) -> None:
+        pass
+
+    def _read_sync(self) -> dict[str, Any]:
+        return {"z": self.z_position, "moving": False}
+
+
+# Register all motor adapters
+adapter_registry.register("mock_motor", MockMotor)
+adapter_registry.register("mock_xy_stage", MockXYStage)
+adapter_registry.register("mock_xyz_stage", MockXYZStage)
+adapter_registry.register("mock_rotational_stage", MockRotationalStage)
+adapter_registry.register("mock_piezo_stage", MockPiezoStage)
+adapter_registry.register("mock_focus_motor", MockFocusMotor)

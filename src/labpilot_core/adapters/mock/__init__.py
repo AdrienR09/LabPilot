@@ -14,16 +14,48 @@ from .temperature_controllers import *
 from .oscilloscopes import *
 
 __all__ = [
+    # Spectrometers (6)
     'MockSpectrometer',
-    'MockTunableSpectrometer',
-    'MockCamera',
+    'MockHighResSpectrometer',
+    'MockUVVISSpectrometer',
+    'MockIRSpectrometer',
+    'MockRamanSpectrometer',
+    'MockFluorescenceSpectrometer',
+    # Cameras (6)
     'MockCCDCamera',
+    'MockEMCCDCamera',
+    'MockScientificCamera',
+    'MockHighSpeedCamera',
+    'MockThermalCamera',
+    'MockLineScanCamera',
+    # Motors (6)
     'MockMotor',
     'MockXYStage',
+    'MockXYZStage',
+    'MockRotationalStage',
+    'MockPiezoStage',
+    'MockFocusMotor',
+    # Power Meters (4)
     'MockPowerMeter',
-    'MockPowerMeterArray',
+    'MockUVPowerMeter',
+    'MockIRPowerMeter',
+    'MockArrayPowerMeter',
+    # Lock-in Amplifiers (3)
     'MockLockInAmplifier',
+    'MockDualChannelLockin',
+    'MockMultiPhaseLocking',
+    # Source Meters (4)
     'MockSourceMeter',
+    'MockHighVoltageSource',
+    'MockCurrentSource',
+    'MockDualSourceMeter',
+    # Temperature Controllers (4)
     'MockTemperatureController',
+    'MockHeater',
+    'MockCryostat',
+    'MockThermoElectricCooler',
+    # Oscilloscopes (3)
     'MockOscilloscope',
+    'MockUSBOscilloscope',
+    'MockHighSpeedOscilloscope',
 ]
