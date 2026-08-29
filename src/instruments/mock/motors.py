@@ -3,6 +3,7 @@
 from typing import Any
 from instruments._base import AdapterBase, adapter_registry
 from core.device.schema import DeviceSchema
+from instruments.MockBasic.simple import _SimulatedSample
 
 
 class MockMotor(AdapterBase):
@@ -43,14 +44,18 @@ class MockMotor(AdapterBase):
 
 
 class MockXYStage(AdapterBase):
-    """XY stage mock (2-axis motor)."""
+    """XY stage mock (2-axis motor) — writes its position into the shared
+    `_SimulatedSample` (`instruments.MockBasic.simple`) on every set, the
+    same coupling `MockBasicActuatorND` uses, so a paired `MockBasic*`
+    detector's signal genuinely depends on where this stage actually is."""
 
-    def __init__(self, name: str = "mock_xy_stage") -> None:
+    def __init__(self, name: str = "mock_xy_stage", sample: str = "default") -> None:
         super().__init__()
         self._name = name
         self.x_position = 0.0
         self.y_position = 0.0
         self.velocity = 1.0
+        self._sample = _SimulatedSample.get(sample, ("x", "y"))
 
     @property
     def schema(self) -> DeviceSchema:
@@ -75,24 +80,31 @@ class MockXYStage(AdapterBase):
 
     async def set_x(self, value: float) -> None:
         self.x_position = float(value)
+        self._sample.update_position({"x": self.x_position, "y": self.y_position})
 
     async def set_y(self, value: float) -> None:
         self.y_position = float(value)
+        self._sample.update_position({"x": self.x_position, "y": self.y_position})
 
     async def set_velocity(self, value: float) -> None:
         self.velocity = float(value)
 
 
 class MockXYZStage(AdapterBase):
-    """XYZ stage mock (3-axis motor)."""
+    """XYZ stage mock (3-axis motor) — writes its position into the
+    shared `_SimulatedSample` (`instruments.MockBasic.simple`) on every
+    set, the same coupling `MockBasicActuatorND` uses, so a paired
+    `MockBasic*` detector's signal genuinely depends on where this stage
+    actually is."""
 
-    def __init__(self, name: str = "mock_xyz_stage") -> None:
+    def __init__(self, name: str = "mock_xyz_stage", sample: str = "default") -> None:
         super().__init__()
         self._name = name
         self.x = 0.0
         self.y = 0.0
         self.z = 0.0
         self.velocity = 1.0
+        self._sample = _SimulatedSample.get(sample, ("x", "y", "z"))
 
     @property
     def schema(self) -> DeviceSchema:
@@ -122,12 +134,15 @@ class MockXYZStage(AdapterBase):
 
     async def set_x(self, value: float) -> None:
         self.x = float(value)
+        self._sample.update_position({"x": self.x, "y": self.y, "z": self.z})
 
     async def set_y(self, value: float) -> None:
         self.y = float(value)
+        self._sample.update_position({"x": self.x, "y": self.y, "z": self.z})
 
     async def set_z(self, value: float) -> None:
         self.z = float(value)
+        self._sample.update_position({"x": self.x, "y": self.y, "z": self.z})
 
     async def set_velocity(self, value: float) -> None:
         self.velocity = float(value)

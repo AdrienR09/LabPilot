@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -38,13 +39,20 @@ from core.api.dashboard import router as dashboard_router
 from core.config import (
     ConfigPersistence,
 )
+from core.config.template_params import TemplateParamPersistence
 from core.config.workflow_sets import WorkflowSetPersistence
+from core.events import EventKind
 from core.session import Session
 from core.workflow import WorkflowEngine, WorkflowGraph, WorkflowStore
+from core.workflow.capabilities import OptimizerCapability
 from core.workflow.instrument_roles import (
     read_required_instruments,
     read_required_instruments_from_file,
     read_template_description,
+    read_result_ui,
+    read_capabilities,
+    read_workflow_params,
+    write_workflow_param,
 )
 
 __all__ = ["LabPilotServer", "create_app"]
@@ -85,6 +93,34 @@ class WorkflowScriptUpdateRequest(BaseModel):
     content: str
 
 
+class WorkflowParamUpdateRequest(BaseModel):
+    """Request to change one of a workflow's own tunable parameters (see
+    core/workflow/instrument_roles.py's read_workflow_params) — distinct
+    from an instrument's settings."""
+    value: Any
+
+
+class WorkflowOptimizeRequest(BaseModel):
+    """Request to re-center a workflow's optimizer-capability-bound
+    actuator on the detector's local maximum — a small ad-hoc sequence of
+    sub-scans around its current position (`core/workflow/capabilities.py`'s
+    `OptimizerCapability`), not a full run of the workflow's own script.
+
+    `axes`, if given, is the EXACT set of actuator axes to optimize over
+    (validated against what's actually available — see
+    `_resolve_optimize_axes`) — "select if you want to optimize along one
+    dimension or multiple dimensions"; omit to use every available axis
+    (today's default behavior, unchanged). `ranges`/`points_per_axis`, if
+    given, override the per-axis search span/resolution (an axis not
+    present in either falls back to a fraction of its own declared
+    AXIS_RANGES span, and to `points`, respectively). See
+    POST /api/workflows/{id}/optimize/start."""
+    axes: list[str] | None = None
+    ranges: dict[str, float] | None = None
+    points: int = 5
+    points_per_axis: dict[str, int] | None = None
+
+
 class WorkflowLoadRequest(BaseModel):
     """Request to load a workflow script from a path into the active
     workflow-set."""
@@ -104,17 +140,16 @@ class QtLaunchRequest(BaseModel):
     dimensionality: str
 
 
-class QtSpawnRequest(BaseModel):
-    """Request to spawn Qt window from DSL."""
-    window_id: str = Field(default_factory=lambda: f"qt_{uuid.uuid4().hex[:8]}")
-    spec: dict[str, Any]
-
-
 class ChatRequest(BaseModel):
     """AI chat request."""
     message: str
     conversation_id: str = "default"
     use_tools: bool = True
+    # Scopes the AI's system context to one workflow (its graph + script
+    # text) so it can see/modify real code instead of generating blind —
+    # set when the chat is opened from a specific workflow (see frontend's
+    # openAIChat()). None for a general chat or a brand-new workflow.
+    workflow_id: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -123,6 +158,26 @@ class ChatResponse(BaseModel):
     conversation_id: str
     tool_calls: int = 0
     structured_prompt: dict[str, Any] | None = None
+
+
+# Any single WORKFLOW_PROGRESS field with more elements than this is
+# dropped from the WebSocket broadcast (see LabPilotServer._event_broadcaster)
+# — large enough that a live 1D scan/spectrum curve still broadcasts in
+# full, small enough that a 2D image or ND scan's flat data array (which
+# can reach millions of elements) doesn't get re-serialized every point.
+_PROGRESS_BROADCAST_LIMIT = 4096
+
+
+def _flat_len(value: Any, _depth: int = 0) -> int:
+    """Element count of `value`, flattening one level of list-of-lists
+    (image-style 2D payloads) so e.g. a 100x100 image reports 10000, not
+    100. Non-list values (scalars, dicts, None) count as 0 — only list
+    payloads are ever large enough to matter here."""
+    if not isinstance(value, list):
+        return 0
+    if _depth == 0 and value and isinstance(value[0], list):
+        return sum(_flat_len(row, _depth + 1) for row in value)
+    return len(value)
 
 
 # WebSocket Manager
@@ -167,8 +222,17 @@ class LabPilotServer:
         self.workflow_store: WorkflowStore | None = None
         self.workflow_engine: WorkflowEngine | None = None
         self.workflow_set_store = WorkflowSetPersistence(self.config_persistence.config_dir)
+        self.template_param_store = TemplateParamPersistence(self.config_persistence.config_dir)
         self.websocket_manager = WebSocketManager()
         self._event_task: asyncio.Task | None = None
+        # One in-flight optimize run per workflow — a small ad-hoc grid
+        # scan around the crosshair-bound actuator's current position,
+        # separate from a full run of the workflow's own script (see
+        # /api/workflows/{id}/optimize/start below). Tracked here rather
+        # than through WorkflowEngine's own execution-state machinery
+        # since it isn't a run of the workflow's script at all.
+        self.optimize_states: dict[str, dict] = {}
+        self._optimize_tasks: dict[str, asyncio.Task] = {}
 
     async def initialize(self):
         """Initialize server components."""
@@ -204,6 +268,7 @@ class LabPilotServer:
         try:
             self.ai_session = AISession(
                 self.session, self.workflow_store, self.workflow_engine, self.workflow_set_store,
+                config_persistence=self.config_persistence,
             )
             # Try to initialize with default Ollama config
             # Using mistral (better at function calling than llama3.1)
@@ -241,9 +306,49 @@ class LabPilotServer:
         """Broadcast LabPilot events to WebSocket clients."""
         try:
             async for event in self.session.bus.subscribe():
+                # A WORKFLOW_PROGRESS event's data includes the scan's full
+                # accumulated flat array (session.report_progress() sends
+                # the whole thing, not a delta) — for an ND scan that's up
+                # to millions of floats, growing every point. json.dumps-ing
+                # that on EVERY reported point, unconditionally, is pure
+                # waste with zero WebSocket clients connected (the common
+                # case today) and was competing for the same asyncio event
+                # loop the workflow script itself runs on — a real
+                # contributor to "scan acquisition takes a long time".
+                # Skip the serialize+broadcast entirely when nobody's
+                # listening.
+                if not self.websocket_manager.active_connections:
+                    continue
+                event_dict = event.to_dict()
+                if event.kind == EventKind.WORKFLOW_PROGRESS:
+                    # Even WITH a listener connected, broadcasting the full
+                    # array on every single point reintroduces the same
+                    # O(size) cost per tick, now permanently (a workflow
+                    # window is always listening while open) instead of
+                    # only every poll interval. Measured: the same scan
+                    # went from finishing in <6s with no listener to still
+                    # running after 9s (and climbing per-point) with one
+                    # connected, purely from this serialization. The WS
+                    # push only needs to tell the client "something changed
+                    # and here's the shape of it" — the client re-fetches
+                    # the actual (still full, but throttled) snapshot via
+                    # GET execution_state when it wants to render (see
+                    # WorkflowStatePoller._on_message in the desktop app).
+                    # Every RESULT_UI-producing template names its bulky
+                    # array differently (omniscan's "data", generic_2d_scan/
+                    # confocal_scanner/hyperspectral_imaging's "image"/
+                    # "live_image", ...), so this drops by estimated size,
+                    # not by name — any field whose total element count
+                    # (flattening one level of nesting for image-style
+                    # list-of-lists) is past the threshold.
+                    event_dict = dict(event_dict)
+                    event_dict["data"] = {
+                        k: v for k, v in event_dict["data"].items()
+                        if _flat_len(v) <= _PROGRESS_BROADCAST_LIMIT
+                    }
                 event_data = {
                     "type": "event",
-                    "event": event.to_dict()
+                    "event": event_dict,
                 }
                 await self.websocket_manager.broadcast(json.dumps(event_data))
         except asyncio.CancelledError:
@@ -410,6 +515,9 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
                 graph = server.workflow_store.load(wf.id)
                 if graph.metadata.get("script_path") not in loaded_paths:
                     continue
+                running = bool(server.workflow_engine and server.workflow_engine.is_running(wf.id))
+                latest = server.workflow_store.get_latest_execution(wf.id, include_results=False)
+                bindings = graph.metadata.get("instrument_bindings") or {}
                 workflow_data.append({
                     "id": wf.id,
                     "name": wf.name,
@@ -418,6 +526,10 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
                     "updated_at": wf.updated_at,
                     "description": graph.metadata.get("description"),
                     "script_path": graph.metadata.get("script_path"),
+                    "running": running,
+                    "last_status": latest["status"] if latest else None,
+                    "last_completed_at": latest["completed_at"] if latest else None,
+                    "connected_instruments": [v for v in bindings.values() if v],
                 })
             return ApiResponse(success=True, data=workflow_data)
         except Exception as e:
@@ -485,7 +597,14 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         """Instantiate a template as a new, loaded workflow — copies its
         script into workflow_library/ (mirrors WriteWorkflowScriptTool's
         copy-and-register pattern exactly) with every declared instrument
-        role starting unbound."""
+        role starting unbound.
+
+        Pre-filled from this template's last-saved parameter values (see
+        core/config/template_params.py), if any exist — carrying forward
+        AXIS_RANGES/SCAN_AXES/HOLD_POSITIONS/etc. from the last time this
+        same template was configured, rather than always resetting to its
+        hardcoded defaults, "so I can come back to those parameters when
+        reloading the workflow"."""
         if not server.workflow_store:
             raise HTTPException(status_code=503, detail="Workflow store not available")
         template_path = _workflow_templates_dir() / f"{template_name}.py"
@@ -498,6 +617,18 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
 
         text = template_path.read_text()
         required = read_required_instruments(text)
+
+        saved_params = server.template_param_store.load(template_name)
+        if saved_params:
+            current_names = set(read_workflow_params(text).keys())
+            for name, value in saved_params.items():
+                if name not in current_names:
+                    continue  # a param this template no longer declares — drop it rather than inject a stale one
+                try:
+                    text = write_workflow_param(text, name, value)
+                except ValueError:
+                    continue
+
         slug = re.sub(r"[^a-z0-9]+", "_", template_name.lower()).strip("_") or "workflow"
         script_dir = Path(_workflow_library.__path__[0])
         script_path = script_dir / f"{slug}_{int(time_module.time())}.py"
@@ -505,6 +636,7 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
 
         graph = WorkflowGraph(name=template_name.replace("_", " ").title())
         graph.metadata["script_path"] = str(script_path)
+        graph.metadata["template_name"] = template_name
         graph.metadata["externally_authored"] = True
         graph.metadata["description"] = read_template_description(text)
         graph.metadata["instrument_bindings"] = {role: None for role in required}
@@ -555,6 +687,312 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="No script file for this workflow")
         Path(script_path).write_text(request.content)
         return ApiResponse(success=True, data={"path": script_path})
+
+    @app.get("/api/workflows/{workflow_id}/params", response_model=ApiResponse)
+    async def get_workflow_params(workflow_id: str, server: LabPilotServer = Depends(get_server)):
+        """This workflow's own tunable parameters — top-level UPPERCASE
+        constants declared in its script (e.g. confocal_scanner.py's
+        X_POSITIONS/Y_POSITIONS/SETTLE_TOLERANCE_MM), read by the native
+        desktop window (workflow_window.py) as a settings panel specific
+        to *this* workflow, distinct from any bound instrument's own
+        settings. See core/workflow/instrument_roles.py's
+        read_workflow_params."""
+        if not server.workflow_store:
+            raise HTTPException(status_code=503, detail="Workflow store not available")
+        try:
+            graph = server.workflow_store.load(workflow_id)
+        except Exception as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        script_path = graph.metadata.get("script_path")
+        if not script_path or not Path(script_path).exists():
+            return ApiResponse(success=True, data={})
+        return ApiResponse(success=True, data=read_workflow_params(Path(script_path).read_text()))
+
+    @app.put("/api/workflows/{workflow_id}/params/{param_name}", response_model=ApiResponse)
+    async def set_workflow_param(
+        workflow_id: str, param_name: str, request: WorkflowParamUpdateRequest,
+        server: LabPilotServer = Depends(get_server),
+    ):
+        """Changes one of this workflow's own tunable parameters in place
+        — a precise, targeted edit of just that constant's value in the
+        script text (see write_workflow_param), not a full script
+        rewrite.
+
+        If this instance came from a template (`graph.metadata
+        ["template_name"]`, set by load_workflow_template), also persists
+        the complete resulting parameter set to that template's status
+        file (core/config/template_params.py) — so the NEXT time this
+        template is loaded fresh, it starts from these values instead of
+        the template's original hardcoded defaults."""
+        if not server.workflow_store:
+            raise HTTPException(status_code=503, detail="Workflow store not available")
+        try:
+            graph = server.workflow_store.load(workflow_id)
+        except Exception as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        script_path = graph.metadata.get("script_path")
+        if not script_path or not Path(script_path).exists():
+            raise HTTPException(status_code=404, detail="No script file for this workflow")
+
+        script_text = Path(script_path).read_text()
+        current = read_workflow_params(script_text)
+        if param_name not in current:
+            raise HTTPException(status_code=404, detail=f"{param_name!r} is not a tunable parameter of this workflow")
+
+        current_value = current[param_name]
+        new_value = request.value
+        # A JSON int for a Python constant that's really a float (e.g.
+        # SETTLE_TOLERANCE_MM = 0.02, submitted as a bare 50) is a common,
+        # harmless case worth coercing rather than rejecting.
+        if isinstance(current_value, float) and isinstance(new_value, int) and not isinstance(new_value, bool):
+            new_value = float(new_value)
+        expected_type = type(current_value)
+        if type(new_value) is not expected_type:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{param_name!r} expects a {expected_type.__name__}, got {type(new_value).__name__}",
+            )
+
+        try:
+            new_script = write_workflow_param(script_text, param_name, new_value)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        Path(script_path).write_text(new_script)
+
+        template_name = graph.metadata.get("template_name")
+        if template_name:
+            server.template_param_store.save(template_name, read_workflow_params(new_script))
+
+        return ApiResponse(success=True, data={"name": param_name, "value": new_value})
+
+    def _resolve_optimize_axes(
+        script_text: str, actuator_schema, x_axis: str | None, y_axis: str | None,
+        requested_axes: list[str] | None = None,
+    ) -> tuple[list[str], dict[str, tuple[float, float, int]]]:
+        """Which actuator axes to run the optimize sequence over, and each
+        one's own declared span (used only to derive a default search
+        range — see `WorkflowOptimizeRequest.ranges`). Prefers an
+        omniscan-style `AXIS_RANGES`/`SCAN_AXES` declaration (any number of
+        axes, intersected with what the bound actuator's schema actually
+        has); falls back to the crosshair's own fixed `x_axis`/`y_axis`
+        pair (e.g. confocal_scanner.py, which declares neither) using
+        whatever `X_POSITIONS`/`Y_POSITIONS`-style explicit lists it has
+        for a span, or a harmless placeholder span if it has none at all —
+        that workflow's optimize behavior is otherwise unchanged from
+        before this phase.
+
+        `requested_axes` (`WorkflowOptimizeRequest.axes` — "select if you
+        want to optimize along one dimension or multiple dimensions"), if
+        given, narrows the result to just that subset (still validated
+        against what's actually available — a requested axis this
+        workflow doesn't have is silently dropped rather than erroring,
+        matching how an unavailable SCAN_AXES entry is already handled
+        elsewhere)."""
+        params = read_workflow_params(script_text)
+        axis_ranges = params.get("AXIS_RANGES")
+        scan_axes = params.get("SCAN_AXES")
+        if isinstance(axis_ranges, dict) and isinstance(scan_axes, list):
+            settable = actuator_schema.settable
+            axes = [a for a in scan_axes if a in axis_ranges and a in settable]
+            if axes:
+                if requested_axes is not None:
+                    axes = [a for a in requested_axes if a in axes]
+                return axes, {a: tuple(axis_ranges[a]) for a in axes}
+
+        axes = [a for a in (x_axis, y_axis) if a]
+        if requested_axes is not None:
+            axes = [a for a in requested_axes if a in axes]
+        ranges: dict[str, tuple[float, float, int]] = {}
+        for axis, list_key in ((x_axis, "X_POSITIONS"), (y_axis, "Y_POSITIONS")):
+            if not axis:
+                continue
+            positions = params.get(list_key)
+            if isinstance(positions, list) and len(positions) >= 2:
+                ranges[axis] = (float(min(positions)), float(max(positions)), len(positions))
+            else:
+                ranges[axis] = (-0.5, 0.5, 5)
+        return axes, ranges
+
+    def _resolve_optimize_targets(workflow_id: str, server: LabPilotServer, requested_axes: list[str] | None = None):
+        """Shared validation for both start/stop/state — resolves the
+        optimizer capability's target actuator/detector roles (falling
+        back to inferring them from RESULT_UI's crosshair when a workflow
+        declares no explicit CAPABILITIES, see `read_capabilities`), their
+        bound+connected instrument adapters, which axes to optimize, and
+        the detector's value key. Raises HTTPException on any failure;
+        returns (actuator, detector, axes, axis_ranges, value_key)."""
+        if not server.workflow_store:
+            raise HTTPException(status_code=503, detail="Workflow store not available")
+        try:
+            graph = server.workflow_store.load(workflow_id)
+        except Exception as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        script_path = graph.metadata.get("script_path")
+        if not script_path or not Path(script_path).exists():
+            raise HTTPException(status_code=404, detail="No script file for this workflow")
+        script_text = Path(script_path).read_text()
+
+        capabilities = read_capabilities(script_text)
+        optimizer_spec = capabilities.get("optimizer")
+        if not optimizer_spec:
+            raise HTTPException(status_code=400, detail="This workflow declares no optimizer capability")
+        actuator_role = optimizer_spec.get("around")
+        if not actuator_role:
+            raise HTTPException(status_code=400, detail="This workflow's optimizer capability names no actuator role")
+
+        result_ui = read_result_ui(script_text)
+        crosshair = result_ui.get("crosshair") or {}
+        x_axis = crosshair.get("x_axis")
+        y_axis = crosshair.get("y_axis")
+
+        required = read_required_instruments(script_text)
+        detector_role = next((role for role, spec in required.items() if spec.get("kind") == "detector"), None)
+        if detector_role is None:
+            raise HTTPException(status_code=400, detail="This workflow declares no detector role to optimize against")
+
+        bindings = graph.metadata.get("instrument_bindings", {})
+        actuator_id = bindings.get(actuator_role)
+        detector_id = bindings.get(detector_role)
+        if not actuator_id or not detector_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Bind both {actuator_role!r} and {detector_role!r} before optimizing",
+            )
+
+        manager = get_dashboard_manager()
+        if actuator_id not in manager.instruments or detector_id not in manager.instruments:
+            raise HTTPException(status_code=404, detail="Bound instrument not found")
+        actuator = manager.instruments[actuator_id]["adapter"]
+        detector = manager.instruments[detector_id]["adapter"]
+        if not actuator.connected or not detector.connected:
+            raise HTTPException(status_code=409, detail="Both instruments must be connected to optimize")
+
+        actuator_schema = manager.instruments[actuator_id]["schema"]
+        detector_schema = manager.instruments[detector_id]["schema"]
+        value_key = next(iter(detector_schema.readable.keys()), None)
+        if value_key is None:
+            raise HTTPException(status_code=400, detail="Bound detector declares no readable value")
+
+        axes, axis_ranges = _resolve_optimize_axes(script_text, actuator_schema, x_axis, y_axis, requested_axes)
+        if not axes:
+            raise HTTPException(status_code=400, detail="Could not determine which axes to optimize")
+
+        return actuator, detector, axes, axis_ranges, value_key
+
+    async def _run_optimize(
+        server: LabPilotServer, workflow_id: str, actuator, detector,
+        axes: list[str], axis_ranges: dict[str, tuple[float, float, int]],
+        search_range: dict[str, float] | None, points: int,
+        points_per_axis_override: dict[str, int] | None = None,
+    ) -> None:
+        """Background task running the whole optimize sequence — the
+        OptimizerDockWidget (see workflow_window.py) polls
+        `server.optimize_states[workflow_id]["progress"]` as this fills
+        in, one pane per `OptimizerSequence` step (qudi's own
+        `OptimizerDockWidget`, `UI_FRAMEWORK_DESIGN.md` §2.6), the same
+        live-progress feel a full workflow run gets from
+        report_progress(), scoped to this small re-scan-and-recenter
+        sequence instead of the workflow's own script.
+
+        `progress`/`last_result` are shaped `{"sequence": [...], "steps":
+        {step_index: {...}}}` — a dict KEYED BY STEP, not overwritten
+        wholesale on every callback, so a completed earlier step's final
+        fit stays visible once a later step starts (a poller only ever
+        sees one `progress` snapshot at a time; overwriting the whole
+        thing with just the newest step's data would lose every prior
+        step's result the instant the sequence moved on, well before a
+        poll could ever have seen it)."""
+        state = server.optimize_states[workflow_id]
+        points_per_axis_override = points_per_axis_override or {}
+        points_per_axis = {ax: max(2, points_per_axis_override.get(ax, points)) for ax in axes}
+        optimizer = OptimizerCapability(actuator, detector)
+
+        async def on_progress(progress: dict) -> None:
+            current = state.get("progress") or {"sequence": progress.get("sequence"), "steps": {}}
+            current["sequence"] = progress.get("sequence", current.get("sequence"))
+            current["steps"][progress["step_index"]] = progress
+            current["current_step_index"] = progress["step_index"]
+            state["progress"] = current
+
+        try:
+            result = await optimizer.run(
+                axes, axis_ranges, search_range=search_range, points=points_per_axis,
+                on_progress=on_progress,
+            )
+            state["last_result"] = {
+                "sequence": result["sequence"],
+                "steps": {step["step_index"]: step for step in result["steps"]},
+                "best_position": result["best_position"],
+            }
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            state["error"] = str(e)
+        finally:
+            state["running"] = False
+
+    @app.post("/api/workflows/{workflow_id}/optimize/start", response_model=ApiResponse)
+    async def start_optimize(
+        workflow_id: str, request: WorkflowOptimizeRequest, server: LabPilotServer = Depends(get_server)
+    ):
+        """Starts (as a background task) re-centering a workflow's
+        crosshair-bound actuator on its detector's local maximum — a
+        small ad-hoc grid scan around the actuator's *current* position
+        (not a run of the workflow's own script), generalizing qudi's
+        `scanning_optimize_logic.py`/`OptimizerDockWidget` (a quick,
+        *live-watchable* re-scan-and-recenter routine) beyond a single
+        blocking call. Poll GET .../optimize/state for progress; only one
+        optimize can run at a time per workflow."""
+        if server.optimize_states.get(workflow_id, {}).get("running"):
+            raise HTTPException(status_code=409, detail="Optimize already running for this workflow")
+        # Reserve the slot immediately, with no `await` between the check
+        # above and this set — two /optimize/start calls arriving close
+        # together would otherwise both pass the check before either sets
+        # "running", since everything below this line awaits (hardware
+        # I/O) and yields the event loop to exactly that second call.
+        server.optimize_states[workflow_id] = {
+            "running": True, "progress": None, "last_result": None, "error": None,
+        }
+        try:
+            actuator, detector, axes, axis_ranges, _value_key = _resolve_optimize_targets(
+                workflow_id, server, request.axes,
+            )
+        except HTTPException:
+            server.optimize_states[workflow_id]["running"] = False
+            raise
+        except Exception as e:
+            server.optimize_states[workflow_id]["running"] = False
+            raise HTTPException(status_code=502, detail=f"Failed to resolve optimize targets: {e}")
+
+        task = asyncio.create_task(
+            _run_optimize(server, workflow_id, actuator, detector, axes, axis_ranges,
+                          request.ranges, request.points, request.points_per_axis)
+        )
+        server._optimize_tasks[workflow_id] = task
+        return ApiResponse(success=True, data={"started": True})
+
+    @app.post("/api/workflows/{workflow_id}/optimize/stop", response_model=ApiResponse)
+    async def stop_optimize(workflow_id: str, server: LabPilotServer = Depends(get_server)):
+        """Cancels an in-flight optimize task, if any (a no-op
+        otherwise) — the actuator is left wherever the scan had reached,
+        not moved back or on to the best point found so far."""
+        task = server._optimize_tasks.get(workflow_id)
+        if task is not None and not task.done():
+            task.cancel()
+        state = server.optimize_states.get(workflow_id)
+        if state is not None:
+            state["running"] = False
+        return ApiResponse(success=True, data={"stopped": True})
+
+    @app.get("/api/workflows/{workflow_id}/optimize/state", response_model=ApiResponse)
+    async def get_optimize_state(workflow_id: str, server: LabPilotServer = Depends(get_server)):
+        """Polled by the OptimizerDockWidget — {running, progress
+        (the grid so far, live), last_result (the final grid once
+        finished), error}."""
+        state = server.optimize_states.get(
+            workflow_id, {"running": False, "progress": None, "last_result": None, "error": None}
+        )
+        return ApiResponse(success=True, data=state)
 
     @app.post("/api/workflows/{workflow_id}/execute", response_model=ApiResponse)
     async def execute_workflow(workflow_id: str, server: LabPilotServer = Depends(get_server)):
@@ -705,6 +1143,27 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
 
         return ApiResponse(success=True, data={"role": role, "instrument_id": request.instrument_id})
 
+    @app.get("/api/workflows/{workflow_id}/execution_state", response_model=ApiResponse)
+    async def get_workflow_execution_state(workflow_id: str, server: LabPilotServer = Depends(get_server)):
+        """Merges live (in-progress) and last-completed execution state into
+        one response — polled by the native desktop window
+        (workflow_window.py) to drive a live result view, and usable by any
+        client that just wants "what happened last time"."""
+        if not server.workflow_store or not server.workflow_engine:
+            raise HTTPException(status_code=503, detail="Workflow engine not available")
+        running = server.workflow_engine.is_running(workflow_id)
+        progress = server.workflow_engine.get_live_progress(workflow_id) if running else None
+        latest = server.workflow_store.get_latest_execution(workflow_id)
+        return ApiResponse(success=True, data={
+            "running": running,
+            "execution_id": latest["execution_id"] if latest else None,
+            "progress": progress,
+            "last_status": latest["status"] if latest else None,
+            "last_started_at": latest["started_at"] if latest else None,
+            "last_completed_at": latest["completed_at"] if latest else None,
+            "last_results": latest["results"] if latest else None,
+        })
+
     @app.post("/api/instruments/{instrument_id}/launch-qt", response_model=ApiResponse)
     async def launch_qt_window(
         instrument_id: str,
@@ -713,9 +1172,7 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
     ):
         """Launch Qt window for specific instrument."""
         try:
-            import subprocess
             import sys
-            from pathlib import Path
 
             # Find Qt desktop shell path (src/ui/desktop/)
             qt_frontend_path = Path(__file__).parent.parent / "ui" / "desktop"
@@ -759,7 +1216,6 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
             )
 
             # Wait briefly to check if launch was successful
-            import time
             time.sleep(0.5)
 
             if process.poll() is None:
@@ -805,7 +1261,8 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
             response, tool_calls_made = await server.ai_session.chat(
                 request.message,
                 request.conversation_id,
-                request.use_tools
+                request.use_tools,
+                workflow_id=request.workflow_id,
             )
 
             # Extract structured prompt if present
@@ -830,6 +1287,26 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         """List all AI conversations."""
         conversation_ids = server.config_persistence.list_conversations()
         return ApiResponse(success=True, data=conversation_ids)
+
+    @app.get("/api/ai/conversations/{conversation_id}", response_model=ApiResponse)
+    async def get_conversation(conversation_id: str, server: LabPilotServer = Depends(get_server)):
+        """This conversation's message history — e.g. a workflow-scoped
+        chat's `f"workflow-{workflow_id}"` conversation, so reopening the
+        AI chat for a workflow shows its prior messages (see
+        AISession.get_conversation_messages, which hydrates from disk via
+        ConfigPersistence if this conversation isn't already in memory)."""
+        if not server.ai_session:
+            raise HTTPException(status_code=503, detail="AI session not available")
+        messages = server.ai_session.get_conversation_messages(conversation_id)
+        return ApiResponse(success=True, data=[
+            {
+                "id": f"{conversation_id}-{i}",
+                "role": msg.role,
+                "content": msg.content,
+                "timestamp": msg.timestamp,
+            }
+            for i, msg in enumerate(messages)
+        ])
 
     @app.get("/api/config", response_model=ApiResponse)
     async def get_config_summary(server: LabPilotServer = Depends(get_server)):
@@ -873,45 +1350,6 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.post("/api/qt/spawn", response_model=ApiResponse)
-    async def spawn_qt_window(
-        request: QtSpawnRequest,
-        server: LabPilotServer = Depends(get_server)
-    ):
-        """Spawn Qt window from DSL specification."""
-        try:
-            # Import Qt bridge here to avoid import errors if Qt not available
-            from ui.dsl.bridge import get_bridge
-
-            bridge = get_bridge()
-            if bridge is None:
-                raise HTTPException(status_code=503, detail="Qt bridge not available")
-
-            # Validate spec structure
-            if not isinstance(request.spec, dict):
-                raise HTTPException(status_code=400, detail="Spec must be a dictionary")
-
-            required_fields = ["type", "title"]
-            for field in required_fields:
-                if field not in request.spec:
-                    raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
-
-            # Spawn the Qt window
-            bridge.open_window(request.window_id, request.spec)
-
-            return ApiResponse(
-                success=True,
-                data={
-                    "window_id": request.window_id,
-                    "message": f"Qt window '{request.spec['title']}' spawned successfully"
-                }
-            )
-
-        except ImportError:
-            raise HTTPException(status_code=503, detail="Qt components not available - install PyQt6 and pyqtgraph")
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to spawn Qt window: {e!s}")
-
     # WebSocket endpoint for real-time communication
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket, server: LabPilotServer = Depends(get_server)):
@@ -935,6 +1373,7 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
     async def chat_stream(
         message: str,
         conversation_id: str = "default",
+        workflow_id: str | None = None,
         server: LabPilotServer = Depends(get_server)
     ):
         """Stream AI chat response."""
@@ -943,7 +1382,7 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
 
         async def generate():
             try:
-                async for chunk in server.ai_session.chat_stream(message, conversation_id):
+                async for chunk in server.ai_session.chat_stream(message, conversation_id, workflow_id=workflow_id):
                     yield f"data: {json.dumps({'chunk': chunk})}\n\n"
                 yield f"data: {json.dumps({'done': True})}\n\n"
             except Exception as e:

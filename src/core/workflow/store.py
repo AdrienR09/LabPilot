@@ -422,3 +422,41 @@ class WorkflowStore:
                 """, (now, status, results_json, execution_id))
 
         return execution_id
+
+    def get_latest_execution(self, workflow_id: str, include_results: bool = True) -> dict[str, Any] | None:
+        """Most recent execution_logs row for a workflow (started, completed,
+        failed, or cancelled), or None if it's never been run. Used to show
+        "last run" status/results without needing a live execution.
+
+        `include_results=False` skips fetching/parsing `results_json`
+        entirely — a listing endpoint that only needs status/timestamps
+        (e.g. GET /api/workflows) has no reason to pull that column over
+        from SQLite and json.loads() it, and for an array-heavy workflow
+        (an ND scan's result can be tens to hundreds of MB of JSON) doing
+        so for every workflow in a list is real, easily multi-second cost
+        for data the caller immediately discards."""
+        with sqlite3.connect(self.db_path) as conn:
+            columns = "id, status, started_at, completed_at" + (", results_json" if include_results else "")
+            cursor = conn.execute(f"""
+                SELECT {columns}
+                FROM execution_logs
+                WHERE workflow_id = ?
+                ORDER BY started_at DESC
+                LIMIT 1
+            """, (workflow_id,))
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            if include_results:
+                execution_id, status, started_at, completed_at, results_json = row
+                results = json.loads(results_json) if results_json else None
+            else:
+                execution_id, status, started_at, completed_at = row
+                results = None
+            return {
+                "execution_id": execution_id,
+                "status": status,
+                "started_at": started_at,
+                "completed_at": completed_at,
+                "results": results,
+            }

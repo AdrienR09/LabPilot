@@ -11,6 +11,7 @@ All scan operations go through Session methods to ensure state consistency.
 
 from __future__ import annotations
 
+import contextvars
 import tomllib
 from pathlib import Path
 
@@ -21,6 +22,17 @@ from core.plans.base import ScanPlan
 from core.plans.scan import scan as scan_generator
 
 __all__ = ["Session"]
+
+# Module-level (not per-instance): asyncio.create_task() copies the current
+# context for the new task, so a ContextVar.set() inside one running
+# workflow's task is invisible to a *different* workflow's task running
+# concurrently on the same shared Session — unlike a plain instance
+# attribute, which two concurrent tasks would clobber on each other (each
+# task calling set_progress_context() on the one shared `session` object).
+# Holds (workflow_id, execution_id, live-progress sink dict) or None.
+_progress_context_var: contextvars.ContextVar[tuple[str, str, dict] | None] = contextvars.ContextVar(
+    "labpilot_progress_context", default=None
+)
 
 
 class Session:
@@ -47,6 +59,11 @@ class Session:
         # instrument ids, and cleared again right after — scoped to one
         # execution, never left registered between runs.
         self._aliases: dict[str, str] = {}
+        # Live-progress context (which workflow/execution report_progress()
+        # calls belong to) is NOT stored here — see _progress_context_var
+        # above: it needs to be per-asyncio-task, and a plain instance
+        # attribute on this one shared Session would let two concurrently
+        # running workflows clobber each other's context.
 
     @classmethod
     async def load(cls, path: str | Path) -> Session:
@@ -131,6 +148,79 @@ class Session:
 
     def clear_aliases(self) -> None:
         self._aliases.clear()
+
+    def set_progress_context(self, workflow_id: str, execution_id: str, sink: dict[str, dict]) -> None:
+        """Called by WorkflowEngine right before running a script (inside
+        that execution's own asyncio task — see _progress_context_var), so
+        any `session.report_progress(...)` call inside it knows which
+        workflow/execution it belongs to and where to store the latest
+        report for polling clients."""
+        _progress_context_var.set((workflow_id, execution_id, sink))
+
+    def clear_progress_context(self) -> None:
+        _progress_context_var.set(None)
+
+    async def report_progress(self, data: dict) -> None:
+        """Publish incremental progress from inside a running workflow
+        script — e.g. one more pixel of a scan. Stored for REST polling
+        (WorkflowEngine.get_live_progress) and emitted on the bus for any
+        subscriber. A no-op outside of a workflow execution, so scripts can
+        call it unconditionally without checking context first.
+
+        `data` is expected to carry the FULL accumulated result so far
+        (e.g. an ND scan's whole flat data array to date) — cheap to store
+        here (a dict/list reference, not a copy), but server.py's
+        _event_broadcaster deliberately strips oversized fields before
+        broadcasting this on the bus's WebSocket-facing side, since
+        resending the whole, ever-growing array on every call would be
+        broadcast to any subscriber every time. A script producing point-
+        by-point data at a rate where that matters (e.g. omniscan.py)
+        should ALSO call report_reading() below for each new point — a
+        deliberately small, bounded-size companion built for exactly that
+        live per-point path."""
+        ctx = _progress_context_var.get()
+        if ctx is None:
+            return
+        workflow_id, execution_id, sink = ctx
+        if sink is not None:
+            sink[workflow_id] = data
+        await self.bus.emit(
+            Event(
+                kind=EventKind.WORKFLOW_PROGRESS,
+                data={"workflow_id": workflow_id, "execution_id": execution_id, **data},
+            )
+        )
+
+    async def report_reading(self, data: dict) -> None:
+        """Publish ONE new data point from inside a running workflow
+        script — e.g. one grid point of a scan, as it's acquired.
+
+        Unlike report_progress() above, `data` here is expected to be
+        small and the SAME size on every call (this one point's own
+        contribution, not the growing whole) — mirrors how qudi's
+        ScanningProbeLogic and pyMoDAQ's DAQ_Viewer push live updates via
+        Qt signals carrying just the new data, and this codebase's own
+        EventKind.READING ("one data point from detector(s)"), which
+        existed but wasn't wired to anything until this. Because each
+        call is bounded in size regardless of how far the scan has
+        progressed, a listener (see backend_client.py's
+        WorkflowStatePoller) can genuinely apply every single one — no
+        throttling, no refetching a snapshot — the way report_progress()
+        needs server-side thinning + client-side debounced refetching to
+        stay cheap. Not stored anywhere (report_progress already owns the
+        durable/REST-facing accumulated state) — purely a live broadcast.
+        A no-op outside of a workflow execution, matching report_progress().
+        """
+        ctx = _progress_context_var.get()
+        if ctx is None:
+            return
+        workflow_id, execution_id, _sink = ctx
+        await self.bus.emit(
+            Event(
+                kind=EventKind.READING,
+                data={"workflow_id": workflow_id, "execution_id": execution_id, **data},
+            )
+        )
 
     def get(self, name: str) -> Readable:
         """Retrieve device from registry by name — or, if `name` isn't a
