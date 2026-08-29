@@ -17,7 +17,6 @@ interface SessionState {
   isConnected: boolean;
   sessionId: string | null;
   devicesConnected: number;
-  aiAvailable: boolean;
   workflowEngineRunning: number;
 }
 
@@ -80,32 +79,6 @@ interface UserPreferences {
   notifications: boolean;
 }
 
-interface Message {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: number;
-  structuredPrompt?: {
-    message: string;
-    inputs: Array<{
-      type: 'select' | 'text' | 'number' | 'checkbox' | 'radio';
-      id: string;
-      label: string;
-      description?: string;
-      required?: boolean;
-      options?: Array<{ label: string; value: string | number }>;
-      placeholder?: string;
-    }>;
-    submitLabel?: string;
-  };
-}
-
-interface Conversation {
-  id: string;
-  messages: Message[];
-  conversationId?: string;
-}
-
 interface LabPilotState {
   // Session state
   session: SessionState;
@@ -127,18 +100,6 @@ interface LabPilotState {
   workflows: Workflow[];
   workflowsLoading: boolean;
   workflowsError: string | null;
-
-  // Chat
-  currentConversation: Conversation | null;
-  chatLoading: boolean;
-  chatError: string | null;
-  // Set by openAIChat() when the AI chat is opened scoped to a specific
-  // workflow (or a fresh one) — read by ChatBox to prefill its input and
-  // to pass workflowId/conversationId along on every send in that
-  // session. conversationId is stable per workflow ("workflow-{id}") so
-  // reopening the chat for the same workflow loads the same history
-  // (see loadConversationHistory) instead of starting blank each time.
-  aiChatContext: { workflowId?: string; seedText?: string; conversationId: string } | null;
 
   // UI state
   ui: UIState;
@@ -189,13 +150,6 @@ interface LabPilotState {
   unloadWorkflow: (id: string) => Promise<void>;
   loadWorkflowScript: (path: string) => Promise<void>;
 
-  // Chat management
-  sendMessage: (message: string, workflowId?: string, conversationId?: string) => Promise<void>;
-  clearChat: () => void;
-  openAIChat: (ctx: { workflowId?: string; seedText?: string }) => void;
-  clearAIChatContext: () => void;
-  loadConversationHistory: (conversationId: string) => Promise<void>;
-
   // App initialization
   initializeApp: () => Promise<void>;
 }
@@ -207,7 +161,6 @@ export const useLabPilotStore = create<LabPilotState>()(
       isConnected: false,
       sessionId: null,
       devicesConnected: 0,
-      aiAvailable: false,
       workflowEngineRunning: 0,
     },
 
@@ -224,11 +177,6 @@ export const useLabPilotStore = create<LabPilotState>()(
     workflows: [],
     workflowsLoading: false,
     workflowsError: null,
-
-    currentConversation: null,
-    chatLoading: false,
-    chatError: null,
-    aiChatContext: null,
 
     ui: {
       sidebarOpen: true,
@@ -787,145 +735,6 @@ export const useLabPilotStore = create<LabPilotState>()(
       }
     },
 
-    sendMessage: async (message: string, workflowId?: string, conversationId?: string) => {
-      // Check if AI is available
-      const { aiAvailable } = get().session;
-      if (!aiAvailable) {
-        set((state) => {
-          state.chatError = 'AI assistant is not available. Please configure an AI provider in the backend.';
-        });
-        return;
-      }
-
-      // Initialize conversation if needed — seeded with the caller's
-      // explicit conversationId (e.g. "workflow-{id}", see openAIChat) so
-      // every message in this session lands in the same persisted
-      // conversation, rather than falling back to the backend's "default"
-      // bucket shared by every unscoped chat.
-      if (!get().currentConversation) {
-        set((state) => {
-          state.currentConversation = {
-            id: `conv-${Date.now()}`,
-            messages: [],
-            conversationId,
-          };
-        });
-      }
-
-      // Add user message to conversation
-      const userMessage: Message = {
-        id: `msg-${Date.now()}`,
-        role: 'user',
-        content: message,
-        timestamp: Date.now(),
-      };
-
-      set((state) => {
-        if (state.currentConversation) {
-          state.currentConversation.messages.push(userMessage);
-        }
-        state.chatLoading = true;
-        state.chatError = null;
-      });
-
-      try {
-        const response = await fetch('/api/ai/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            message,
-            conversation_id: conversationId ?? get().currentConversation?.conversationId,
-            use_tools: true,
-            workflow_id: workflowId,
-          }),
-        });
-
-        if (!response.ok) {
-          const error = await response.json();
-          throw new Error(error.detail || error.error || 'Failed to get response from AI');
-        }
-
-        const data = await response.json();
-        const aiResponse = data.data;
-
-        // Add assistant message to conversation
-        const assistantMessage: Message = {
-          id: `msg-${Date.now()}-ai`,
-          role: 'assistant',
-          content: aiResponse.response || 'No response',
-          timestamp: Date.now(),
-          structuredPrompt: aiResponse.structured_prompt,
-        };
-
-        set((state) => {
-          if (state.currentConversation) {
-            state.currentConversation.messages.push(assistantMessage);
-            state.currentConversation.conversationId = aiResponse.conversation_id;
-          }
-        });
-      } catch (error) {
-        set((state) => {
-          state.chatError = error instanceof Error ? error.message : 'Failed to send message';
-        });
-      } finally {
-        set((state) => {
-          state.chatLoading = false;
-        });
-      }
-    },
-
-    clearChat: () => set((state) => {
-      state.currentConversation = null;
-      state.chatError = null;
-    }),
-
-    // Opens the AI chat scoped to a workflow (or a fresh one). A workflow
-    // gets a stable "workflow-{id}" conversation id so reopening its chat
-    // later loads the same persisted history (see loadConversationHistory
-    // and the backend's ConfigPersistence.save_conversation, called after
-    // every exchange) instead of starting blank; a context-free "new
-    // workflow" chat gets a fresh id each time since there's no workflow
-    // identity yet to key off of. `seedText` prefills the input for the
-    // user to edit rather than being auto-sent.
-    openAIChat: (ctx) => {
-      const conversationId = ctx.workflowId ? `workflow-${ctx.workflowId}` : `chat-${Date.now()}`;
-      set((state) => {
-        state.aiChatContext = { ...ctx, conversationId };
-        state.chatError = null;
-      });
-      if (ctx.workflowId) {
-        get().loadConversationHistory(conversationId);
-      } else {
-        set((state) => {
-          state.currentConversation = { id: `conv-${conversationId}`, messages: [], conversationId };
-        });
-      }
-    },
-
-    clearAIChatContext: () => set((state) => {
-      state.aiChatContext = null;
-    }),
-
-    loadConversationHistory: async (conversationId: string) => {
-      try {
-        const response = await fetch(`/api/ai/conversations/${conversationId}`);
-        if (!response.ok) {
-          throw new Error(`Backend returned ${response.status}`);
-        }
-        const data = await response.json();
-        const messages: Message[] = data.data || [];
-        set((state) => {
-          state.currentConversation = { id: `conv-${conversationId}`, messages, conversationId };
-        });
-      } catch (error) {
-        // No saved history (new workflow, or the AI backend is down) —
-        // still seed conversationId so sendMessage keeps using it.
-        set((state) => {
-          state.currentConversation = { id: `conv-${conversationId}`, messages: [], conversationId };
-        });
-      }
-    },
-
     initializeApp: async () => {
       set((state) => {
         state.ui.loading = true;
@@ -945,7 +754,6 @@ export const useLabPilotStore = create<LabPilotState>()(
               isConnected: true,
               sessionId: data.data.session_id || null,
               devicesConnected: data.data.devices_connected || 0,
-              aiAvailable: data.data.ai_available || false,
               workflowEngineRunning: data.data.workflow_engine_running || 0,
             });
           }

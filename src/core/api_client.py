@@ -1,6 +1,6 @@
 """Thin synchronous HTTP client for the LabPilot backend — no Qt
 dependency, so it's usable from anywhere that isn't the desktop app too:
-notebooks/IPython consoles (see notebook_api.py, jupyter_launcher.py),
+notebooks/IPython consoles (see notebook_api.py, ui/desktop/console_window.py),
 scripts, tests.
 
 src/ui/desktop/backend_client.py re-exports LabPilotClient as

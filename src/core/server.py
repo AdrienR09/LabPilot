@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import subprocess
 import time
 import uuid
@@ -26,15 +25,10 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from core.ai import AISession
-from core.ai.structured_prompt import (
-    clean_response_text,
-    extract_structured_prompt,
-)
 from core.api.dashboard import initialize_dashboard, get_dashboard_manager
 from core.api.dashboard import router as dashboard_router
 from core.config import (
@@ -43,7 +37,6 @@ from core.config import (
 from core.config.template_params import TemplateParamPersistence
 from core.config.workflow_sets import WorkflowSetPersistence
 from core.events import EventKind
-from core.jupyter_launcher import JupyterLauncher
 from core.session import Session
 from core.workflow import WorkflowEngine, WorkflowGraph, WorkflowStore
 from core.workflow.capabilities import OptimizerCapability
@@ -142,26 +135,6 @@ class QtLaunchRequest(BaseModel):
     dimensionality: str
 
 
-class ChatRequest(BaseModel):
-    """AI chat request."""
-    message: str
-    conversation_id: str = "default"
-    use_tools: bool = True
-    # Scopes the AI's system context to one workflow (its graph + script
-    # text) so it can see/modify real code instead of generating blind —
-    # set when the chat is opened from a specific workflow (see frontend's
-    # openAIChat()). None for a general chat or a brand-new workflow.
-    workflow_id: str | None = None
-
-
-class ChatResponse(BaseModel):
-    """AI chat response."""
-    response: str
-    conversation_id: str
-    tool_calls: int = 0
-    structured_prompt: dict[str, Any] | None = None
-
-
 # Any single WORKFLOW_PROGRESS field with more elements than this is
 # dropped from the WebSocket broadcast (see LabPilotServer._event_broadcaster)
 # — large enough that a live 1D scan/spectrum curve still broadcasts in
@@ -220,7 +193,6 @@ class LabPilotServer:
         """
         self.session = Session()
         self.config_persistence = ConfigPersistence(config_dir)
-        self.ai_session: AISession | None = None
         self.workflow_store: WorkflowStore | None = None
         self.workflow_engine: WorkflowEngine | None = None
         self.workflow_set_store = WorkflowSetPersistence(self.config_persistence.config_dir)
@@ -235,15 +207,6 @@ class LabPilotServer:
         # since it isn't a run of the workflow's script at all.
         self.optimize_states: dict[str, dict] = {}
         self._optimize_tasks: dict[str, asyncio.Task] = {}
-        # Launched on demand from the Manager's Notebook/Console tabs, not
-        # at startup — see core/jupyter_launcher.py for why (an out-of-
-        # process kernel/terminal, wired to reach this server's live
-        # instruments/workflows over its own REST/WebSocket API).
-        self.jupyter_launcher = JupyterLauncher(
-            config_dir=self.config_persistence.config_dir,
-            backend_url=os.environ.get("LABPILOT_URL", "http://localhost:8000"),
-            repo_src_dir=Path(__file__).resolve().parent.parent,
-        )
 
     async def initialize(self):
         """Initialize server components."""
@@ -275,24 +238,6 @@ class LabPilotServer:
             self.workflow_set_store.save(WorkflowSetPersistence.DEFAULT_NAME, seeded_paths)
             self.workflow_set_store.set_active_name(WorkflowSetPersistence.DEFAULT_NAME)
 
-        # Initialize AI session if configured
-        try:
-            self.ai_session = AISession(
-                self.session, self.workflow_store, self.workflow_engine, self.workflow_set_store,
-                config_persistence=self.config_persistence,
-            )
-            # Try to initialize with default Ollama config
-            # Using mistral (better at function calling than llama3.1)
-            await self.ai_session.initialize({
-                "type": "ollama",
-                "model": "mistral",
-                "base_url": "http://localhost:11434",
-                "timeout": 120.0  # Increased timeout for initial tool-heavy requests
-            })
-        except Exception as e:
-            print(f"AI initialization failed (will retry later): {e}")
-            self.ai_session = None
-
         # Start event broadcasting
         self._event_task = asyncio.create_task(self._event_broadcaster())
 
@@ -309,11 +254,6 @@ class LabPilotServer:
         """Shutdown server components."""
         if self._event_task:
             self._event_task.cancel()
-
-        if self.ai_session:
-            await self.ai_session.shutdown()
-
-        self.jupyter_launcher.stop()
 
     async def _event_broadcaster(self):
         """Broadcast LabPilot events to WebSocket clients."""
@@ -429,7 +369,6 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
             data={
                 "session_id": getattr(server.session, "_config", {}).get("session_id", "default"),
                 "devices_connected": len(server.session.devices),
-                "ai_available": server.ai_session is not None,
                 "workflow_engine_running": len(server.workflow_engine.get_running_workflows()) if server.workflow_engine else 0
             }
         )
@@ -1040,28 +979,6 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-    # ---- Jupyter notebook/console (see core/jupyter_launcher.py) ----
-
-    @app.get("/api/jupyter/status", response_model=ApiResponse)
-    async def get_jupyter_status(server: LabPilotServer = Depends(get_server)):
-        return ApiResponse(success=True, data=server.jupyter_launcher.status())
-
-    @app.post("/api/jupyter/start", response_model=ApiResponse)
-    async def start_jupyter(server: LabPilotServer = Depends(get_server)):
-        """Idempotent — returns the already-running instance's status if
-        one's already up. Blocking subprocess startup (up to ~25s on a
-        cold start) runs off the event loop via asyncio.to_thread."""
-        try:
-            status = await asyncio.to_thread(server.jupyter_launcher.start)
-            return ApiResponse(success=True, data=status)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
-    @app.post("/api/jupyter/stop", response_model=ApiResponse)
-    async def stop_jupyter(server: LabPilotServer = Depends(get_server)):
-        await asyncio.to_thread(server.jupyter_launcher.stop)
-        return ApiResponse(success=True, data={"stopped": True})
-
     @app.delete("/api/workflows/{workflow_id}", response_model=ApiResponse)
     async def unload_workflow(workflow_id: str, server: LabPilotServer = Depends(get_server)):
         """Unload from the Workflows tab — removes its script_path from the
@@ -1283,66 +1200,6 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to launch Qt window: {e!s}")
 
-    @app.post("/api/ai/chat", response_model=ApiResponse)
-    async def chat(
-        request: ChatRequest,
-        server: LabPilotServer = Depends(get_server)
-    ):
-        """Send message to AI assistant."""
-        if not server.ai_session:
-            raise HTTPException(status_code=503, detail="AI session not available")
-
-        try:
-            response, tool_calls_made = await server.ai_session.chat(
-                request.message,
-                request.conversation_id,
-                request.use_tools,
-                workflow_id=request.workflow_id,
-            )
-
-            # Extract structured prompt if present
-            structured_prompt = extract_structured_prompt(response)
-            # Always try to clean response text to remove form JSON blocks
-            clean_response = clean_response_text(response)
-
-            return ApiResponse(
-                success=True,
-                data=ChatResponse(
-                    response=clean_response.strip(),
-                    conversation_id=request.conversation_id,
-                    tool_calls=tool_calls_made,  # Now uses actual count!
-                    structured_prompt=structured_prompt.to_dict() if structured_prompt else None
-                ).model_dump()
-            )
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=str(e))
-
-    @app.get("/api/ai/conversations", response_model=ApiResponse)
-    async def list_conversations(server: LabPilotServer = Depends(get_server)):
-        """List all AI conversations."""
-        conversation_ids = server.config_persistence.list_conversations()
-        return ApiResponse(success=True, data=conversation_ids)
-
-    @app.get("/api/ai/conversations/{conversation_id}", response_model=ApiResponse)
-    async def get_conversation(conversation_id: str, server: LabPilotServer = Depends(get_server)):
-        """This conversation's message history — e.g. a workflow-scoped
-        chat's `f"workflow-{workflow_id}"` conversation, so reopening the
-        AI chat for a workflow shows its prior messages (see
-        AISession.get_conversation_messages, which hydrates from disk via
-        ConfigPersistence if this conversation isn't already in memory)."""
-        if not server.ai_session:
-            raise HTTPException(status_code=503, detail="AI session not available")
-        messages = server.ai_session.get_conversation_messages(conversation_id)
-        return ApiResponse(success=True, data=[
-            {
-                "id": f"{conversation_id}-{i}",
-                "role": msg.role,
-                "content": msg.content,
-                "timestamp": msg.timestamp,
-            }
-            for i, msg in enumerate(messages)
-        ])
-
     @app.get("/api/config", response_model=ApiResponse)
     async def get_config_summary(server: LabPilotServer = Depends(get_server)):
         """Get configuration summary."""
@@ -1402,28 +1259,6 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
 
         except WebSocketDisconnect:
             server.websocket_manager.disconnect(websocket)
-
-    # Streaming endpoints
-    @app.get("/api/ai/chat/stream")
-    async def chat_stream(
-        message: str,
-        conversation_id: str = "default",
-        workflow_id: str | None = None,
-        server: LabPilotServer = Depends(get_server)
-    ):
-        """Stream AI chat response."""
-        if not server.ai_session:
-            raise HTTPException(status_code=503, detail="AI session not available")
-
-        async def generate():
-            try:
-                async for chunk in server.ai_session.chat_stream(message, conversation_id, workflow_id=workflow_id):
-                    yield f"data: {json.dumps({'chunk': chunk})}\n\n"
-                yield f"data: {json.dumps({'done': True})}\n\n"
-            except Exception as e:
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
-        return StreamingResponse(generate(), media_type="text/plain")
 
     # Serve React frontend (in production)
     if Path("frontend/build").exists():

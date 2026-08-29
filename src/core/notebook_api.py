@@ -1,12 +1,12 @@
 """Ergonomic interactive wrapper around core.api_client.LabPilotClient —
-what a notebook/IPython kernel launched via core/jupyter_launcher.py binds
-to `lp` (see that module's bootstrap startup script). Talks to the live
+what the native IPython console (ui/desktop/console_window.py) binds to
+`lp` (see that module's bootstrap startup script). Talks to the live
 LabPilot server over the same REST/WebSocket API the desktop app and web
 UI use — see api_client.LabPilotClient's docstring for why (instruments
 are live hardware handles owned by the server process; an out-of-process
 kernel reaches them the same way every other external client does).
 
-Typical notebook use:
+Typical console use:
 
     >>> lp.instruments
     ['mock_xyz_stage_2', 'fake_apd_8', ...]

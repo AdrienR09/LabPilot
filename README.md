@@ -1,8 +1,8 @@
 # LabPilot
 
-A data-acquisition framework for laboratory instruments. LabPilot wraps real instrument-control libraries (PyMeasure, pylablib) plus mock/test-fixture devices behind a common adapter interface, so instruments can be discovered, connected, and given an auto-generated UI without writing device-specific GUI code. Instruments can be combined into multi-step workflows; everything is reachable from one manager window — including a Jupyter notebook and an IPython console, both pre-connected to the running session.
+A data-acquisition framework for laboratory instruments. LabPilot wraps real instrument-control libraries (PyMeasure, pylablib) plus mock/test-fixture devices behind a common adapter interface, so instruments can be discovered, connected, and given an auto-generated UI without writing device-specific GUI code. Instruments can be combined into multi-step workflows; everything is reachable from one manager window — including a native IPython console pre-connected to the running session.
 
-See **[docs/user_guide.md](docs/user_guide.md)** for the full user guide (instruments, workflows, the Notebook/Console tabs, troubleshooting). This README covers setup and internals.
+See **[docs/index.md](docs/index.md)** for the full documentation (instruments, workflows, the console, the full API reference, troubleshooting). This README covers setup and internals.
 
 ## Architecture
 

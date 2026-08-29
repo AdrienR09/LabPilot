@@ -25,9 +25,10 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 import pyqtgraph as pg
+from pyqtgraph.graphicsItems.GradientEditorItem import Gradients
 from PyQt6.QtCore import QObject, Qt, QRectF, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QTabWidget,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QDoubleSpinBox, QTabWidget,
 )
 
 from components.nd_math import compute_1d_projection, compute_panel_projection, parse_flat_data
@@ -244,6 +245,110 @@ class _Crosshair:
             self._on_move(*self._pending)
 
 
+class _ColorBarControls(QWidget):
+    """A pyMoDAQ-`Viewer2D`-style colorbar sidebar for one `pg.ImageItem`:
+    a draggable histogram + gradient (`pg.HistogramLUTWidget`) with a
+    colormap picker above it and explicit numeric min/max fields below —
+    every name in `_COLORMAPS` is one of pyqtgraph's own bundled
+    presets (`GradientEditorItem.Gradients`), so no extra dependency
+    (e.g. matplotlib) is required just to offer familiar maps like
+    viridis/inferno/plasma/magma alongside qudi-style thermal/bipolar
+    ones.
+
+    Editing a level here (dragging the histogram, or typing into a
+    spinbox) emits `levelsEdited` — `_ScanImagePanel` listens for that to
+    flip its own auto-level off, the same way dragging a level by hand in
+    pyMoDAQ implicitly pins it; otherwise the very next auto-leveled
+    frame would silently overwrite whatever the user just set.
+    """
+
+    levelsEdited = pyqtSignal()
+
+    _COLORMAPS = sorted(Gradients.keys())
+
+    def __init__(
+        self,
+        image_item: pg.ImageItem,
+        default_colormap: str = "viridis",
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.image_item = image_item
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        self.colormap_combo = QComboBox()
+        self.colormap_combo.addItems(self._COLORMAPS)
+        if default_colormap in self._COLORMAPS:
+            self.colormap_combo.setCurrentText(default_colormap)
+        self.colormap_combo.currentTextChanged.connect(self._on_colormap_changed)
+        layout.addWidget(self.colormap_combo)
+
+        self.histogram = pg.HistogramLUTWidget()
+        self.histogram.setImageItem(image_item)
+        self.histogram.setMinimumWidth(130)
+        self.histogram.item.gradient.loadPreset(self.colormap_combo.currentText())
+        self.histogram.item.sigLevelsChanged.connect(self._on_histogram_levels_changed)
+        layout.addWidget(self.histogram, 1)
+
+        levels_row = QHBoxLayout()
+        levels_row.addWidget(QLabel("Min"))
+        self.min_spin = QDoubleSpinBox()
+        self.min_spin.setRange(-1e12, 1e12)
+        self.min_spin.setDecimals(4)
+        self.min_spin.setKeyboardTracking(False)
+        levels_row.addWidget(self.min_spin)
+        levels_row.addWidget(QLabel("Max"))
+        self.max_spin = QDoubleSpinBox()
+        self.max_spin.setRange(-1e12, 1e12)
+        self.max_spin.setDecimals(4)
+        self.max_spin.setKeyboardTracking(False)
+        levels_row.addWidget(self.max_spin)
+        layout.addLayout(levels_row)
+
+        self.min_spin.valueChanged.connect(self._on_spin_changed)
+        self.max_spin.valueChanged.connect(self._on_spin_changed)
+
+        self._syncing = False
+        self.refresh_levels()
+
+    def _on_colormap_changed(self, name: str) -> None:
+        self.histogram.item.gradient.loadPreset(name)
+
+    def _on_histogram_levels_changed(self) -> None:
+        if self._syncing:
+            return
+        self._sync_spins_from_histogram()
+        self.levelsEdited.emit()
+
+    def _on_spin_changed(self, _value: float) -> None:
+        if self._syncing:
+            return
+        self._syncing = True
+        try:
+            self.histogram.item.setLevels(self.min_spin.value(), self.max_spin.value())
+        finally:
+            self._syncing = False
+        self.levelsEdited.emit()
+
+    def _sync_spins_from_histogram(self) -> None:
+        self._syncing = True
+        try:
+            lo, hi = self.histogram.item.getLevels()
+            self.min_spin.setValue(lo)
+            self.max_spin.setValue(hi)
+        finally:
+            self._syncing = False
+
+    def refresh_levels(self) -> None:
+        """Call after the image item's levels change from outside (e.g.
+        an auto-leveled setImage() call) to keep the spinboxes showing
+        the real current range — does NOT emit levelsEdited, since this
+        reflects an automatic change, not a user edit."""
+        self._sync_spins_from_histogram()
+
+
 class _ScanImagePanel(QWidget):
     """One qudi `Scan2DWidget`-equivalent pane (read directly from
     `gui/scanning/scan_widget.py`): a [Channel] toolbar row over an
@@ -253,11 +358,12 @@ class _ScanImagePanel(QWidget):
     `Scan2DWidget` is likewise instantiated once per `ScanDockWidget`,
     however many axis pairs exist.
 
-    No permanent colorbar widget beside the image (a `pg.HistogramLUTWidget`
-    was tried here in an earlier pass and dropped as unwanted persistent
-    chrome) — images auto-level every frame by default; see
-    `set_auto_level` (driven by the workflow window's own Settings menu,
-    not a per-panel sidebar) to freeze levels instead.
+    A `_ColorBarControls` sidebar sits to the right of the image (a
+    pyMoDAQ-`Viewer2D`-style colormap picker + draggable histogram +
+    numeric min/max fields) — see that class's docstring. Images
+    auto-level every frame by default; editing a level by hand (drag or
+    spinbox) pins this panel out of auto-level until `set_auto_level`
+    (driven by the workflow window's own Settings menu) turns it back on.
 
     Used to have its own per-panel Toggle Scan/Save buttons (qudi's
     Scan2DWidget convention) — dropped: Toggle Scan only ever mirrored the
@@ -306,11 +412,15 @@ class _ScanImagePanel(QWidget):
         self.image_item.setAutoDownsample(True)
         plot_item.addItem(self.image_item)
 
-        # The image and any extra controls (e.g. NDScanResultView's
-        # per-axis range selectors) sit side by side — extra controls to
-        # the RIGHT of the image, not below it (see add_extra_controls).
+        # The image, its colorbar, and any extra controls (e.g.
+        # NDScanResultView's per-axis range selectors) sit side by side,
+        # in that order — extra controls to the RIGHT of the colorbar,
+        # not below anything (see add_extra_controls).
         content_row = QHBoxLayout()
         content_row.addWidget(self.plot_widget, 1)
+        self.colorbar = _ColorBarControls(self.image_item)
+        self.colorbar.levelsEdited.connect(self._on_levels_edited)
+        content_row.addWidget(self.colorbar)
         layout.addLayout(content_row, 1)
         self._content_row = content_row
 
@@ -323,6 +433,14 @@ class _ScanImagePanel(QWidget):
         self._last_x_values: Optional[list[float]] = None
         self._last_y_values: Optional[list[float]] = None
         self._extra_controls: Optional[QWidget] = None
+
+    def _on_levels_edited(self) -> None:
+        # A manual level edit implicitly pins this one panel out of
+        # auto-level — otherwise the very next auto-leveled frame would
+        # silently undo it. Local to this panel only; doesn't touch the
+        # workflow window's shared Settings-menu toggle, which still wins
+        # (re-enabling auto-level for every panel) if switched back on.
+        self._auto_level = False
 
     # ---- extension point (e.g. NDScanResultView's per-panel "other axes"
     # projection-range selectors, merged directly into this panel's own
@@ -353,6 +471,11 @@ class _ScanImagePanel(QWidget):
 
     def set_image(self, array: np.ndarray, first_frame: bool) -> None:
         self.image_item.setImage(array, autoLevels=self._auto_level)
+        if self._auto_level:
+            # Keep the colorbar's numeric fields showing the real current
+            # range when auto-level just picked a new one — harmless
+            # no-op the rest of the time (levels unchanged).
+            self.colorbar.refresh_levels()
         if first_frame:
             self.plot_widget.getPlotItem().getViewBox().autoRange()
 

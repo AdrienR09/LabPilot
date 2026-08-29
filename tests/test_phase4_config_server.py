@@ -150,8 +150,7 @@ async def test_server_initialization():
 
             # Test session status
             devices_count = len(server.session.devices)
-            ai_available = server.ai_session is not None
-            print(f"   ✅ Session status: {devices_count} devices, AI: {ai_available}")
+            print(f"   ✅ Session status: {devices_count} devices")
 
             # Cleanup
             await server.shutdown()

@@ -27,7 +27,6 @@ def mock_server():
     server = Mock(spec=LabPilotServer)
     server.session = Mock(spec=Session)
     server.session.devices = {}
-    server.ai_session = Mock()
     server.workflow_store = Mock()
     server.workflow_engine = Mock()
     # Real handler code does len(get_running_workflows()) — a bare Mock()
@@ -73,7 +72,6 @@ class TestHealthEndpoints:
         """Test session status endpoint."""
         # Setup mock data
         mock_server.session.devices = {"device1": Mock(), "device2": Mock()}
-        mock_server.ai_session = Mock()
         mock_server.workflow_engine.get_running_workflows.return_value = ["wf1", "wf2"]
 
         response = client.get("/api/session/status")
@@ -82,18 +80,7 @@ class TestHealthEndpoints:
         data = response.json()
         assert data["success"] == True
         assert data["data"]["devices_connected"] == 2
-        assert data["data"]["ai_available"] == True
         assert data["data"]["workflow_engine_running"] == 2
-
-    def test_session_status_no_ai(self, client, mock_server):
-        """Test session status when AI not available."""
-        mock_server.ai_session = None
-
-        response = client.get("/api/session/status")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["data"]["ai_available"] == False
 
 
 class TestDeviceEndpoints:
@@ -326,72 +313,6 @@ class TestQtEndpoints:
         assert data["success"] == True
         assert "launched" in data["data"]["message"]
         assert data["data"]["pid"] == 12345
-
-class TestAIEndpoints:
-    """Test AI chat and conversation endpoints."""
-
-    def test_ai_chat(self, client, mock_server):
-        """Test AI chat endpoint."""
-        mock_server.ai_session.chat = AsyncMock(return_value=("Hello! I can help you.", 2))
-
-        request_data = {
-            "message": "Hello AI",
-            "conversation_id": "test_conv",
-            "use_tools": True
-        }
-
-        with patch('core.server.extract_structured_prompt', return_value=None), \
-             patch('core.server.clean_response_text', return_value="Hello! I can help you."):
-
-            response = client.post("/api/ai/chat", json=request_data)
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success"] == True
-        assert data["data"]["response"] == "Hello! I can help you."
-        assert data["data"]["conversation_id"] == "test_conv"
-        assert data["data"]["tool_calls"] == 2
-
-    def test_ai_chat_no_session(self, client, mock_server):
-        """Test AI chat when session unavailable."""
-        mock_server.ai_session = None
-
-        request_data = {"message": "Hello"}
-
-        response = client.post("/api/ai/chat", json=request_data)
-
-        assert response.status_code == 503
-
-    def test_list_conversations(self, client, mock_server):
-        """Test listing AI conversations."""
-        mock_server.config_persistence.list_conversations.return_value = ["conv1", "conv2"]
-
-        response = client.get("/api/ai/conversations")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success"] == True
-        assert data["data"] == ["conv1", "conv2"]
-
-    def test_chat_stream(self, client, mock_server):
-        """Test streaming AI chat response."""
-        async def mock_stream():
-            yield "Hello"
-            yield " world"
-            yield "!"
-
-        # chat_stream is a real async-generator function — the route calls
-        # it directly and iterates with `async for`, no `await` on the call
-        # itself, so the mock's call must return the async iterator
-        # synchronously (AsyncMock would instead return a coroutine that's
-        # never awaited, which is what was actually failing here).
-        mock_server.ai_session.chat_stream = Mock(return_value=mock_stream())
-
-        response = client.get("/api/ai/chat/stream?message=test&conversation_id=test")
-
-        assert response.status_code == 200
-        # Note: Full streaming test would require async test client
-
 
 class TestConfigEndpoints:
     """Test configuration management endpoints."""

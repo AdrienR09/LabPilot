@@ -11,37 +11,12 @@ import {
   FolderOpen,
   LayoutTemplate,
   X,
-  Sparkles,
 } from 'lucide-react';
 import { useLabPilotStore } from '@/store';
 import type { Workflow } from '@/store/index';
 import { qtBridge, initQtBridge } from '@/utils/qtBridge';
 import { WorkflowScriptModal } from '@/components/WorkflowScriptModal';
-import { ChatBox } from '@/components/ChatBox';
 import { getWorkflowTemplates, loadWorkflowTemplate, WorkflowTemplate } from '@/api';
-
-// Opens the AI chat as an in-page dialog rather than navigating to the
-// /ai tab — `aiChatContext` (set by openAIChat()) is what actually scopes
-// the conversation to a workflow; this is just presentation. Closing
-// clears that scope (clearAIChatContext) so a later, unscoped chat open
-// doesn't inherit it, but leaves any conversation history in the store
-// alone (a fresh scope call replaces it anyway — see openAIChat()).
-function AIChatModal({ onClose }: { onClose: () => void }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-2xl h-[80vh] relative">
-        <button
-          onClick={onClose}
-          className="absolute -top-3 -right-3 z-10 p-1.5 bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white rounded-full shadow-lg"
-          title="Close"
-        >
-          <X className="h-4 w-4" />
-        </button>
-        <ChatBox />
-      </div>
-    </div>
-  );
-}
 
 // Ready-made, general-purpose workflow templates (core/workflow_templates/)
 // — each declares the instrument "roles" it needs (kind + dimensionality)
@@ -130,7 +105,7 @@ function TemplateLibraryModal({ onClose, onLoaded }: { onClose: () => void; onLo
 }
 
 export default function Workflows() {
-  const { workflows, devices, executeWorkflow, stopWorkflow, unloadWorkflow, loadWorkflowScript, loadWorkflows, workflowsError, openAIChat, aiChatContext, clearAIChatContext } = useLabPilotStore();
+  const { workflows, devices, executeWorkflow, stopWorkflow, unloadWorkflow, loadWorkflowScript, loadWorkflows, workflowsError } = useLabPilotStore();
   const [selectedWorkflow, setSelectedWorkflow] = useState<string | null>(null);
   const [scriptModalWorkflow, setScriptModalWorkflow] = useState<Workflow | null>(null);
   const [loadPathInput, setLoadPathInput] = useState('');
@@ -280,15 +255,6 @@ export default function Workflows() {
             <LayoutTemplate className="h-4 w-4 mr-2" />
             Templates…
           </button>
-          <button
-            onClick={() => openAIChat({
-              seedText: 'Create a new lab automation workflow that ',
-            })}
-            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
-          >
-            <Sparkles className="h-4 w-4 mr-2" />
-            New Workflow (AI)
-          </button>
         </div>
       </div>
 
@@ -429,19 +395,6 @@ export default function Workflows() {
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          openAIChat({
-                            workflowId: workflow.id,
-                            seedText: `Help me modify the "${workflow.name}" workflow: `,
-                          });
-                        }}
-                        className="p-2 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg transition-colors"
-                        title="Ask AI to modify this workflow"
-                      >
-                        <Sparkles className="h-4 w-4" />
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
                           setScriptModalWorkflow(workflow);
                         }}
                         className="p-2 text-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg transition-colors"
@@ -481,10 +434,6 @@ export default function Workflows() {
           onClose={() => setShowTemplateLibrary(false)}
           onLoaded={handleTemplateLoaded}
         />
-      )}
-
-      {aiChatContext && (
-        <AIChatModal onClose={clearAIChatContext} />
       )}
     </div>
   );

@@ -1,0 +1,230 @@
+# Workflows
+
+A workflow is a Python script with one entry point:
+
+```python
+async def run(session: Session) -> dict:
+    ...
+```
+
+`session` is the live `Session` (`src/core/session.py`) — the same device
+registry and event bus the whole running server shares. Everything else
+(instrument roles, live result rendering, tunable parameters, the
+optimizer, safety limits) is layered on top of that one contract via a
+handful of well-known module-level constants and helper classes, covered
+below. LabPilot ships 14 ready-to-use templates
+(`src/core/workflow_templates/`): `omniscan`, `generic_1d_scan`,
+`generic_2d_scan`, `confocal_scanner`, `hyperspectral_imaging`,
+`grating_spectrometer`, `odmr_sweep`, `autofocus`,
+`actuator_optimization`, `pid_stabilization`, `pump_probe_spectroscopy`,
+`peak_fit_series`, `time_series_acquisition` — each adapted from a
+standard Qudi/pyMoDAQ acquisition pattern.
+
+## Running a workflow
+
+**From the Manager:**
+
+1. Open the **Workflows** tab, load or select a workflow (or click
+   **Templates…** to load one of the 14 built-ins as a fresh, unbound
+   workflow).
+2. Bind any instrument roles it needs (see below) to real connected
+   instruments — the Flow Chart tab, or the workflow window's own binding
+   UI.
+3. Adjust its tunable parameters if needed.
+4. Click **Execute**. **Stop** cancels a running execution. Only one
+   execution per workflow can run at a time — the Execute button
+   disables itself while a run is in progress.
+
+**From code:**
+
+```python
+wf = lp.workflow('<workflow_id>')
+wf.params                      # this workflow's own tunable constants
+wf.set_param('AXIS_RANGES', {'x': [-2.0, 2.0, 40], 'y': [-2.0, 2.0, 40]})
+wf.run()                       # starts, returns immediately
+wf.state()                     # {'running': ..., 'progress': ..., 'last_results': ...}
+wf.wait()                      # blocks until the run finishes, returns final state
+wf.stop()
+```
+
+## Instrument roles
+
+A template references the instruments it needs by **role**, not by a
+literal instrument id — `session.get("xy_actuator")`, not
+`session.get("mock_xy_stage_3")` — declared via a module-level constant:
+
+```python
+REQUIRED_INSTRUMENTS = {
+    "xy_actuator": {"kind": "motor", "dimensionality": "ND"},
+    "detector":    {"kind": "detector"},               # dimensionality omitted -> any
+}
+```
+
+The role -> real-instrument-id binding is separate, mutable state
+(`WorkflowGraph.metadata["instrument_bindings"]`), resolved at run time
+via `Session.register_alias` — the script text itself never changes when
+a binding is made or changed. `REQUIRED_INSTRUMENTS` is read with
+`ast.literal_eval` on the parsed AST (`core/workflow/instrument_roles.py`)
+— the script is never executed just to discover what it needs, and an
+unbound role fails fast with a clear error naming it, rather than a
+generic `KeyError` deep inside the script.
+
+## Tunable parameters
+
+Any top-level **UPPERCASE** constant a script declares — other than
+`REQUIRED_INSTRUMENTS`/`RESULT_UI`/`CAPABILITIES` and any `..._ID` role
+constant — is automatically a tunable workflow parameter, editable from
+the Workflows tab or via `wf.set_param(name, value)`/`GET|PUT
+/api/workflows/{id}/params`. No registration needed: `AXIS_RANGES`,
+`SETTLE_TOLERANCE`, `HOLD_POSITIONS` in `omniscan.py` are ordinary module
+constants that just happen to be all-caps. Only literal-eval-able values
+(numbers, strings, bools, lists/dicts of those) are picked up; an
+expression is silently skipped. Edits are applied as a precise,
+span-targeted source rewrite (`write_workflow_param`) — not a blind
+find-and-replace — so they can't accidentally touch an unrelated later
+occurrence of the same text.
+
+## `RESULT_UI` — live result rendering
+
+A `RESULT_UI` constant tells the native desktop window (and the REST
+`execution_state` response) how to render this workflow's live/last
+result, without any per-template UI code. Three shapes exist today:
+
+**`spectrum`** (a growing 1D trace) — `grating_spectrometer.py`:
+
+```python
+RESULT_UI = {
+    "type": "spectrum",
+    "x_key": "wavelengths_nm", "y_key": "spectrum",
+    "x_label": "Wavelength (nm)", "y_label": "Intensity",
+}
+```
+
+**`image2d`** (a 2D image, optionally with a draggable crosshair tracking
+a live actuator position) — `confocal_scanner.py`:
+
+```python
+RESULT_UI = {
+    "type": "image2d",
+    "value_key": "image", "x_key": "x_positions_mm", "y_key": "y_positions_mm",
+    "value_label": "Counts",
+    "crosshair": {"role": "xy_actuator", "x_axis": "x", "y_axis": "y"},
+}
+```
+
+**`ndscan`** (any number of actuator axes, one 2D projection panel per
+axis pair, plus a per-channel 1D projection) — `omniscan.py`:
+
+```python
+RESULT_UI = {
+    "type": "ndscan",
+    "value_key": "data", "shape_key": "shape",
+    "axis_names_key": "axis_names", "axis_positions_key": "axis_positions",
+    "actuator_axis_count_key": "actuator_axis_count",
+    "value_label": "Detector reading",
+    "crosshair": {"role": "actuator"},
+}
+```
+
+Every `*_key` names a key your script's `session.report_progress(...)`
+payload (and the run's final return value) must contain — the UI reads
+through those names, not fixed ones, so different templates can call
+their result array whatever makes sense (`"image"`, `"data"`,
+`"live_image"`, ...).
+
+Each image panel in the scanner view has its own colorbar: a colormap
+picker, a draggable histogram, and numeric min/max fields (pyMoDAQ-style)
+— dragging a level or typing into a spinbox pins that panel's levels
+until auto-level is turned back on from the workflow window's Settings
+menu.
+
+## Reporting progress
+
+```python
+await session.report_progress({
+    "data": full_array_so_far,      # the FULL accumulated result — cheap to
+    "shape": [...], "axis_names": [...], ...   # store (a reference, not a copy),
+})                                              # but thinned before WebSocket broadcast
+
+await session.report_reading({      # OPTIONAL companion for high point-rate scans:
+    "index": start, "values": [...],  # this point's own contribution only —
+    "shape": [...],                    # always small, applied by the client with
+})                                      # no throttling/refetching needed
+```
+
+`report_progress` is the durable, REST-facing state (what a client
+re-syncs from after a reconnect); `report_reading` is a lightweight,
+bounded-size companion for templates producing many points quickly (see
+`omniscan.py`'s `on_progress`) — call both together if your scan is
+high-rate, or just `report_progress` alone otherwise.
+
+## `ScanCapability` and `OptimizerCapability`
+
+Both live in `core/workflow/capabilities.py` and share one move+read
+engine, so a full N-D scan and an optimizer's own sub-scans don't each
+reimplement actuator movement/settling:
+
+```python
+from core.workflow.capabilities import ScanCapability, OptimizerCapability
+
+scan = ScanCapability(actuator, detector, settle_tolerance=0.02, max_settle_polls=5000)
+result = await scan.run_grid(
+    axes=["x", "y"],
+    axis_ranges={"x": (-2.0, 2.0, 40), "y": (-2.0, 2.0, 40)},   # (start, stop, num_points)
+    hold_positions={"z": 0.0},          # parked once before the grid starts
+    on_progress=my_async_callback,       # called after every point
+)
+# {"axes": [...], "positions": [[...], ...], "shape": [...], "readings": [dict, ...]}
+```
+
+A grid over `_MAX_GRID_POINTS` (200,000) raises immediately, before any
+hardware motion — a misconfigured range (e.g. a typo'd point count) fails
+fast with the real numbers instead of thrashing memory for minutes first.
+
+`OptimizerCapability` decomposes any number of actuator axes into a
+sequence of <=2D sub-scans, each fit (`core/analysis/fits.py`'s
+`fit_peak`/`fit_peak_2d`) and centered before the next runs — the
+generalization of Qudi's own confocal optimizer past its native 1D/2D
+ceiling. Declare `CAPABILITIES = {"optimizer": {"around": "<role>"}}` (see
+below) and the server auto-wires `/optimize/start|stop|state` for your
+template with no extra code.
+
+## `CAPABILITIES`
+
+```python
+CAPABILITIES = {
+    "scan": {},
+    "optimizer": {"around": "actuator"},   # "around" names the REQUIRED_INSTRUMENTS role to re-center
+    "save": {},
+}
+```
+
+Optional — every template without one still works: `optimizer` is
+inferred from `RESULT_UI["crosshair"]` when present, matching every
+existing template's behavior before `CAPABILITIES` existed. Declare it
+explicitly once your template needs more than that inference gives you.
+
+## Writing a new template
+
+1. Create `src/core/workflow_templates/my_template.py`.
+2. Declare `REQUIRED_INSTRUMENTS`, `RESULT_UI` (if it should render
+   live), and any tunable UPPERCASE constants.
+3. Write `async def run(session: Session) -> dict`, resolving roles via
+   `session.get(role_name)` and reporting progress as you go.
+4. Reuse `core/workflow_templates/_common.py` (`move_and_settle`,
+   `detector_axes`, `spectrum_key`, `integration_time_key`) and
+   `core/analysis/fits.py` rather than re-implementing settle-waiting or
+   peak fitting — every built-in template is built on these.
+5. It shows up automatically in the Workflows tab's **Templates…**
+   library (discovered from the module, not a separate registration
+   step) — cite its Qudi/pyMoDAQ origin in its docstring, following the
+   existing templates' convention.
+
+## Editing a workflow's script directly
+
+The Workflows tab's script editor lets you view/edit a workflow's Python
+directly (`GET`/`PUT /api/workflows/{id}/script`). A workflow built from
+the node-graph editor also has a **generated**, read-only rendering of
+its graph as a script (`core/workflow/script.py`'s `graph_to_script`) —
+one-directional (graph -> script) for auditability; hand-edited script
+text is saved as text only, not re-parsed back into graph nodes.

@@ -65,15 +65,17 @@ cli = [
     "rich >= 13.0.0",
 ]
 
-# Embedded Jupyter notebook + IPython terminal (see core/jupyter_launcher.py)
-notebook = [
-    "notebook >= 7.0",
+# Native IPython console window (see ui/desktop/console_window.py) — a
+# real out-of-process kernel shown in a Qt widget (qtconsole), not a
+# browser/iframe notebook.
+console = [
+    "qtconsole >= 5.5",
     "ipykernel >= 6.25",
 ]
 
 # Grouped optionals
 full = [
-    "labpilot-core[pymeasure,pylablib,cli,gui,notebook]",
+    "labpilot-core[pymeasure,pylablib,cli,gui,console]",
 ]
 dev = [
     "pytest >= 7.4.0",

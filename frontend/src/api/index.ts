@@ -393,28 +393,6 @@ export const uploadInstrumentConfig = (
 export const deleteInstrumentConfig = (name: string): Promise<{ message: string }> =>
   client.delete<{ message: string }>(`/dashboard/configs/${name}`);
 
-// Jupyter notebook/console — see core/jupyter_launcher.py. Status shape
-// mirrors JupyterLauncher.status(): {running} or {running, port, token,
-// base_url, notebook_url}. base_url/token are used to talk directly to
-// the Jupyter server itself (a different origin/port than this API),
-// e.g. to embed it in an iframe or open a terminal session.
-export interface JupyterStatus {
-  running: boolean;
-  port?: number;
-  token?: string;
-  base_url?: string;
-  notebook_url?: string;
-}
-
-export const getJupyterStatus = (): Promise<JupyterStatus> =>
-  client.get<JupyterStatus>('/jupyter/status');
-
-export const startJupyter = (): Promise<JupyterStatus> =>
-  client.post<JupyterStatus>('/jupyter/start', {});
-
-export const stopJupyter = (): Promise<{ stopped: boolean }> =>
-  client.post<{ stopped: boolean }>('/jupyter/stop', {});
-
 // Export all API functions
 export const api = {
   getSessionStatus,
@@ -439,9 +417,6 @@ export const api = {
   disconnectInstrument,
   removeInstrument,
   updateInstrumentConnection,
-  getJupyterStatus,
-  startJupyter,
-  stopJupyter,
 };
 
 // WebSocket Manager

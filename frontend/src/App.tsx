@@ -5,16 +5,12 @@ import Layout from '@/components/Layout';
 import { DeviceModal } from '@/components/DeviceModal/index';
 import { WorkflowModal } from '@/components/WorkflowModal/index';
 import { UploadSetupModal } from '@/components/UploadSetupModal';
-import { FloatingChat } from '@/components/FloatingChat/index';
-import { ChatBox } from '@/components/ChatBox/index';
 import { WorkflowWindowContent } from '@/components/WorkflowWindow';
 import { initQtBridge } from '@/utils/qtBridge';
 import Devices from '@/pages/Devices';
 import Workflows from '@/pages/Workflows';
 import Flow from '@/pages/Flow';
 import Data from '@/pages/Data';
-import Notebook from '@/pages/Notebook';
-import Console from '@/pages/Console';
 import Settings from '@/pages/Settings';
 import '@/styles/globals.css';
 
@@ -52,11 +48,10 @@ function App() {
               {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} />}
               {ui.showWorkflowModal && <WorkflowModal isOpen={ui.showWorkflowModal} />}
               {ui.showUploadSetupModal && <UploadSetupModal isOpen={ui.showUploadSetupModal} />}
-              <FloatingChat />
               <div className="space-y-6">
                 <div>
                   <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Dashboard</h1>
-                  <p className="text-gray-600 dark:text-gray-400">LabPilot AI Laboratory Automation System</p>
+                  <p className="text-gray-600 dark:text-gray-400">LabPilot Laboratory Automation System</p>
                 </div>
 
                 {/* System Status Card */}
@@ -91,13 +86,6 @@ function App() {
                         </div>
 
                         <div className="flex justify-between items-center">
-                          <span className="text-sm text-gray-600 dark:text-gray-400">AI Available:</span>
-                          <span className={`text-sm font-medium ${session.aiAvailable ? 'text-green-600' : 'text-red-600'}`}>
-                            {session.aiAvailable ? 'Available' : 'Unavailable'}
-                          </span>
-                        </div>
-
-                        <div className="flex justify-between items-center">
                           <span className="text-sm text-gray-600 dark:text-gray-400">Workflows Running:</span>
                           <span className="text-sm font-medium text-gray-900 dark:text-white">
                             {session.workflowEngineRunning}
@@ -118,7 +106,6 @@ function App() {
               {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} />}
               {ui.showWorkflowModal && <WorkflowModal isOpen={ui.showWorkflowModal} />}
               {ui.showUploadSetupModal && <UploadSetupModal isOpen={ui.showUploadSetupModal} />}
-              <FloatingChat />
               <Devices />
             </Layout>
           </div>
@@ -130,7 +117,6 @@ function App() {
               {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} />}
               {ui.showWorkflowModal && <WorkflowModal isOpen={ui.showWorkflowModal} />}
               {ui.showUploadSetupModal && <UploadSetupModal isOpen={ui.showUploadSetupModal} />}
-              <FloatingChat />
               <Workflows />
             </Layout>
           </div>
@@ -142,44 +128,7 @@ function App() {
               {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} />}
               {ui.showWorkflowModal && <WorkflowModal isOpen={ui.showWorkflowModal} />}
               {ui.showUploadSetupModal && <UploadSetupModal isOpen={ui.showUploadSetupModal} />}
-              <FloatingChat />
               <Flow />
-            </Layout>
-          </div>
-        } />
-
-        <Route path="/ai" element={
-          <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
-            <Layout>
-              {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} />}
-              {ui.showWorkflowModal && <WorkflowModal isOpen={ui.showWorkflowModal} />}
-              {ui.showUploadSetupModal && <UploadSetupModal isOpen={ui.showUploadSetupModal} />}
-              <FloatingChat />
-              <div className="space-y-6">
-                {/* Header */}
-                <div>
-                  <h1 className="text-2xl font-bold text-gray-900 dark:text-white">AI Assistant</h1>
-                  <p className="text-gray-600 dark:text-gray-400">Interact with your AI laboratory assistant</p>
-                </div>
-
-                {/* AI Status */}
-                <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4">
-                  <div className="flex items-center space-x-3">
-                    <div className={`w-3 h-3 rounded-full ${session.aiAvailable ? 'bg-green-500' : 'bg-red-500'}`} />
-                    <span className="text-sm font-medium text-gray-900 dark:text-white">
-                      AI Assistant: {session.aiAvailable ? 'Available' : 'Unavailable'}
-                    </span>
-                    {!session.aiAvailable && (
-                      <span className="text-xs text-gray-500 dark:text-gray-400 ml-2">
-                        (Configure Ollama or other AI provider to enable)
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                {/* Chat Interface */}
-                <ChatBox />
-              </div>
             </Layout>
           </div>
         } />
@@ -190,7 +139,6 @@ function App() {
               {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} />}
               {ui.showWorkflowModal && <WorkflowModal isOpen={ui.showWorkflowModal} />}
               {ui.showUploadSetupModal && <UploadSetupModal isOpen={ui.showUploadSetupModal} />}
-              <FloatingChat />
               <Data />
             </Layout>
           </div>
@@ -202,34 +150,9 @@ function App() {
               {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} />}
               {ui.showWorkflowModal && <WorkflowModal isOpen={ui.showWorkflowModal} />}
               {ui.showUploadSetupModal && <UploadSetupModal isOpen={ui.showUploadSetupModal} />}
-              <FloatingChat />
               <Settings />
             </Layout>
           </div>
-        } />
-
-        <Route path="/notebook" element={
-          // No min-h-screen wrapper here (unlike every other route above):
-          // this page needs a bounded (not viewport-minimum) height so its
-          // embedded iframe can fill it exactly rather than growing past
-          // Layout's <main> and forcing an outer scrollbar.
-          <Layout>
-            {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} />}
-            {ui.showWorkflowModal && <WorkflowModal isOpen={ui.showWorkflowModal} />}
-            {ui.showUploadSetupModal && <UploadSetupModal isOpen={ui.showUploadSetupModal} />}
-            <FloatingChat />
-            <Notebook />
-          </Layout>
-        } />
-
-        <Route path="/console" element={
-          <Layout>
-            {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} />}
-            {ui.showWorkflowModal && <WorkflowModal isOpen={ui.showWorkflowModal} />}
-            {ui.showUploadSetupModal && <UploadSetupModal isOpen={ui.showUploadSetupModal} />}
-            <FloatingChat />
-            <Console />
-          </Layout>
         } />
       </Routes>
     </Router>

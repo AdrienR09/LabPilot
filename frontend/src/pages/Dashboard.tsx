@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, Cpu, Zap, TrendingUp } from 'lucide-react';
+import { Activity, Cpu, Zap } from 'lucide-react';
 import { useLabPilotStore } from '@/store';
 
 export default function Dashboard() {
@@ -26,13 +26,6 @@ export default function Dashboard() {
       icon: Zap,
       change: session.isConnected ? 'Connected' : 'Disconnected',
       changeType: session.isConnected ? 'increase' as const : 'decrease' as const,
-    },
-    {
-      name: 'AI Status',
-      value: session.aiAvailable ? 'Available' : 'Unavailable',
-      icon: TrendingUp,
-      change: session.aiAvailable ? 'Ready' : 'Offline',
-      changeType: session.aiAvailable ? 'increase' as const : 'decrease' as const,
     },
   ];
 

@@ -8,11 +8,14 @@ Includes QtBridge for React-Qt communication
 import sys
 from pathlib import Path
 from PyQt6.QtCore import QUrl, Qt
-from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
+from PyQt6.QtGui import QAction
+from PyQt6.QtWidgets import QApplication, QMainWindow, QToolBar, QVBoxLayout, QWidget
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
 from PyQt6.QtWebChannel import QWebChannel
 
+from console_window import ConsoleWindow
+from main import LabPilotStyle
 from qt_bridge import QtBridge
 
 
@@ -23,8 +26,36 @@ class LabPilotManagerWindow(QMainWindow):
         super().__init__()
         self.react_url = react_url
         self.backend_url = backend_url
+        # Kept open here (rather than being purely local to
+        # _open_console) so the window and its IPython kernel survive
+        # for as long as this Manager window does, not just until the
+        # toolbar-click handler returns.
+        self._console_window: ConsoleWindow | None = None
         self.setup_bridge()
         self.setup_ui()
+        self.setup_toolbar()
+
+    def setup_toolbar(self):
+        """A small native toolbar alongside the embedded React app — for
+        things that open a separate native window rather than living
+        inside the web page itself (see console_window.py)."""
+        toolbar = QToolBar("Manager", self)
+        self.addToolBar(toolbar)
+
+        console_action = QAction(LabPilotStyle.icon("utilities-terminal"), "Console", self)
+        console_action.setToolTip("Open an IPython console connected to this session (like Qudi's).")
+        console_action.triggered.connect(self._open_console)
+        toolbar.addAction(console_action)
+
+    def _open_console(self):
+        if self._console_window is not None:
+            self._console_window.show()
+            self._console_window.raise_()
+            self._console_window.activateWindow()
+            return
+        self._console_window = ConsoleWindow(backend_url=self.backend_url)
+        self._console_window.destroyed.connect(lambda: setattr(self, "_console_window", None))
+        self._console_window.show()
 
     def setup_bridge(self):
         """Setup Qt-React communication bridge"""
