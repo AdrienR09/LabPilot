@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QColor
 from qt_material import list_themes
+from pathlib import Path
 import json
 
 class SettingsPage(QWidget):
@@ -26,7 +27,8 @@ class SettingsPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.api_client = None
-        self.current_settings = self.load_default_settings()
+        self.settings_file = Path.home() / ".labpilot" / "qt_settings.json"
+        self.current_settings = self.load_settings()
         self.setup_ui()
 
     def setup_ui(self):
@@ -334,6 +336,17 @@ class SettingsPage(QWidget):
             "use_compression": False
         }
 
+    def load_settings(self) -> dict:
+        """Load settings from disk, falling back to defaults for missing values"""
+        settings = self.load_default_settings()
+        if self.settings_file.exists():
+            try:
+                with open(self.settings_file, "r") as f:
+                    settings.update(json.load(f))
+            except (OSError, json.JSONDecodeError) as e:
+                print(f"Failed to load settings from {self.settings_file}: {e}")
+        return settings
+
     def set_api_client(self, client):
         """Set API client"""
         self.api_client = client
@@ -393,7 +406,15 @@ class SettingsPage(QWidget):
             "use_compression": self.compression_check.isChecked()
         })
 
-        # Save to file (TODO: implement file saving)
+        # Save to file
+        try:
+            self.settings_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.settings_file, "w") as f:
+                json.dump(self.current_settings, f, indent=2)
+        except OSError as e:
+            QMessageBox.critical(self, "Save Failed", f"Could not save settings: {e}")
+            return
+
         QMessageBox.information(self, "Settings Saved", "Settings have been saved successfully!")
         self.settings_saved.emit()
 
