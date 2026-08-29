@@ -157,7 +157,7 @@ class TunableSpectrometerAdapter(AdapterBase):
             kind="detector",
             readable={
                 "wavelength": "float64",
-                "spectrum": "array",  # 1D spectrum array
+                "spectrum": "ndarray1d",
                 "timestamp": "float64",
             },
             settable={
@@ -303,7 +303,7 @@ class SpectrumCameraAdapter(AdapterBase):
             name=self._name,
             kind="detector",
             readable={
-                "frame": "array",  # 2D frame data
+                "frame": "ndarray2d",
                 "exposure": "float64",
                 "temperature": "float64",
                 "timestamp": "float64",

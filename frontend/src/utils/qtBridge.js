@@ -22,259 +22,57 @@ let initCallbacks = [];
 
 /**
  * Initialize Qt Bridge
- * Call this once when your React app mounts
+ * Call this once when your React app mounts. No-ops outside the Qt desktop
+ * shell — there's no mock/fake fallback here; callers check
+ * qtBridge.isInQt() and use real in-app UI (backed by the actual backend)
+ * when it's false.
  */
 export function initQtBridge(callback) {
-  // If already initialized, call callback immediately
   if (initialized) {
-    console.log('ℹ️  Qt Bridge already initialized');
     if (callback) callback(bridge);
     return;
   }
 
-  console.log('🔧 Initializing Qt Bridge...');
+  if (typeof qt === 'undefined' || typeof qt.webChannelTransport === 'undefined') {
+    // Not running inside the Qt shell — nothing to initialize.
+    return;
+  }
+
+  // manager_qt_webview.py dispatches 'qt-bridge-ready' exactly once, ~300ms
+  // after the page finishes loading. This module is only wired up from
+  // page-level components (Devices.tsx, Workflows.tsx), which mount late
+  // if the app's default route is something else (e.g. Dashboard) — by
+  // the time the user navigates to Devices, the one-shot event has already
+  // fired and a listener registered now would wait forever, permanently
+  // logging "Qt Bridge not initialized". window.qtBridge itself persists
+  // once Qt sets it though, so check that directly first — it's set to
+  // the real channel proxy (not this module's own `qtBridge` export,
+  // which self-assigns window.qtBridge as a placeholder before Qt's
+  // channel is ready).
+  if (window.qtBridge && window.qtBridge !== qtBridge) {
+    bridge = window.qtBridge;
+    initialized = true;
+    if (callback) callback(bridge);
+    return;
+  }
 
   if (callback) {
     initCallbacks.push(callback);
   }
 
-  // Listen for qt-bridge-ready event from Qt Manager
-  const eventHandler = (event) => {
-    console.log('🎉 Qt bridge ready event received!');
+  const eventHandler = () => {
     window.removeEventListener('qt-bridge-ready', eventHandler);
-    clearTimeout(timeoutId);
-
-    // The Qt setup script should have set window.qtBridge
     if (window.qtBridge) {
       bridge = window.qtBridge;
       initialized = true;
-      console.log('✅ Qt Bridge initialized successfully');
-      console.log('   launchInstrumentUI type:', typeof bridge.launchInstrumentUI);
-
-      // Call all queued callbacks
       initCallbacks.forEach(cb => cb(bridge));
       initCallbacks = [];
     } else {
-      console.warn('⚠️  qt-bridge-ready event received but window.qtBridge not set');
-      createMockBridgeFallback(callback);
+      console.warn('qt-bridge-ready event received but window.qtBridge not set');
     }
   };
 
   window.addEventListener('qt-bridge-ready', eventHandler);
-
-  // Timeout after 10 seconds
-  const timeoutId = setTimeout(() => {
-    if (!initialized) {
-      console.warn('⏱️  Qt Bridge initialization timeout (10s) - using mock mode');
-      window.removeEventListener('qt-bridge-ready', eventHandler);
-      createMockBridgeFallback(callback);
-    }
-  }, 10000);
-}
-
-/**
- * Helper to setup mock bridge as fallback
- */
-function createMockBridgeFallback(callback) {
-  console.warn('Mock Qt Bridge will be used for development');
-  bridge = createMockBridge();
-  initialized = true;
-  if (callback) callback(bridge);
-  initCallbacks.forEach(cb => cb(bridge));
-  initCallbacks = [];
-}
-
-/**
- * Create mock bridge for development (when not in Qt)
- */
-function createMockBridge() {
-  return {
-    // Instruments
-    getInstruments: () => {
-      return Promise.resolve(JSON.stringify([
-        {
-          id: 'spectrometer_001',
-          name: 'Ocean Optics USB2000+',
-          type: 'Spectrometer',
-          kind: 'detector',
-          dimensionality: '1D',
-          connected: true,
-          status: 'Ready',
-          has_ui: true
-        },
-        {
-          id: 'camera_001',
-          name: 'Andor iXon EMCCD',
-          type: 'Camera',
-          kind: 'detector',
-          dimensionality: '2D',
-          connected: true,
-          status: 'Ready',
-          has_ui: true
-        }
-      ]));
-    },
-
-    getWorkflows: () => {
-      return Promise.resolve(JSON.stringify([
-        {
-          id: 'workflow_001',
-          name: 'Spectroscopy Scan',
-          description: 'Full spectrum acquisition',
-          status: 'ready',
-          progress: 0.0,
-          connected_instruments: ['spectrometer_001']
-        }
-      ]));
-    },
-
-    launchInstrumentUI: (instrumentId) => {
-      console.log(`[Mock] Launch UI for: ${instrumentId}`);
-
-      // Create fake instrument data based on ID
-      const instrumentData = {
-        id: instrumentId,
-        name: `${instrumentId} - Interface`,
-        kind: 'detector',
-        dimensionality: '1D',
-        connected: true,
-        category: 'Generic Instrument',
-        model: 'Mock Device'
-      };
-
-      // Pass instrument data via localStorage so the window can access it
-      localStorage.setItem('instrumentWindowData', JSON.stringify(instrumentData));
-
-      // Open instrument UI in a new window for mock mode
-      const url = `/instrument-window`;
-      const window_handle = window.open(url, `instrument_${instrumentId}`, 'width=1200,height=700,resizable=yes');
-      if (window_handle) {
-        window_handle.focus();
-        console.log(`✅ Opened instrument UI window for ${instrumentId}`);
-      } else {
-        console.error(`❌ Failed to open instrument window - popup may be blocked`);
-      }
-    },
-
-    connectInstrument: (instrumentId, params) => {
-      console.log(`[Mock] Connect instrument: ${instrumentId}`);
-    },
-
-    disconnectInstrument: (instrumentId) => {
-      console.log(`[Mock] Disconnect instrument: ${instrumentId}`);
-    },
-
-    startWorkflow: (workflowId) => {
-      console.log(`[Mock] Start workflow: ${workflowId}`);
-    },
-
-    stopWorkflow: (workflowId) => {
-      console.log(`[Mock] Stop workflow: ${workflowId}`);
-    },
-
-    saveSession: () => {
-      console.log(`[Mock] Save session`);
-      return Promise.resolve('/mock/session/path');
-    },
-
-    loadSession: (sessionPath) => {
-      console.log(`[Mock] Load session: ${sessionPath}`);
-    },
-
-    listSessions: () => {
-      return Promise.resolve(JSON.stringify([]));
-    },
-
-    getBlockDiagram: () => {
-      // Generate block diagram from mock instruments and workflows
-      // Matching the fake data in the store/index.ts
-      const mockInstruments = [
-        { id: 'spec-001', name: 'Tunable Spectrometer', kind: 'detector', dimensionality: '1D', connected: true },
-        { id: 'camera-001', name: 'Spectrum Camera', kind: 'detector', dimensionality: '2D', connected: true },
-        { id: 'laser-001', name: 'Tunable Laser', kind: 'source', dimensionality: '0D', connected: true },
-        { id: 'motor-001', name: 'XY Motion Stage', kind: 'motor', dimensionality: '0D', connected: true },
-        { id: 'lockin-001', name: 'Lock-in Amplifier', kind: 'detector', dimensionality: '0D', connected: true },
-        { id: 'pm-001', name: 'Power Meter 1', kind: 'detector', dimensionality: '0D', connected: true },
-        { id: 'osci-001', name: 'Oscilloscope', kind: 'detector', dimensionality: '1D', connected: true },
-        { id: 'shaker-001', name: 'Vibration Shaker', kind: 'actuator', dimensionality: '0D', connected: false },
-        { id: 'ir-cam-001', name: 'IR Camera', kind: 'detector', dimensionality: '2D', connected: true },
-        { id: 'pump-001', name: 'Peristaltic Pump', kind: 'actuator', dimensionality: '0D', connected: true },
-      ];
-
-      const mockWorkflows = [
-        {
-          id: 'wf-spec-scan',
-          name: 'Spectroscopy Scan',
-          description: 'Scan sample spectrum across wavelength range',
-          connected_instruments: ['spec-001', 'laser-001']
-        },
-        {
-          id: 'wf-temp-sweep',
-          name: 'Temperature Sweep',
-          description: 'Measure optical properties vs temperature',
-          connected_instruments: ['motor-001', 'camera-001']
-        },
-        {
-          id: 'wf-lockin-meas',
-          name: 'Lock-in Measurement',
-          description: 'Perform lock-in detection measurement',
-          connected_instruments: ['lockin-001', 'pm-001']
-        }
-      ];
-
-      const nodes = [];
-      const edges = [];
-
-      // Add instrument nodes (left side)
-      mockInstruments.forEach((inst, idx) => {
-        nodes.push({
-          id: inst.id,
-          type: 'instrument',
-          label: inst.name,
-          kind: inst.kind,
-          dimensionality: inst.dimensionality,
-          connected: inst.connected,
-          position: { x: 50, y: idx * 120 + 50 }
-        });
-      });
-
-      // Add workflow nodes (right side) and edges
-      mockWorkflows.forEach((wf, idx) => {
-        nodes.push({
-          id: wf.id,
-          type: 'workflow',
-          label: wf.name,
-          description: wf.description,
-          position: { x: 600, y: idx * 120 + 50 }
-        });
-
-        // Add edges to connected instruments
-        if (wf.connected_instruments) {
-          wf.connected_instruments.forEach(instId => {
-            edges.push({
-              id: `${instId}_${wf.id}`,
-              source: instId,
-              target: wf.id
-            });
-          });
-        }
-      });
-
-      console.log(`[Mock] getBlockDiagram: ${nodes.length} nodes, ${edges.length} edges`);
-      return Promise.resolve(JSON.stringify({ nodes, edges }));
-    },
-
-    // Signal handlers (mock)
-    instrumentUpdated: {
-      connect: (handler) => console.log('[Mock] Connected to instrumentUpdated')
-    },
-    workflowUpdated: {
-      connect: (handler) => console.log('[Mock] Connected to workflowUpdated')
-    },
-    sessionUpdated: {
-      connect: (handler) => console.log('[Mock] Connected to sessionUpdated')
-    }
-  };
 }
 
 /**
@@ -333,6 +131,20 @@ export const qtBridge = {
     }
     bridge.launchInstrumentUI(instrumentId);
     console.log(`Launching UI for instrument: ${instrumentId}`);
+  },
+
+  /**
+   * Launch combined workflow UI window (every instrument the workflow
+   * references, in one native window — see workflow_window.py).
+   * @param {string} workflowId - Workflow ID
+   */
+  launchWorkflowUI(workflowId) {
+    if (!bridge) {
+      console.warn('Qt Bridge not initialized');
+      return;
+    }
+    bridge.launchWorkflowUI(workflowId);
+    console.log(`Launching UI for workflow: ${workflowId}`);
   },
 
   /**

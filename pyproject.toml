@@ -40,21 +40,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Hardware communication backends
-visa = [
-    "pyvisa >= 1.13.0",
-    "pyvisa-py >= 0.7.0",
-]
-ni = [
-    "nidaqmx >= 0.9.0",
-]
-serial = [
-    "pyserial >= 3.5",
-]
-epics = [
-    "ophyd-async >= 0.1.0",
-]
-
 # Instrument driver libraries
 pymeasure = [
     "pymeasure >= 0.14",
@@ -69,6 +54,9 @@ gui = [
     "pyqtgraph >= 0.13",
     "PyOpenGL >= 3.1",
     "vispy >= 0.14",
+    # Scientific viewer widgets (Viewer0D/1D/2D) embedded in the native
+    # instrument windows — see src/ui/desktop/instrument_windows.py.
+    "pymodaq_gui >= 5.1",
 ]
 
 # Command-line interface
@@ -77,12 +65,15 @@ cli = [
     "rich >= 13.0.0",
 ]
 
-# Grouped optionals
-all-drivers = [
-    "labpilot-core[visa,ni,serial,epics,pymeasure,pylablib]",
+# Embedded Jupyter notebook + IPython terminal (see core/jupyter_launcher.py)
+notebook = [
+    "notebook >= 7.0",
+    "ipykernel >= 6.25",
 ]
+
+# Grouped optionals
 full = [
-    "labpilot-core[all-drivers,cli,gui]",
+    "labpilot-core[pymeasure,pylablib,cli,gui,notebook]",
 ]
 dev = [
     "pytest >= 7.4.0",
@@ -100,11 +91,10 @@ Repository = "https://github.com/labpilot/labpilot"
 Issues = "https://github.com/labpilot/labpilot/issues"
 
 [project.scripts]
-labpilot = "labpilot_core.cli:main"
-labpilot-gui = "labpilot_core.gui.main_window:main"
+labpilot = "core.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/labpilot_core"]
+packages = ["src/core", "src/instruments", "src/ui"]
 
 [tool.ruff]
 line-length = 88
@@ -161,7 +151,7 @@ disallow_untyped_defs = false
 ignore_missing_imports = true
 
 [tool.coverage.run]
-source = ["src/labpilot_core"]
+source = ["src/core", "src/instruments", "src/ui"]
 omit = [
     "*/tests/*",
     "*/__init__.py",

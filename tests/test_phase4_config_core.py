@@ -17,29 +17,16 @@ from pathlib import Path
 labpilot_root = Path(__file__).parent.parent
 sys.path.insert(0, str(labpilot_root / "src"))
 
-print("=" * 80)
-print("💾 LABPILOT PHASE 4 TEST - CONFIG PERSISTENCE")
-print("=" * 80)
-print()
-
-# Test imports
-try:
-    from labpilot_core.config import (
-        SessionConfig,
-        UserPreferences,
-        DeviceConfig,
-        ConfigPersistence,
-        ConfigError,
-    )
-    from labpilot_core.core.session import Session
-    from labpilot_core.ai.ai_session import AIConversation
-    from labpilot_core.ai.provider import AIMessage
-    print("✅ All config imports successful")
-except ImportError as e:
-    print(f"❌ Import failed: {e}")
-    sys.exit(1)
-
-print()
+from core.config import (
+    SessionConfig,
+    UserPreferences,
+    DeviceConfig,
+    ConfigPersistence,
+    ConfigError,
+)
+from core.session import Session
+from core.ai.ai_session import AIConversation
+from core.ai.provider import AIMessage
 
 async def test_user_preferences():
     """Test UserPreferences dataclass."""

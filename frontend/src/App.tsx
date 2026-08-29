@@ -4,25 +4,19 @@ import { useLabPilotStore } from '@/store';
 import Layout from '@/components/Layout';
 import { DeviceModal } from '@/components/DeviceModal/index';
 import { WorkflowModal } from '@/components/WorkflowModal/index';
+import { UploadSetupModal } from '@/components/UploadSetupModal';
 import { FloatingChat } from '@/components/FloatingChat/index';
 import { ChatBox } from '@/components/ChatBox/index';
-import { InstrumentWindowContent } from '@/components/InstrumentWindow';
 import { WorkflowWindowContent } from '@/components/WorkflowWindow';
+import { initQtBridge } from '@/utils/qtBridge';
 import Devices from '@/pages/Devices';
 import Workflows from '@/pages/Workflows';
 import Flow from '@/pages/Flow';
 import Data from '@/pages/Data';
+import Notebook from '@/pages/Notebook';
+import Console from '@/pages/Console';
 import Settings from '@/pages/Settings';
 import '@/styles/globals.css';
-
-const AVAILABLE_ADAPTERS = [
-  { name: 'Thorlabs PM100', type: 'thorlabs_pm100', category: 'Power Meter' },
-  { name: 'Keithley 2400', type: 'keithley_2400', category: 'Source Meter' },
-  { name: 'Newport XPS', type: 'newport_xps', category: 'Motion Controller' },
-  { name: 'Andor Camera', type: 'andor_camera', category: 'Camera' },
-  { name: 'Ocean Optics USB4000', type: 'ocean_optics_usb4000', category: 'Spectrometer' },
-  { name: 'SmarAct MCS2', type: 'smaract_mcs2', category: 'Piezo Controller' },
-];
 
 function App() {
   // Selectively subscribe to store properties to avoid unnecessary re-renders
@@ -36,19 +30,28 @@ function App() {
     initializeApp().catch(console.error);
   }, [initializeApp]);
 
+  useEffect(() => {
+    // Registered here (app mount), not just from Devices/Workflows pages —
+    // the Qt shell's "qt-bridge-ready" event fires once, ~300ms after page
+    // load, regardless of which route is showing. Registering only from a
+    // page-level component risked missing it if the user hadn't navigated
+    // there yet (default route is Dashboard).
+    initQtBridge();
+  }, []);
+
   return (
     <Router>
       <Routes>
         {/* Standalone window routes - NO Layout wrapper */}
-        <Route path="/instrument-window" element={<InstrumentWindowContent />} />
         <Route path="/workflow-window" element={<WorkflowWindowContent />} />
 
         {/* Main app routes - WITH Layout wrapper */}
         <Route path="/" element={
           <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
             <Layout>
-              {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} availableAdapters={AVAILABLE_ADAPTERS} />}
+              {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} />}
               {ui.showWorkflowModal && <WorkflowModal isOpen={ui.showWorkflowModal} />}
+              {ui.showUploadSetupModal && <UploadSetupModal isOpen={ui.showUploadSetupModal} />}
               <FloatingChat />
               <div className="space-y-6">
                 <div>
@@ -112,8 +115,9 @@ function App() {
         <Route path="/devices" element={
           <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
             <Layout>
-              {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} availableAdapters={AVAILABLE_ADAPTERS} />}
+              {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} />}
               {ui.showWorkflowModal && <WorkflowModal isOpen={ui.showWorkflowModal} />}
+              {ui.showUploadSetupModal && <UploadSetupModal isOpen={ui.showUploadSetupModal} />}
               <FloatingChat />
               <Devices />
             </Layout>
@@ -123,8 +127,9 @@ function App() {
         <Route path="/workflows" element={
           <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
             <Layout>
-              {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} availableAdapters={AVAILABLE_ADAPTERS} />}
+              {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} />}
               {ui.showWorkflowModal && <WorkflowModal isOpen={ui.showWorkflowModal} />}
+              {ui.showUploadSetupModal && <UploadSetupModal isOpen={ui.showUploadSetupModal} />}
               <FloatingChat />
               <Workflows />
             </Layout>
@@ -134,8 +139,9 @@ function App() {
         <Route path="/flow" element={
           <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
             <Layout>
-              {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} availableAdapters={AVAILABLE_ADAPTERS} />}
+              {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} />}
               {ui.showWorkflowModal && <WorkflowModal isOpen={ui.showWorkflowModal} />}
+              {ui.showUploadSetupModal && <UploadSetupModal isOpen={ui.showUploadSetupModal} />}
               <FloatingChat />
               <Flow />
             </Layout>
@@ -145,8 +151,9 @@ function App() {
         <Route path="/ai" element={
           <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
             <Layout>
-              {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} availableAdapters={AVAILABLE_ADAPTERS} />}
+              {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} />}
               {ui.showWorkflowModal && <WorkflowModal isOpen={ui.showWorkflowModal} />}
+              {ui.showUploadSetupModal && <UploadSetupModal isOpen={ui.showUploadSetupModal} />}
               <FloatingChat />
               <div className="space-y-6">
                 {/* Header */}
@@ -180,8 +187,9 @@ function App() {
         <Route path="/data" element={
           <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
             <Layout>
-              {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} availableAdapters={AVAILABLE_ADAPTERS} />}
+              {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} />}
               {ui.showWorkflowModal && <WorkflowModal isOpen={ui.showWorkflowModal} />}
+              {ui.showUploadSetupModal && <UploadSetupModal isOpen={ui.showUploadSetupModal} />}
               <FloatingChat />
               <Data />
             </Layout>
@@ -191,12 +199,37 @@ function App() {
         <Route path="/settings" element={
           <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
             <Layout>
-              {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} availableAdapters={AVAILABLE_ADAPTERS} />}
+              {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} />}
               {ui.showWorkflowModal && <WorkflowModal isOpen={ui.showWorkflowModal} />}
+              {ui.showUploadSetupModal && <UploadSetupModal isOpen={ui.showUploadSetupModal} />}
               <FloatingChat />
               <Settings />
             </Layout>
           </div>
+        } />
+
+        <Route path="/notebook" element={
+          // No min-h-screen wrapper here (unlike every other route above):
+          // this page needs a bounded (not viewport-minimum) height so its
+          // embedded iframe can fill it exactly rather than growing past
+          // Layout's <main> and forcing an outer scrollbar.
+          <Layout>
+            {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} />}
+            {ui.showWorkflowModal && <WorkflowModal isOpen={ui.showWorkflowModal} />}
+            {ui.showUploadSetupModal && <UploadSetupModal isOpen={ui.showUploadSetupModal} />}
+            <FloatingChat />
+            <Notebook />
+          </Layout>
+        } />
+
+        <Route path="/console" element={
+          <Layout>
+            {ui.showDeviceModal && <DeviceModal isOpen={ui.showDeviceModal} />}
+            {ui.showWorkflowModal && <WorkflowModal isOpen={ui.showWorkflowModal} />}
+            {ui.showUploadSetupModal && <UploadSetupModal isOpen={ui.showUploadSetupModal} />}
+            <FloatingChat />
+            <Console />
+          </Layout>
         } />
       </Routes>
     </Router>

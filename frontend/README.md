@@ -186,7 +186,7 @@ The frontend is designed to work seamlessly with the LabPilot FastAPI backend:
 ```bash
 # Backend server (from project root)
 cd labpilot
-python -m uvicorn labpilot_core.server:app --reload --port 8000
+python -m uvicorn core.server:app --reload --port 8000
 
 # Frontend development server (from project root)
 cd frontend

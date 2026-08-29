@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import time
 import uuid
@@ -42,6 +43,7 @@ from core.config import (
 from core.config.template_params import TemplateParamPersistence
 from core.config.workflow_sets import WorkflowSetPersistence
 from core.events import EventKind
+from core.jupyter_launcher import JupyterLauncher
 from core.session import Session
 from core.workflow import WorkflowEngine, WorkflowGraph, WorkflowStore
 from core.workflow.capabilities import OptimizerCapability
@@ -233,6 +235,15 @@ class LabPilotServer:
         # since it isn't a run of the workflow's script at all.
         self.optimize_states: dict[str, dict] = {}
         self._optimize_tasks: dict[str, asyncio.Task] = {}
+        # Launched on demand from the Manager's Notebook/Console tabs, not
+        # at startup — see core/jupyter_launcher.py for why (an out-of-
+        # process kernel/terminal, wired to reach this server's live
+        # instruments/workflows over its own REST/WebSocket API).
+        self.jupyter_launcher = JupyterLauncher(
+            config_dir=self.config_persistence.config_dir,
+            backend_url=os.environ.get("LABPILOT_URL", "http://localhost:8000"),
+            repo_src_dir=Path(__file__).resolve().parent.parent,
+        )
 
     async def initialize(self):
         """Initialize server components."""
@@ -301,6 +312,8 @@ class LabPilotServer:
 
         if self.ai_session:
             await self.ai_session.shutdown()
+
+        self.jupyter_launcher.stop()
 
     async def _event_broadcaster(self):
         """Broadcast LabPilot events to WebSocket clients."""
@@ -1026,6 +1039,28 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
             return ApiResponse(success=True, data={"message": f"Stopped workflow {workflow_id}"})
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
+
+    # ---- Jupyter notebook/console (see core/jupyter_launcher.py) ----
+
+    @app.get("/api/jupyter/status", response_model=ApiResponse)
+    async def get_jupyter_status(server: LabPilotServer = Depends(get_server)):
+        return ApiResponse(success=True, data=server.jupyter_launcher.status())
+
+    @app.post("/api/jupyter/start", response_model=ApiResponse)
+    async def start_jupyter(server: LabPilotServer = Depends(get_server)):
+        """Idempotent — returns the already-running instance's status if
+        one's already up. Blocking subprocess startup (up to ~25s on a
+        cold start) runs off the event loop via asyncio.to_thread."""
+        try:
+            status = await asyncio.to_thread(server.jupyter_launcher.start)
+            return ApiResponse(success=True, data=status)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/jupyter/stop", response_model=ApiResponse)
+    async def stop_jupyter(server: LabPilotServer = Depends(get_server)):
+        await asyncio.to_thread(server.jupyter_launcher.stop)
+        return ApiResponse(success=True, data={"stopped": True})
 
     @app.delete("/api/workflows/{workflow_id}", response_model=ApiResponse)
     async def unload_workflow(workflow_id: str, server: LabPilotServer = Depends(get_server)):

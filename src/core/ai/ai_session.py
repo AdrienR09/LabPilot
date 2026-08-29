@@ -29,6 +29,7 @@ from core.session import Session
 # __init__'s parameter type hints (passed straight through to
 # ToolRegistry), never instantiated in this file.
 if TYPE_CHECKING:
+    from core.config import ConfigPersistence
     from core.config.workflow_sets import WorkflowSetPersistence
     from core.workflow.engine import WorkflowEngine
     from core.workflow.store import WorkflowStore
@@ -99,6 +100,7 @@ class AISession:
         workflow_store: WorkflowStore | None = None,
         workflow_engine: WorkflowEngine | None = None,
         workflow_set_store: WorkflowSetPersistence | None = None,
+        config_persistence: ConfigPersistence | None = None,
     ):
         """Initialize AI session.
 
@@ -113,11 +115,20 @@ class AISession:
             workflow_set_store: Passed through to ToolRegistry so
                 AI-created/written workflows are registered as "loaded"
                 (visible in the Workflows tab), not just saved.
+            config_persistence: Used to persist each conversation to disk
+                (ConfigPersistence.save_conversation, already implemented
+                but previously never called) and to hydrate one back into
+                memory on first access after a restart — lets a
+                workflow-scoped chat (see core/server.py's ChatRequest.workflow_id)
+                survive a backend restart instead of starting blank every
+                time. None disables persistence (in-memory only, today's
+                behavior).
         """
         self.session = session
         self.provider: AIProvider | None = None
         self.context_builder = ContextBuilder(session)
         self.tool_registry = ToolRegistry(session, workflow_store, workflow_engine, workflow_set_store)
+        self.config_persistence = config_persistence
         self._conversations: dict[str, AIConversation] = {}
         self._default_conversation = "default"
 
@@ -175,6 +186,7 @@ class AISession:
         conversation_id: str = "default",
         use_tools: bool = True,
         max_tool_calls: int = 5,
+        workflow_id: str | None = None,
     ) -> tuple[str, int]:
         """Send a chat message and get response.
 
@@ -183,6 +195,11 @@ class AISession:
             conversation_id: Conversation ID for context.
             use_tools: Whether to enable tool calling.
             max_tool_calls: Maximum number of tool calls to execute.
+            workflow_id: If set, scopes the system context to this workflow
+                (its graph + script text, see ContextBuilder._get_current_workflow)
+                so the model can see and modify the real code rather than
+                generating blind — passed from the frontend when the chat
+                was opened from a specific workflow (see openAIChat()).
 
         Returns:
             Tuple of (response_text, tool_calls_made)
@@ -202,7 +219,7 @@ class AISession:
             conversation.add_message(user_message)
 
             # Build context with system prompts and conversation history
-            context_messages = self._build_context_messages(conversation)
+            context_messages = self._build_context_messages(conversation, workflow_id)
 
             # Get tools if enabled - FILTER for Mistral's limitations (max ~5 tools)
             if use_tools:
@@ -220,6 +237,7 @@ class AISession:
             # Add assistant response to conversation
             assistant_message = AIMessage(role="assistant", content=response.content)
             conversation.add_message(assistant_message)
+            self._save_conversation(conversation)
 
             # Emit chat event
             await self.session.bus.emit(Event(
@@ -242,6 +260,7 @@ class AISession:
         message: str,
         conversation_id: str = "default",
         use_tools: bool = False,  # Streaming typically doesn't use tools
+        workflow_id: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """Stream chat response.
 
@@ -249,6 +268,7 @@ class AISession:
             message: User message.
             conversation_id: Conversation ID for context.
             use_tools: Whether to enable tool calling (limited in streaming).
+            workflow_id: See chat()'s workflow_id — same scoping.
 
         Yields:
             Response text chunks.
@@ -267,7 +287,7 @@ class AISession:
             conversation.add_message(user_message)
 
             # Build context
-            context_messages = self._build_context_messages(conversation)
+            context_messages = self._build_context_messages(conversation, workflow_id)
 
             # Stream response
             response_text = ""
@@ -278,6 +298,7 @@ class AISession:
             # Add complete response to conversation
             assistant_message = AIMessage(role="assistant", content=response_text)
             conversation.add_message(assistant_message)
+            self._save_conversation(conversation)
 
         except Exception as e:
             raise AISessionError(f"Streaming chat failed: {e}")
@@ -369,17 +390,20 @@ class AISession:
         final_response = await self.provider.complete(current_messages)
         return final_response, tool_calls_made
 
-    def _build_context_messages(self, conversation: AIConversation) -> list[AIMessage]:
+    def _build_context_messages(
+        self, conversation: AIConversation, workflow_id: str | None = None
+    ) -> list[AIMessage]:
         """Build context messages with system prompts and history.
 
         Args:
             conversation: Conversation for context.
+            workflow_id: Active workflow to scope the system context to.
 
         Returns:
             List of messages for generation.
         """
         # Build system context
-        context_messages = self.context_builder.build_context()
+        context_messages = self.context_builder.build_context(current_workflow_id=workflow_id)
 
         # Add conversation history (recent messages) after system messages
         context_messages.extend(conversation.get_context_messages())
@@ -387,7 +411,7 @@ class AISession:
         return context_messages
 
     def _get_conversation(self, conversation_id: str) -> AIConversation:
-        """Get or create conversation.
+        """Get, hydrate-from-disk, or create a conversation.
 
         Args:
             conversation_id: Conversation ID.
@@ -396,8 +420,24 @@ class AISession:
             AIConversation instance.
         """
         if conversation_id not in self._conversations:
-            self._conversations[conversation_id] = AIConversation(conversation_id)
+            loaded = self.config_persistence.load_conversation(conversation_id) if self.config_persistence else None
+            self._conversations[conversation_id] = loaded or AIConversation(conversation_id)
         return self._conversations[conversation_id]
+
+    def get_conversation_messages(self, conversation_id: str) -> list[AIMessage]:
+        """This conversation's message history — hydrating from disk (see
+        _get_conversation) if it isn't already in memory, so a
+        workflow-scoped chat reopened after a restart still shows its
+        prior messages instead of appearing empty. Used by
+        GET /api/ai/conversations/{conversation_id}."""
+        return list(self._get_conversation(conversation_id).messages)
+
+    def _save_conversation(self, conversation: AIConversation) -> None:
+        if self.config_persistence:
+            try:
+                self.config_persistence.save_conversation(conversation)
+            except Exception as e:
+                print(f"Failed to save conversation '{conversation.id}': {e}")
 
     def list_conversations(self) -> list[str]:
         """List all conversation IDs.
@@ -451,24 +491,43 @@ class AISession:
         # instruments in sequence) fit write_workflow_script's "just write
         # the Python" model better than building a node graph one call at
         # a time via create_workflow/add_node.
+        # Any request that's really "visit N steps/positions and read
+        # something at each one" is a loop even if the user never says the
+        # word "loop" — stepping/scanning language counts too. Since
+        # write_workflow_script (not the node-by-node create_workflow/
+        # add_node path) is the only one that can express that loop at
+        # all, this needs to catch the request BEFORE create_workflow's
+        # broader keyword match below can outrank it.
         script_shaped = any(keyword in message_lower for keyword in [
             "loop", "repeat", "sweep", "for each", "if ", "condition", "then measure",
-            "script", "python code",
+            "script", "python code", "step", "position", "scan", "each ",
         ])
 
         for tool in all_tools:
             tool_name = tool["function"]["name"]
+
+            # Ranking create_workflow/add_node/connect_nodes lower than
+            # write_workflow_script isn't enough on its own — the model
+            # still sometimes picks the node-by-node tool anyway just
+            # because its name reads as a closer match to "create a
+            # workflow", even when it's ranked last. For a script-shaped
+            # request, don't offer that path at all: only
+            # write_workflow_script can express a loop over steps, so
+            # there's no reason to let the model choose the one that can't.
+            if script_shaped and tool_name in ("create_workflow", "add_node", "connect_nodes"):
+                continue
+
             priority = 0
 
             if tool_name == "write_workflow_script" and (
                 script_shaped or any(keyword in message_lower for keyword in [
-                    "create", "workflow", "scan", "measure", "record", "acquire", "experiment", "measurement"
+                    "create", "workflow", "measure", "record", "acquire", "experiment", "measurement"
                 ])
             ):
                 priority = 200 if script_shaped else 90
 
             elif tool_name == "create_workflow" and any(keyword in message_lower for keyword in [
-                "create", "workflow", "scan", "measure", "record", "acquire", "experiment", "measurement"
+                "create", "workflow", "measure", "record", "acquire", "experiment", "measurement"
             ]) and not script_shaped:
                 priority = 100
 

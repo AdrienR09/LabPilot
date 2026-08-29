@@ -109,6 +109,15 @@ class OllamaProvider:
             "stream": False,
             "options": {
                 "temperature": temperature,
+                # Ollama defaults num_ctx to a small window (often 2048)
+                # regardless of the model's real max — with a workflow's
+                # full script text injected into the system message (see
+                # ContextBuilder._get_current_workflow), the actual prompt
+                # can easily exceed that, silently dropping content (often
+                # the "call a tool" instructions) rather than erroring.
+                # Match the size ContextBuilder already assumes it has to
+                # work with (max_context_tokens) instead of Ollama's default.
+                "num_ctx": 8192,
             },
         }
 
@@ -164,6 +173,7 @@ class OllamaProvider:
             "stream": True,
             "options": {
                 "temperature": temperature,
+                "num_ctx": 8192,  # see complete()'s identical option for why
             },
         }
 

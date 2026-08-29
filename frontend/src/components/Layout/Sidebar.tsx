@@ -11,6 +11,8 @@ import {
   Activity,
   AlertCircle,
   Network,
+  FileCode,
+  TerminalSquare,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -44,6 +46,16 @@ const navigation = [
     name: 'Data',
     href: '/data',
     icon: Database,
+  },
+  {
+    name: 'Notebook',
+    href: '/notebook',
+    icon: FileCode,
+  },
+  {
+    name: 'Console',
+    href: '/console',
+    icon: TerminalSquare,
   },
   {
     name: 'Settings',
@@ -96,7 +108,7 @@ export default function Sidebar() {
               {/* Badge indicators */}
               {item.name === 'Devices' && devices.length > 0 && (
                 <span className="ml-auto bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-300 text-xs px-2 py-1 rounded-full">
-                  {devices.filter(d => d.connected).length}
+                  {devices.length}
                 </span>
               )}
 

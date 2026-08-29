@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Activity,
@@ -7,14 +7,13 @@ import {
   Move3D,
   Play,
   Square,
-  Settings,
   Download,
   RefreshCw,
   Zap,
   Target,
   BarChart3,
 } from 'lucide-react';
-import { DashboardInstrument } from '@/api';
+import { DashboardInstrument, getInstrumentSchema, readInstrumentData, type InstrumentSchema } from '@/api';
 
 interface InstrumentUIModalProps {
   instrument: DashboardInstrument | null;
@@ -29,79 +28,79 @@ interface InstrumentData {
   metadata?: Record<string, any>;
 }
 
+// Reduce a real read() dict (one value per schema.readable key) down to the
+// single series this modal's 0D/1D/2D visualizations expect. Real adapters
+// can expose several readable axes (e.g. x/y/phase on a lock-in) — pick the
+// first one rather than guessing which is "the" value.
+function pickPrimarySeries(raw: Record<string, any>, schema: InstrumentSchema | null): { values: any; key: string | null; units?: string } {
+  const keys = Object.keys(raw);
+  if (keys.length === 0) return { values: null, key: null };
+  const key = keys[0];
+  return { values: raw[key], key, units: schema?.units[key] };
+}
+
 export function InstrumentUIModal({ instrument, isOpen, onClose }: InstrumentUIModalProps) {
   const [isRecording, setIsRecording] = useState(false);
   const [data, setData] = useState<InstrumentData | null>(null);
-  const [settings, setSettings] = useState({
-    sampleRate: 1000,
-    integrationTime: 100,
-    autoRange: true,
-    gain: 1,
-  });
+  const [schema, setSchema] = useState<InstrumentSchema | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
 
-  // Simulate data based on instrument type
+  useEffect(() => {
+    if (!isOpen || !instrument) return;
+    getInstrumentSchema(instrument.id).then(setSchema).catch(() => setSchema(null));
+  }, [isOpen, instrument?.id]);
+
   useEffect(() => {
     if (!isOpen || !instrument) return;
 
-    const generateMockData = () => {
-      const timestamp = new Date().toISOString();
-      let values: number | number[] | number[][];
-      let units = '';
-
-      switch (instrument.dimensionality) {
-        case '0D':
-          // Single value (power meter, temperature sensor, etc.)
-          values = Math.random() * 100 + Math.sin(Date.now() / 1000) * 10;
-          units = instrument.kind === 'detector' ? 'mW' : 'V';
-          break;
-
-        case '1D':
-          // Array of values (spectrum, trace, etc.)
-          values = Array.from({ length: 1024 }, (_, i) =>
-            Math.sin(i * 0.1) + Math.random() * 0.1
-          );
-          units = 'counts';
-          break;
-
-        case '2D':
-          // 2D array (image, heatmap, etc.)
-          values = Array.from({ length: 256 }, () =>
-            Array.from({ length: 256 }, () => Math.random() * 255)
-          );
-          units = 'intensity';
-          break;
-
-        default:
-          values = 0;
-          units = '';
+    const fetchData = () => {
+      if (!instrument.connected) {
+        setReadError('Not connected — connect it to see live data.');
+        return;
       }
-
-      setData({
-        timestamp,
-        values,
-        units,
-        metadata: {
-          temperature: 22.5,
-          connected: instrument.connected,
-          adapter: instrument.adapter_type,
-        },
-      });
+      readInstrumentData(instrument.id)
+        .then((raw) => {
+          setReadError(null);
+          const { values, units } = pickPrimarySeries(raw, schema);
+          setData({ timestamp: new Date().toISOString(), values, units, metadata: raw });
+        })
+        .catch((e) => setReadError(e instanceof Error ? e.message : 'Read failed'));
     };
 
-    // Generate initial data
-    generateMockData();
-
-    // Auto-refresh data if recording
+    fetchData();
     const interval = setInterval(() => {
-      if (isRecording) {
-        generateMockData();
-      }
+      if (isRecording) fetchData();
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [isOpen, instrument, isRecording]);
+  }, [isOpen, instrument, isRecording, schema]);
 
   if (!isOpen || !instrument) return null;
+
+  const handleRefresh = () => {
+    if (!instrument.connected) {
+      setReadError('Not connected — connect it to see live data.');
+      return;
+    }
+    readInstrumentData(instrument.id)
+      .then((raw) => {
+        setReadError(null);
+        const { values, units } = pickPrimarySeries(raw, schema);
+        setData({ timestamp: new Date().toISOString(), values, units, metadata: raw });
+      })
+      .catch((e) => setReadError(e instanceof Error ? e.message : 'Read failed'));
+  };
+
+  const handleExport = () => {
+    if (!data) return;
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${instrument.id}_${data.timestamp.replace(/[:.]/g, '-')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const getInstrumentIcon = () => {
     if (instrument.kind === 'detector') {
@@ -118,6 +117,7 @@ export function InstrumentUIModal({ instrument, isOpen, onClose }: InstrumentUIM
   const Icon = getInstrumentIcon();
 
   const renderDataVisualization = () => {
+    if (readError) return <div className="text-amber-600 dark:text-amber-400 text-sm">{readError}</div>;
     if (!data) return <div className="text-gray-500">No data available</div>;
 
     switch (instrument.dimensionality) {
@@ -163,19 +163,27 @@ export function InstrumentUIModal({ instrument, isOpen, onClose }: InstrumentUIM
         );
 
       case '2D':
+        const rows = Array.isArray(data.values) ? (data.values as any[]) : [];
+        const isNested = rows.length > 0 && Array.isArray(rows[0]);
+        const height = rows.length;
+        const width = isNested ? (rows[0] as any[]).length : rows.length;
         return (
           <div className="space-y-4">
-            <div className="h-48 bg-gradient-to-br from-blue-100 via-purple-100 to-pink-100 dark:from-blue-900 dark:via-purple-900 dark:to-pink-900 rounded border relative">
-              <div className="absolute inset-0 bg-black bg-opacity-10 rounded"></div>
-              <div className="absolute top-2 right-2 text-xs text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 px-2 py-1 rounded">
-                256x256
+            <div className="h-48 bg-black rounded border relative overflow-hidden flex items-center justify-center">
+              {isNested ? (
+                <Canvas2D data={rows as number[][]} />
+              ) : (
+                <span className="text-gray-500 text-sm">No image data</span>
+              )}
+              <div className="absolute top-2 right-2 text-xs text-gray-200 bg-black bg-opacity-50 px-2 py-1 rounded">
+                {width}x{height}
               </div>
-              <div className="absolute bottom-2 left-2 text-xs text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 px-2 py-1 rounded">
+              <div className="absolute bottom-2 left-2 text-xs text-gray-200 bg-black bg-opacity-50 px-2 py-1 rounded">
                 {data.units}
               </div>
             </div>
             <div className="text-xs text-gray-400 text-center">
-              2D intensity map
+              Live frame (grayscale, auto-scaled)
             </div>
           </div>
         );
@@ -272,63 +280,26 @@ export function InstrumentUIModal({ instrument, isOpen, onClose }: InstrumentUIM
                     )}
                   </button>
 
-                  <button className="w-full flex items-center justify-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md font-medium transition-colors">
+                  <button
+                    onClick={handleRefresh}
+                    disabled={!instrument.connected}
+                    className="w-full flex items-center justify-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-md font-medium transition-colors"
+                  >
                     <RefreshCw className="h-4 w-4" />
                     <span>Refresh</span>
                   </button>
 
-                  <button className="w-full flex items-center justify-center space-x-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-md font-medium transition-colors">
+                  <button
+                    onClick={handleExport}
+                    disabled={!data}
+                    className="w-full flex items-center justify-center space-x-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white rounded-md font-medium transition-colors"
+                  >
                     <Download className="h-4 w-4" />
                     <span>Export Data</span>
                   </button>
                 </div>
               </div>
 
-              {/* Settings */}
-              <div className="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
-                <h3 className="text-sm font-medium text-gray-900 dark:text-white mb-3 flex items-center">
-                  <Settings className="h-4 w-4 mr-2" />
-                  Settings
-                </h3>
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">
-                      Sample Rate (Hz)
-                    </label>
-                    <input
-                      type="number"
-                      value={settings.sampleRate}
-                      onChange={(e) => setSettings({...settings, sampleRate: parseInt(e.target.value)})}
-                      className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">
-                      Integration Time (ms)
-                    </label>
-                    <input
-                      type="number"
-                      value={settings.integrationTime}
-                      onChange={(e) => setSettings({...settings, integrationTime: parseInt(e.target.value)})}
-                      className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
-                    />
-                  </div>
-
-                  <div className="flex items-center space-x-2">
-                    <input
-                      type="checkbox"
-                      id="autoRange"
-                      checked={settings.autoRange}
-                      onChange={(e) => setSettings({...settings, autoRange: e.target.checked})}
-                      className="rounded border-gray-300 dark:border-gray-600"
-                    />
-                    <label htmlFor="autoRange" className="text-xs text-gray-600 dark:text-gray-400">
-                      Auto Range
-                    </label>
-                  </div>
-                </div>
-              </div>
             </div>
 
             {/* Right Column - Data Visualization */}
@@ -388,4 +359,38 @@ export function InstrumentUIModal({ instrument, isOpen, onClose }: InstrumentUIM
       </div>
     </div>
   );
+}
+
+/** Grayscale render of a 2D numeric array (e.g. camera frame), auto-scaled to its own min/max. */
+function Canvas2D({ data }: { data: number[][] }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || data.length === 0) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const height = data.length;
+    const width = data[0]?.length || 0;
+    canvas.width = width;
+    canvas.height = height;
+
+    let min = Infinity, max = -Infinity;
+    for (const row of data) for (const v of row) { if (v < min) min = v; if (v > max) max = v; }
+    const range = max - min || 1;
+
+    const img = ctx.createImageData(width, height);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const v = Math.round(((data[y][x] - min) / range) * 255);
+        const i = (y * width + x) * 4;
+        img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+        img.data[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }, [data]);
+
+  return <canvas ref={canvasRef} className="max-h-full max-w-full" style={{ imageRendering: 'pixelated' }} />;
 }

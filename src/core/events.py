@@ -37,6 +37,7 @@ class EventKind(Enum):
     WORKFLOW_ERROR = auto()  # Workflow execution failed
     WORKFLOW_NODE_STARTED = auto()  # Individual node started
     WORKFLOW_NODE_COMPLETED = auto()  # Individual node completed
+    WORKFLOW_PROGRESS = auto()  # Incremental result reported mid-execution (see Session.report_progress)
     WORKFLOW_NODE_ERROR = auto()  # Individual node failed
 
     # AI system events

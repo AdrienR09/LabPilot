@@ -1,0 +1,96 @@
+# LabPilot native instrument window layout — which UI component "blocks"
+# make up each instrument type's window, and their type-level acquisition
+# defaults (poll rate, dock titles, ...). This is tier 2 of a two-tier
+# parameter system: tier 3 (an individual instrument's own config params,
+# e.g. a specific spectrometer's integration_time_ms) is generated at
+# runtime from that instrument's DeviceSchema instead, by the
+# "settings_tree" block below — never stored here.
+#
+# Copied from the packaged default (src/ui/desktop/config/ui_blocks.toml)
+# to this file on first run. Edit freely: add/remove/reorder blocks, tweak
+# defaults — instrument_window.py re-reads this file every time a native
+# window is opened, no code change or restart needed.
+#
+# Each block is `{ type = "<component_type>", ...params }` — `type` must
+# match a key in components.base.COMPONENT_REGISTRY (populated by every
+# UIComponent subclass in src/ui/desktop/components/); everything else is
+# passed through as that component's params, merged over its own
+# default_params (this file's values win).
+#
+# "move_control" (components/move_controls.py) is deliberately the
+# simplest control surface: current value, a set-value spinbox with an
+# Absolute/Relative choice, and Move To + Home — no slider mode, no
+# continuous-scan section. Basic control over the instrument is the whole
+# point of this window; a workflow's own scan behavior belongs to that
+# workflow's own UI (see workflow_window.py), not duplicated here.
+# A discrete-valued axis (bool, or a small-range integer like a 2-4
+# position switch/filter wheel — inferred from the connected instrument's
+# own DeviceSchema dtype/limits, nothing to configure here) always renders
+# as a switch instead of a numeric control, regardless of dimensionality.
+
+[detector."0D"]
+blocks = [
+  { type = "toolbar", title = "Trace Controls", actions = [
+      { name = "start", label = "Start trace", checkable = true, icon_off = "start-counter", icon_on = "stop-counter", tooltip = "Start/Stop continuous reading of the data trace." },
+      { name = "record", label = "Record", checkable = true, icon_off = "record-counter", icon_on = "stop-record-counter", tooltip = "Start/Stop accumulating trace data." },
+      { name = "snapshot", label = "Snapshot", icon = "trace-snapshot", tooltip = "Take a single measurement now." },
+  ] },
+  { type = "time_series", dock_title = "Trend", trace_window_s = 30.0 },
+  { type = "poll_rate", default_ms = 200 },
+  { type = "settings_tree" },
+]
+
+[detector."1D"]
+blocks = [
+  { type = "toolbar", title = "Acquisition Controls", actions = [
+      { name = "start", label = "Start acquisition", checkable = true, icon_off = "start-counter", icon_on = "stop-counter", tooltip = "Start/Stop continuous spectrum acquisition." },
+      { name = "snapshot", label = "Acquire", icon = "trace-snapshot", tooltip = "Acquire a single spectrum now." },
+  ] },
+  { type = "viewer", dimensionality = "1D", dock_title = "Spectrum", spectrometer_controls = true },
+  { type = "poll_rate", default_ms = 200 },
+  { type = "settings_tree" },
+]
+
+[detector."2D"]
+blocks = [
+  { type = "toolbar", title = "Scan Controls", actions = [
+      { name = "start", label = "Start scan", checkable = true, icon_off = "scan-xy-start", icon_on = "stop-scan", tooltip = "Start/Stop continuous scan image acquisition." },
+      { name = "snapshot", label = "Snapshot", icon = "trace-snapshot", tooltip = "Acquire a single scan image now." },
+  ] },
+  { type = "viewer", dimensionality = "2D", dock_title = "Scan image" },
+  { type = "poll_rate", default_ms = 200 },
+  { type = "settings_tree" },
+]
+
+[detector."ND"]
+blocks = [
+  { type = "toolbar", title = "Scan Controls", actions = [
+      { name = "start", label = "Start scan", checkable = true, icon_off = "scan-xy-start", icon_on = "stop-scan", tooltip = "Start/Stop continuous scan acquisition." },
+      { name = "snapshot", label = "Snapshot", icon = "trace-snapshot", tooltip = "Acquire a single scan now." },
+  ] },
+  { type = "hyperspectral_viewer" },
+  { type = "poll_rate", default_ms = 500 },
+  { type = "settings_tree" },
+]
+
+[actuator."0D"]
+blocks = [
+  { type = "move_control" },
+]
+
+[actuator."1D"]
+blocks = [
+  { type = "move_control" },
+]
+
+[actuator."ND"]
+blocks = [
+  { type = "move_control" },
+]
+
+[source."SOURCE"]
+blocks = [
+  { type = "move_control" },
+  { type = "poll_rate", default_ms = 200 },
+  { type = "settings_tree" },
+]

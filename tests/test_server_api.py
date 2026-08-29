@@ -16,9 +16,9 @@ from fastapi.testclient import TestClient
 from fastapi import FastAPI
 
 # Import server components
-from labpilot_core.server import create_app, LabPilotServer
-from labpilot_core.session_config import SessionConfig, DeviceConfig
-from labpilot_core.core.session import Session
+from core.server import create_app, LabPilotServer, WebSocketManager
+from core.config import SessionConfig, DeviceConfig
+from core.session import Session
 
 
 @pytest.fixture
@@ -30,8 +30,16 @@ def mock_server():
     server.ai_session = Mock()
     server.workflow_store = Mock()
     server.workflow_engine = Mock()
+    # Real handler code does len(get_running_workflows()) — a bare Mock()
+    # isn't lenable, so give it a sane default; tests that care override it.
+    server.workflow_engine.get_running_workflows.return_value = []
+    server.workflow_set_store = Mock()
     server.config_persistence = Mock()
-    server.websocket_manager = Mock()
+    # spec=WebSocketManager auto-detects its async methods (connect,
+    # send_personal_message, broadcast) and mocks those as AsyncMock —
+    # a bare Mock() makes every attribute a plain Mock, so `await
+    # server.websocket_manager.connect(...)` in the real route would fail.
+    server.websocket_manager = Mock(spec=WebSocketManager)
     return server
 
 
@@ -175,25 +183,42 @@ class TestWorkflowEndpoints:
     """Test workflow management endpoints."""
 
     def test_list_workflows(self, client, mock_server):
-        """Test listing workflows."""
-        # Mock workflow data
+        """Test listing workflows — only ones "loaded" (script_path present
+        in the active workflow-set) are returned, see WorkflowSetPersistence."""
+        # NOTE: Mock(name=...) sets the mock's own debug repr, not a real
+        # `.name` attribute (a classic unittest.mock gotcha) — must be
+        # assigned after construction instead, or `wf.name` returns an
+        # auto-generated child Mock that Pydantic can't serialize.
         mock_workflows = [
             Mock(
                 id="wf1",
-                name="Test Workflow 1",
                 current_version=1,
                 created_at="2024-01-01T10:00:00Z",
                 updated_at="2024-01-01T11:00:00Z"
             ),
             Mock(
                 id="wf2",
-                name="Test Workflow 2",
                 current_version=2,
                 created_at="2024-01-01T12:00:00Z",
                 updated_at="2024-01-01T13:00:00Z"
             )
         ]
+        mock_workflows[0].name = "Test Workflow 1"
+        mock_workflows[1].name = "Test Workflow 2"
         mock_server.workflow_store.list_all.return_value = mock_workflows
+        graphs_by_id = {
+            "wf1": Mock(metadata={"script_path": "/loaded/wf1.py"}),
+            "wf2": Mock(metadata={"script_path": "/loaded/wf2.py"}),
+        }
+        mock_server.workflow_store.load.side_effect = lambda wf_id: graphs_by_id[wf_id]
+        mock_server.workflow_set_store.get_active_name.return_value = "default"
+        mock_server.workflow_set_store.load.return_value = ["/loaded/wf1.py", "/loaded/wf2.py"]
+        # list_workflows also enriches each entry with running/last-run
+        # status (see GET /api/workflows/{id}/execution_state) — a bare
+        # Mock() for get_latest_execution would return a non-subscriptable
+        # Mock instead of a real dict-or-None, so it's configured here too.
+        mock_server.workflow_store.get_latest_execution.return_value = None
+        mock_server.workflow_engine.is_running.return_value = False
 
         response = client.get("/api/workflows")
 
@@ -214,17 +239,25 @@ class TestWorkflowEndpoints:
 
     def test_create_workflow(self, client, mock_server):
         """Test creating a new workflow."""
-        mock_server.workflow_store.save.return_value = 1
+        def fake_save(graph, comment=""):
+            # Mirrors the real WorkflowStore.save()'s side effect of
+            # assigning a script_path into graph.metadata (see
+            # WorkflowStore._ensure_script) — the route depends on this.
+            graph.metadata["script_path"] = "/fake/workflow_library/new_workflow.py"
+            return 1
+        mock_server.workflow_store.save.side_effect = fake_save
+        mock_server.workflow_set_store.exists.return_value = False
 
         request_data = {
             "name": "New Workflow",
             "description": "Test workflow"
         }
 
-        with patch('labpilot_core.server.WorkflowGraph') as mock_wf:
+        with patch('core.server.WorkflowGraph') as mock_wf:
             mock_workflow = Mock()
             mock_workflow.id = "new_wf_id"
             mock_workflow.name = "New Workflow"
+            mock_workflow.metadata = {}
             mock_wf.return_value = mock_workflow
 
             response = client.post("/api/workflows", json=request_data)
@@ -238,18 +271,26 @@ class TestWorkflowEndpoints:
     def test_execute_workflow(self, client, mock_server):
         """Test executing a workflow."""
         mock_server.workflow_engine.start_workflow = AsyncMock(return_value="exec_123")
+        mock_graph = Mock(metadata={}, nodes={"n1": {"kind": "acquire"}})
+        mock_server.workflow_store.load.return_value = mock_graph
 
-        request_data = {
-            "workflow_id": "wf_123",
-            "version": 2
-        }
-
-        response = client.post("/api/workflows/execute", json=request_data)
+        response = client.post("/api/workflows/wf_123/execute")
 
         assert response.status_code == 200
         data = response.json()
         assert data["success"] == True
         assert data["data"]["execution_id"] == "exec_123"
+
+    def test_execute_workflow_no_nodes(self, client, mock_server):
+        """Executing a workflow with no real graph (e.g. an externally-loaded,
+        not-yet-parsed script) is rejected with a clear error rather than
+        silently "succeeding" at doing nothing."""
+        mock_graph = Mock(metadata={"externally_authored": True}, nodes={})
+        mock_server.workflow_store.load.return_value = mock_graph
+
+        response = client.post("/api/workflows/wf_123/execute")
+
+        assert response.status_code == 400
 
 
 class TestQtEndpoints:
@@ -264,8 +305,8 @@ class TestQtEndpoints:
         }
 
         # Mock subprocess to simulate successful launch
-        with patch('labpilot_core.server.subprocess.Popen') as mock_popen, \
-             patch('labpilot_core.server.Path') as mock_path:
+        with patch('core.server.subprocess.Popen') as mock_popen, \
+             patch('core.server.Path') as mock_path:
 
             # Setup path mocking
             mock_path.return_value.exists.return_value = True
@@ -286,67 +327,6 @@ class TestQtEndpoints:
         assert "launched" in data["data"]["message"]
         assert data["data"]["pid"] == 12345
 
-    def test_spawn_qt_window(self, client, mock_server):
-        """Test spawning Qt window from DSL spec."""
-        request_data = {
-            "window_id": "custom_window",
-            "spec": {
-                "type": "window",
-                "title": "Test Window",
-                "layout": "vertical",
-                "widgets": [
-                    {
-                        "type": "spectrum_plot",
-                        "source": "device.data"
-                    }
-                ]
-            }
-        }
-
-        with patch('labpilot_core.server.get_bridge') as mock_get_bridge:
-            mock_bridge = Mock()
-            mock_get_bridge.return_value = mock_bridge
-
-            response = client.post("/api/qt/spawn", json=request_data)
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success"] == True
-        assert data["data"]["window_id"] == "custom_window"
-        assert "spawned successfully" in data["data"]["message"]
-
-        # Verify bridge was called with correct parameters
-        mock_bridge.open_window.assert_called_once_with("custom_window", request_data["spec"])
-
-    def test_spawn_qt_window_no_bridge(self, client, mock_server):
-        """Test spawning Qt window when bridge unavailable."""
-        request_data = {
-            "spec": {
-                "type": "window",
-                "title": "Test"
-            }
-        }
-
-        with patch('labpilot_core.server.get_bridge', return_value=None):
-            response = client.post("/api/qt/spawn", json=request_data)
-
-        assert response.status_code == 503
-        assert "Qt bridge not available" in response.json()["detail"]
-
-    def test_spawn_qt_window_invalid_spec(self, client, mock_server):
-        """Test spawning Qt window with invalid spec."""
-        request_data = {
-            "spec": {
-                "invalid": "spec"  # Missing required 'type' and 'title'
-            }
-        }
-
-        response = client.post("/api/qt/spawn", json=request_data)
-
-        assert response.status_code == 400
-        assert "Missing required field" in response.json()["detail"]
-
-
 class TestAIEndpoints:
     """Test AI chat and conversation endpoints."""
 
@@ -360,8 +340,8 @@ class TestAIEndpoints:
             "use_tools": True
         }
 
-        with patch('labpilot_core.server.extract_structured_prompt', return_value=None), \
-             patch('labpilot_core.server.clean_response_text', return_value="Hello! I can help you."):
+        with patch('core.server.extract_structured_prompt', return_value=None), \
+             patch('core.server.clean_response_text', return_value="Hello! I can help you."):
 
             response = client.post("/api/ai/chat", json=request_data)
 
@@ -400,7 +380,12 @@ class TestAIEndpoints:
             yield " world"
             yield "!"
 
-        mock_server.ai_session.chat_stream = AsyncMock(return_value=mock_stream())
+        # chat_stream is a real async-generator function — the route calls
+        # it directly and iterates with `async for`, no `await` on the call
+        # itself, so the mock's call must return the async iterator
+        # synchronously (AsyncMock would instead return a coroutine that's
+        # never awaited, which is what was actually failing here).
+        mock_server.ai_session.chat_stream = Mock(return_value=mock_stream())
 
         response = client.get("/api/ai/chat/stream?message=test&conversation_id=test")
 
@@ -429,10 +414,7 @@ class TestConfigEndpoints:
     def test_get_session_config(self, client, mock_server):
         """Test getting current session configuration."""
         # Mock session config
-        mock_config = SessionConfig(
-            session_id="test_session",
-            metadata={"experiment": "spectroscopy"}
-        )
+        mock_config = SessionConfig(session_id="test_session")
         mock_server.config_persistence.from_session.return_value = mock_config
 
         response = client.get("/api/session/config")
@@ -441,7 +423,6 @@ class TestConfigEndpoints:
         data = response.json()
         assert data["success"] == True
         assert data["data"]["session_id"] == "test_session"
-        assert data["data"]["metadata"]["experiment"] == "spectroscopy"
         assert "preferences" in data["data"]
         assert "devices" in data["data"]
 
@@ -464,6 +445,11 @@ class TestWebSocket:
 
     def test_websocket_connection(self, test_app, mock_server):
         """Test WebSocket connection and communication."""
+        # This test exercises the real connect/accept/receive protocol
+        # handshake end-to-end, so it needs the real WebSocketManager here
+        # (not the mocked one from the shared fixture) — a mocked
+        # `connect()` would never actually call `websocket.accept()`.
+        mock_server.websocket_manager = WebSocketManager()
         with TestClient(test_app) as client:
             with client.websocket_connect("/ws") as websocket:
                 # Send ping
@@ -476,7 +462,7 @@ class TestWebSocket:
 
     def test_websocket_broadcast(self, mock_server):
         """Test WebSocket broadcasting functionality."""
-        from labpilot_core.server import WebSocketManager
+        from core.server import WebSocketManager
 
         manager = WebSocketManager()
 

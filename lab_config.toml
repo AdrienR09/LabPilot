@@ -138,10 +138,10 @@ backup_count = 5
 
 # Component-specific logging levels
 [logging.components]
-"labpilot_core.adapters" = "INFO"
-"labpilot_core.ai" = "DEBUG"
-"labpilot_core.qt" = "INFO"
-"labpilot_core.workflow" = "INFO"
+"instruments" = "INFO"
+"core.ai" = "DEBUG"
+"ui.dsl" = "INFO"
+"core.workflow" = "INFO"
 
 [instruments]
 # Default instrument configuration

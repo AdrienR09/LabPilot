@@ -1,6 +1,17 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
-import { INSTRUMENT_CATALOG } from '@/data/instruments';
+import {
+  getCatalog as apiGetCatalog,
+  createInstrument as apiCreateInstrument,
+  connectInstrument as apiConnectInstrument,
+  disconnectInstrument as apiDisconnectInstrument,
+  removeInstrument as apiRemoveInstrument,
+  getInstrumentConfigs as apiGetInstrumentConfigs,
+  activateInstrumentConfig as apiActivateInstrumentConfig,
+  newInstrumentConfig as apiNewInstrumentConfig,
+  uploadInstrumentConfig as apiUploadInstrumentConfig,
+  type CatalogEntry,
+} from '@/api';
 
 interface SessionState {
   isConnected: boolean;
@@ -19,31 +30,18 @@ interface Device {
   modelNumber?: string;
   model?: string;
   connected: boolean;
+  status?: 'idle' | 'busy' | 'error';
   kind?: string;
   dimensionality?: string;
   tags?: string[];
   parameters?: Record<string, any>;
   last_reading?: any;
   error?: string;
+  connection_params?: Record<string, any>;
+  custom_settings?: Record<string, any>;
 }
 
-// Convert Instrument catalog to Device format for store
-const FAKE_INSTRUMENTS: Device[] = INSTRUMENT_CATALOG.map(inst => ({
-  id: inst.id,
-  name: inst.name,
-  adapter_type: inst.adapterType,
-  category: inst.category,
-  manufacturer: inst.manufacturer,
-  modelNumber: inst.modelNumber,
-  model: inst.modelNumber,
-  connected: inst.connected,
-  kind: inst.kind,
-  dimensionality: inst.dimensionality,
-  tags: inst.tags || [],
-  parameters: inst.parameters,
-}));
-
-interface Workflow {
+export interface Workflow {
   id: string;
   name: string;
   version: number;
@@ -51,58 +49,18 @@ interface Workflow {
   created_at: number;
   updated_at: number;
   description?: string;
+  script_path?: string;
   workflow_type?: string;
   connected_instruments?: string[];
   running?: boolean;
   has_data?: boolean;
   progress?: number;
+  // Populated from the most recent execution_logs row (see
+  // GET /api/workflows) — "completed" | "failed" | "cancelled" | null.
+  last_status?: string | null;
+  last_completed_at?: number | null;
 }
 
-// Fake workflows for development
-const FAKE_WORKFLOWS: Workflow[] = [
-  {
-    id: 'wf-spec-scan',
-    name: 'Spectroscopy Scan',
-    version: 1,
-    status: 'ready',
-    created_at: Date.now() - 86400000,
-    updated_at: Date.now(),
-    description: 'Scan sample spectrum across wavelength range',
-    workflow_type: 'Spectroscopy',
-    connected_instruments: ['spec-001', 'laser-001'],
-    running: false,
-    has_data: false,
-    progress: 0,
-  },
-  {
-    id: 'wf-temp-sweep',
-    name: 'Temperature Sweep',
-    version: 1,
-    status: 'ready',
-    created_at: Date.now() - 172800000,
-    updated_at: Date.now(),
-    description: 'Measure optical properties vs temperature',
-    workflow_type: 'Temperature Control',
-    connected_instruments: ['motor-001', 'camera-001'],
-    running: false,
-    has_data: false,
-    progress: 0,
-  },
-  {
-    id: 'wf-lockin-meas',
-    name: 'Lock-in Measurement',
-    version: 1,
-    status: 'ready',
-    created_at: Date.now() - 259200000,
-    updated_at: Date.now(),
-    description: 'Perform lock-in detection measurement',
-    workflow_type: 'Signal Detection',
-    connected_instruments: ['lockin-001', 'pm-001'],
-    running: false,
-    has_data: false,
-    progress: 0,
-  },
-];
 
 interface UIState {
   sidebarOpen: boolean;
@@ -110,8 +68,10 @@ interface UIState {
   loading: boolean;
   showDeviceModal: boolean;
   showWorkflowModal: boolean;
+  showUploadSetupModal: boolean;
   selectedInstrumentId: string | null;
   showInstrumentSettings: boolean;
+  showInstrumentLiveView: boolean;
 }
 
 interface UserPreferences {
@@ -155,6 +115,14 @@ interface LabPilotState {
   devicesLoading: boolean;
   devicesError: string | null;
 
+  // Instrument catalog (for the device-creation UI)
+  catalog: CatalogEntry[];
+  catalogLoading: boolean;
+
+  // Instrument-set configs (named, swappable setups)
+  instrumentConfigs: string[];
+  activeInstrumentConfig: string | null;
+
   // Workflows
   workflows: Workflow[];
   workflowsLoading: boolean;
@@ -164,6 +132,13 @@ interface LabPilotState {
   currentConversation: Conversation | null;
   chatLoading: boolean;
   chatError: string | null;
+  // Set by openAIChat() when the AI chat is opened scoped to a specific
+  // workflow (or a fresh one) — read by ChatBox to prefill its input and
+  // to pass workflowId/conversationId along on every send in that
+  // session. conversationId is stable per workflow ("workflow-{id}") so
+  // reopening the chat for the same workflow loads the same history
+  // (see loadConversationHistory) instead of starting blank each time.
+  aiChatContext: { workflowId?: string; seedText?: string; conversationId: string } | null;
 
   // UI state
   ui: UIState;
@@ -181,23 +156,45 @@ interface LabPilotState {
   hideDeviceModal: () => void;
   showWorkflowModal: () => void;
   hideWorkflowModal: () => void;
+  showUploadSetupModal: () => void;
+  hideUploadSetupModal: () => void;
   showInstrumentSettings: (instrumentId: string) => void;
   hideInstrumentSettings: () => void;
+  showInstrumentUI: (instrumentId: string) => void;
+  hideInstrumentUI: () => void;
 
   // Device management
   loadDevices: () => Promise<void>;
   connectDevice: (name: string, adapterType: string, params: Record<string, any>) => Promise<void>;
   disconnectDevice: (deviceId: string) => Promise<void>;
   connectDeviceById: (deviceId: string) => Promise<void>;
+  removeDevice: (deviceId: string) => Promise<void>;
+  loadCatalog: () => Promise<void>;
+  createDeviceFromCatalog: (
+    adapterKey: string,
+    opts?: { id?: string; name?: string; connectionParams?: Record<string, any> }
+  ) => Promise<void>;
+
+  // Instrument-set config management
+  loadInstrumentConfigs: () => Promise<void>;
+  activateInstrumentConfig: (name: string) => Promise<void>;
+  createBlankInstrumentConfig: (name: string) => Promise<void>;
+  uploadInstrumentConfig: (name: string, devices: Record<string, any>[]) => Promise<void>;
 
   // Workflow management
   loadWorkflows: () => Promise<void>;
   createWorkflow: (name: string, description?: string) => Promise<void>;
   executeWorkflow: (id: string) => Promise<void>;
+  stopWorkflow: (id: string) => Promise<void>;
+  unloadWorkflow: (id: string) => Promise<void>;
+  loadWorkflowScript: (path: string) => Promise<void>;
 
   // Chat management
-  sendMessage: (message: string) => Promise<void>;
+  sendMessage: (message: string, workflowId?: string, conversationId?: string) => Promise<void>;
   clearChat: () => void;
+  openAIChat: (ctx: { workflowId?: string; seedText?: string }) => void;
+  clearAIChatContext: () => void;
+  loadConversationHistory: (conversationId: string) => Promise<void>;
 
   // App initialization
   initializeApp: () => Promise<void>;
@@ -207,16 +204,22 @@ export const useLabPilotStore = create<LabPilotState>()(
   immer((set, get) => ({
     // Initial state
     session: {
-      isConnected: true,
-      sessionId: 'fake-session-' + Math.random().toString(36).substring(2, 9),
-      devicesConnected: FAKE_INSTRUMENTS.filter(d => d.connected).length,
-      aiAvailable: true,
+      isConnected: false,
+      sessionId: null,
+      devicesConnected: 0,
+      aiAvailable: false,
       workflowEngineRunning: 0,
     },
 
-    devices: FAKE_INSTRUMENTS,
+    devices: [],
     devicesLoading: false,
     devicesError: null,
+
+    catalog: [],
+    catalogLoading: false,
+
+    instrumentConfigs: [],
+    activeInstrumentConfig: null,
 
     workflows: [],
     workflowsLoading: false,
@@ -225,6 +228,7 @@ export const useLabPilotStore = create<LabPilotState>()(
     currentConversation: null,
     chatLoading: false,
     chatError: null,
+    aiChatContext: null,
 
     ui: {
       sidebarOpen: true,
@@ -232,8 +236,10 @@ export const useLabPilotStore = create<LabPilotState>()(
       loading: false,
       showDeviceModal: false,
       showWorkflowModal: false,
+      showUploadSetupModal: false,
       selectedInstrumentId: null,
       showInstrumentSettings: false,
+      showInstrumentLiveView: false,
     },
 
     preferences: {
@@ -294,6 +300,14 @@ export const useLabPilotStore = create<LabPilotState>()(
       state.ui.showWorkflowModal = false;
     }),
 
+    showUploadSetupModal: () => set((state) => {
+      state.ui.showUploadSetupModal = true;
+    }),
+
+    hideUploadSetupModal: () => set((state) => {
+      state.ui.showUploadSetupModal = false;
+    }),
+
     showInstrumentSettings: (instrumentId: string) => set((state) => {
       state.ui.selectedInstrumentId = instrumentId;
       state.ui.showInstrumentSettings = true;
@@ -304,6 +318,16 @@ export const useLabPilotStore = create<LabPilotState>()(
       state.ui.showInstrumentSettings = false;
     }),
 
+    showInstrumentUI: (instrumentId: string) => set((state) => {
+      state.ui.selectedInstrumentId = instrumentId;
+      state.ui.showInstrumentLiveView = true;
+    }),
+
+    hideInstrumentUI: () => set((state) => {
+      state.ui.selectedInstrumentId = null;
+      state.ui.showInstrumentLiveView = false;
+    }),
+
     loadDevices: async () => {
       set((state) => {
         state.devicesLoading = true;
@@ -311,29 +335,15 @@ export const useLabPilotStore = create<LabPilotState>()(
       });
 
       try {
-        // Try to connect to backend and fetch devices
-        try {
-          const response = await fetch('/api/dashboard/instruments', { signal: AbortSignal.timeout(2000) });
-          if (response.ok) {
-            const data = await response.json();
-            const devices = data.data || [];
-            console.log('✅ Loaded devices from backend:', devices.length);
-            set((state) => {
-              state.devices = devices;
-            });
-            return;
-          } else {
-            console.log(`Backend returned ${response.status}, using fake instruments`);
-          }
-        } catch (e) {
-          // Backend not available, use fake data
-          console.log('Backend unavailable, using fake instruments:', e instanceof Error ? e.message : String(e));
+        const response = await fetch('/api/dashboard/instruments', { signal: AbortSignal.timeout(5000) });
+        if (!response.ok) {
+          throw new Error(`Backend returned ${response.status}`);
         }
-
-        // Use fake instruments
-        console.log('Loading 10 fake instruments...');
+        const data = await response.json();
+        const devices = data.data || [];
+        console.log('✅ Loaded devices from backend:', devices.length);
         set((state) => {
-          state.devices = FAKE_INSTRUMENTS;
+          state.devices = devices;
         });
       } catch (error) {
         set((state) => {
@@ -401,37 +411,113 @@ export const useLabPilotStore = create<LabPilotState>()(
 
     disconnectDevice: async (deviceId: string) => {
       set((state) => {
-        state.devicesLoading = true;
+        const device = state.devices.find(d => d.id === deviceId);
+        if (device) device.status = 'busy';
         state.devicesError = null;
       });
 
       try {
-        // Toggle device connected status to false
+        const updated = await apiDisconnectInstrument(deviceId);
         set((state) => {
           const device = state.devices.find(d => d.id === deviceId);
           if (device) {
-            device.connected = false;
+            device.connected = updated.connected;
+            device.status = updated.status || 'idle';
+            device.error = updated.error || undefined;
           }
         });
-
-        // Try to also disconnect via backend if available
-        try {
-          const response = await fetch(`/api/devices/${deviceId}/disconnect`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-          });
-
-          if (response.ok) {
-            console.log('Device disconnected on backend');
-            await get().loadDevices();
-          }
-        } catch (e) {
-          console.log('Backend unavailable, device disconnected on frontend only');
-        }
       } catch (error) {
         set((state) => {
+          const device = state.devices.find(d => d.id === deviceId);
+          if (device) device.status = 'error';
           state.devicesError = error instanceof Error ? error.message : 'Failed to disconnect device';
         });
+      }
+    },
+
+    connectDeviceById: async (deviceId: string) => {
+      set((state) => {
+        const device = state.devices.find(d => d.id === deviceId);
+        if (device) device.status = 'busy';
+        state.devicesError = null;
+      });
+
+      try {
+        const updated = await apiConnectInstrument(deviceId);
+        set((state) => {
+          const device = state.devices.find(d => d.id === deviceId);
+          if (device) {
+            device.connected = updated.connected;
+            device.status = updated.status || 'idle';
+            device.error = updated.error || undefined;
+          }
+        });
+      } catch (error) {
+        set((state) => {
+          const device = state.devices.find(d => d.id === deviceId);
+          if (device) device.status = 'error';
+          state.devicesError = error instanceof Error ? error.message : 'Failed to connect device';
+        });
+      }
+    },
+
+    removeDevice: async (deviceId: string) => {
+      // Remove locally immediately; the DELETE call is best-effort so the
+      // list stays usable even if the backend is unreachable (fake/dev mode).
+      set((state) => {
+        state.devices = state.devices.filter(d => d.id !== deviceId);
+      });
+      try {
+        await apiRemoveInstrument(deviceId);
+      } catch (error) {
+        console.log('Backend unavailable or device not found there, removed from frontend only');
+      }
+    },
+
+    loadCatalog: async () => {
+      set((state) => {
+        state.catalogLoading = true;
+      });
+      try {
+        const catalog = await apiGetCatalog();
+        set((state) => {
+          state.catalog = catalog;
+        });
+      } catch (error) {
+        console.log('Backend unavailable, catalog browsing disabled:', error instanceof Error ? error.message : String(error));
+      } finally {
+        set((state) => {
+          state.catalogLoading = false;
+        });
+      }
+    },
+
+    createDeviceFromCatalog: async (adapterKey, opts = {}) => {
+      set((state) => {
+        state.devicesLoading = true;
+        state.devicesError = null;
+      });
+      try {
+        const created = await apiCreateInstrument(adapterKey, opts);
+        set((state) => {
+          state.devices.push({
+            id: created.id,
+            name: created.name,
+            adapter_type: created.adapter_type,
+            category: created.kind,
+            connected: created.connected,
+            status: created.status || 'idle',
+            kind: created.kind,
+            dimensionality: created.dimensionality,
+            tags: created.tags,
+          });
+        });
+        get().hideDeviceModal();
+      } catch (error) {
+        set((state) => {
+          state.devicesError = error instanceof Error ? error.message : 'Failed to create device';
+        });
+        throw error; // let the caller (DeviceModal) know it failed and keep its form state
       } finally {
         set((state) => {
           state.devicesLoading = false;
@@ -439,44 +525,87 @@ export const useLabPilotStore = create<LabPilotState>()(
       }
     },
 
-    connectDeviceById: async (deviceId: string) => {
+    loadInstrumentConfigs: async () => {
+      try {
+        const { configs, active } = await apiGetInstrumentConfigs();
+        set((state) => {
+          state.instrumentConfigs = configs;
+          state.activeInstrumentConfig = active;
+        });
+      } catch (error) {
+        console.log('Backend unavailable, instrument configs unavailable:', error instanceof Error ? error.message : String(error));
+      }
+    },
+
+    activateInstrumentConfig: async (name: string) => {
       set((state) => {
         state.devicesLoading = true;
         state.devicesError = null;
       });
-
       try {
-        // Toggle device connected status to true
+        const { instruments } = await apiActivateInstrumentConfig(name);
         set((state) => {
-          const device = state.devices.find(d => d.id === deviceId);
-          if (device) {
-            device.connected = true;
-          }
+          state.devices = instruments as any;
+          state.activeInstrumentConfig = name;
         });
-
-        // Try to also connect via backend if available
-        try {
-          const response = await fetch(`/api/devices/${deviceId}/connect`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-          });
-
-          if (response.ok) {
-            console.log('Device connected on backend');
-            await get().loadDevices();
-          }
-        } catch (e) {
-          console.log('Backend unavailable, device connected on frontend only');
-        }
       } catch (error) {
         set((state) => {
-          state.devicesError = error instanceof Error ? error.message : 'Failed to connect device';
+          state.devicesError = error instanceof Error ? error.message : 'Failed to switch instrument config';
         });
       } finally {
         set((state) => {
           state.devicesLoading = false;
         });
       }
+      await get().loadInstrumentConfigs();
+    },
+
+    createBlankInstrumentConfig: async (name: string) => {
+      set((state) => {
+        state.devicesLoading = true;
+        state.devicesError = null;
+      });
+      try {
+        const { instruments } = await apiNewInstrumentConfig(name);
+        set((state) => {
+          state.devices = instruments as any;
+          state.activeInstrumentConfig = name;
+        });
+        get().hideUploadSetupModal();
+      } catch (error) {
+        set((state) => {
+          state.devicesError = error instanceof Error ? error.message : 'Failed to create instrument config';
+        });
+      } finally {
+        set((state) => {
+          state.devicesLoading = false;
+        });
+      }
+      await get().loadInstrumentConfigs();
+    },
+
+    uploadInstrumentConfig: async (name: string, devices: Record<string, any>[]) => {
+      set((state) => {
+        state.devicesLoading = true;
+        state.devicesError = null;
+      });
+      try {
+        const { instruments } = await apiUploadInstrumentConfig(name, devices);
+        set((state) => {
+          state.devices = instruments as any;
+          state.activeInstrumentConfig = name;
+        });
+        get().hideUploadSetupModal();
+      } catch (error) {
+        set((state) => {
+          state.devicesError = error instanceof Error ? error.message : 'Failed to load uploaded config';
+        });
+      } finally {
+        set((state) => {
+          state.devicesLoading = false;
+        });
+      }
+      await get().loadInstrumentConfigs();
     },
 
     loadWorkflows: async () => {
@@ -486,27 +615,13 @@ export const useLabPilotStore = create<LabPilotState>()(
       });
 
       try {
-        // Try to connect to backend
-        try {
-          const response = await fetch('/api/workflows', { signal: AbortSignal.timeout(2000) });
-          if (response.ok) {
-            const data = await response.json();
-            const workflows = data.data || [];
-            set((state) => {
-              state.workflows = workflows;
-            });
-            return;
-          } else {
-            console.log(`Backend returned ${response.status}, using fake workflows`);
-          }
-        } catch (e) {
-          console.log('Backend unavailable, using fake workflows:', e instanceof Error ? e.message : String(e));
+        const response = await fetch('/api/workflows', { signal: AbortSignal.timeout(5000) });
+        if (!response.ok) {
+          throw new Error(`Backend returned ${response.status}`);
         }
-
-        // Use fake workflows
-        console.log('Loading 3 fake workflows...');
+        const data = await response.json();
         set((state) => {
-          state.workflows = FAKE_WORKFLOWS;
+          state.workflows = data.data || [];
         });
       } catch (error) {
         set((state) => {
@@ -564,7 +679,10 @@ export const useLabPilotStore = create<LabPilotState>()(
           body: JSON.stringify({}),
         });
 
-        if (!response.ok) throw new Error('Failed to execute workflow');
+        if (!response.ok) {
+          const error = await response.json().catch(() => null);
+          throw new Error(error?.detail || error?.error || 'Failed to execute workflow');
+        }
 
         // Reload workflows list after execution
         await get().loadWorkflows();
@@ -572,6 +690,7 @@ export const useLabPilotStore = create<LabPilotState>()(
         set((state) => {
           state.workflowsError = error instanceof Error ? error.message : 'Failed to execute workflow';
         });
+        throw error;
       } finally {
         set((state) => {
           state.workflowsLoading = false;
@@ -579,7 +698,96 @@ export const useLabPilotStore = create<LabPilotState>()(
       }
     },
 
-    sendMessage: async (message: string) => {
+    stopWorkflow: async (id: string) => {
+      set((state) => {
+        state.workflowsLoading = true;
+        state.workflowsError = null;
+      });
+
+      try {
+        const response = await fetch(`/api/workflows/${id}/stop`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+
+        if (!response.ok) {
+          const error = await response.json().catch(() => null);
+          throw new Error(error?.detail || error?.error || 'Failed to stop workflow');
+        }
+
+        await get().loadWorkflows();
+      } catch (error) {
+        set((state) => {
+          state.workflowsError = error instanceof Error ? error.message : 'Failed to stop workflow';
+        });
+        throw error;
+      } finally {
+        set((state) => {
+          state.workflowsLoading = false;
+        });
+      }
+    },
+
+    unloadWorkflow: async (id: string) => {
+      set((state) => {
+        state.workflowsLoading = true;
+        state.workflowsError = null;
+      });
+
+      try {
+        const response = await fetch(`/api/workflows/${id}`, { method: 'DELETE' });
+
+        if (!response.ok) {
+          const error = await response.json().catch(() => null);
+          throw new Error(error?.detail || error?.error || 'Failed to unload workflow');
+        }
+
+        await get().loadWorkflows();
+      } catch (error) {
+        set((state) => {
+          state.workflowsError = error instanceof Error ? error.message : 'Failed to unload workflow';
+        });
+        throw error;
+      } finally {
+        set((state) => {
+          state.workflowsLoading = false;
+        });
+      }
+    },
+
+    loadWorkflowScript: async (path: string) => {
+      set((state) => {
+        state.workflowsLoading = true;
+        state.workflowsError = null;
+      });
+
+      try {
+        const response = await fetch('/api/workflows/load', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path }),
+        });
+
+        if (!response.ok) {
+          const error = await response.json().catch(() => null);
+          throw new Error(error?.detail || error?.error || 'Failed to load workflow script');
+        }
+
+        await get().loadWorkflows();
+      } catch (error) {
+        set((state) => {
+          state.workflowsError = error instanceof Error ? error.message : 'Failed to load workflow script';
+        });
+        throw error;
+      } finally {
+        set((state) => {
+          state.workflowsLoading = false;
+        });
+      }
+    },
+
+    sendMessage: async (message: string, workflowId?: string, conversationId?: string) => {
       // Check if AI is available
       const { aiAvailable } = get().session;
       if (!aiAvailable) {
@@ -589,13 +797,17 @@ export const useLabPilotStore = create<LabPilotState>()(
         return;
       }
 
-      // Initialize conversation if needed
+      // Initialize conversation if needed — seeded with the caller's
+      // explicit conversationId (e.g. "workflow-{id}", see openAIChat) so
+      // every message in this session lands in the same persisted
+      // conversation, rather than falling back to the backend's "default"
+      // bucket shared by every unscoped chat.
       if (!get().currentConversation) {
         set((state) => {
           state.currentConversation = {
             id: `conv-${Date.now()}`,
             messages: [],
-            conversationId: undefined,
+            conversationId,
           };
         });
       }
@@ -622,8 +834,9 @@ export const useLabPilotStore = create<LabPilotState>()(
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             message,
-            conversation_id: get().currentConversation?.conversationId,
+            conversation_id: conversationId ?? get().currentConversation?.conversationId,
             use_tools: true,
+            workflow_id: workflowId,
           }),
         });
 
@@ -665,6 +878,53 @@ export const useLabPilotStore = create<LabPilotState>()(
       state.currentConversation = null;
       state.chatError = null;
     }),
+
+    // Opens the AI chat scoped to a workflow (or a fresh one). A workflow
+    // gets a stable "workflow-{id}" conversation id so reopening its chat
+    // later loads the same persisted history (see loadConversationHistory
+    // and the backend's ConfigPersistence.save_conversation, called after
+    // every exchange) instead of starting blank; a context-free "new
+    // workflow" chat gets a fresh id each time since there's no workflow
+    // identity yet to key off of. `seedText` prefills the input for the
+    // user to edit rather than being auto-sent.
+    openAIChat: (ctx) => {
+      const conversationId = ctx.workflowId ? `workflow-${ctx.workflowId}` : `chat-${Date.now()}`;
+      set((state) => {
+        state.aiChatContext = { ...ctx, conversationId };
+        state.chatError = null;
+      });
+      if (ctx.workflowId) {
+        get().loadConversationHistory(conversationId);
+      } else {
+        set((state) => {
+          state.currentConversation = { id: `conv-${conversationId}`, messages: [], conversationId };
+        });
+      }
+    },
+
+    clearAIChatContext: () => set((state) => {
+      state.aiChatContext = null;
+    }),
+
+    loadConversationHistory: async (conversationId: string) => {
+      try {
+        const response = await fetch(`/api/ai/conversations/${conversationId}`);
+        if (!response.ok) {
+          throw new Error(`Backend returned ${response.status}`);
+        }
+        const data = await response.json();
+        const messages: Message[] = data.data || [];
+        set((state) => {
+          state.currentConversation = { id: `conv-${conversationId}`, messages, conversationId };
+        });
+      } catch (error) {
+        // No saved history (new workflow, or the AI backend is down) —
+        // still seed conversationId so sendMessage keeps using it.
+        set((state) => {
+          state.currentConversation = { id: `conv-${conversationId}`, messages: [], conversationId };
+        });
+      }
+    },
 
     initializeApp: async () => {
       set((state) => {

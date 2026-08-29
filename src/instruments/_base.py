@@ -13,6 +13,7 @@ This enables:
 
 from __future__ import annotations
 
+import functools
 from abc import abstractmethod
 from typing import Any
 
@@ -234,7 +235,17 @@ class AdapterBase(Readable):
         Returns:
             Return value of func.
         """
-        return await anyio.to_thread.run_sync(func, *args, **kwargs)
+        # anyio.to_thread.run_sync only accepts *args for the wrapped
+        # function — it has no keyword-argument passthrough of its own
+        # (any-kwargs here would instead be parsed as run_sync's own
+        # abandon_on_cancel/limiter options and raise TypeError, found by
+        # an adapter actually calling this with a keyword argument for
+        # func, e.g. pylablib's set_voltage(value, channel="x")). Binding
+        # kwargs via partial() first makes func a zero-kwarg callable so
+        # they reach the intended function instead.
+        if kwargs:
+            func = functools.partial(func, **kwargs)
+        return await anyio.to_thread.run_sync(func, *args)
 
     @property
     def connected(self) -> bool:

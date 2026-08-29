@@ -1,285 +1,348 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Search, X, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 import { useLabPilotStore } from '@/store';
-import {
-  getManufacturers,
-  getCategoriesByManufacturer,
-  getInstrumentsByManufacturerAndCategory,
-  getInstrumentById,
-} from '@/data/instruments';
+import type { CatalogEntry } from '@/api';
 import clsx from 'clsx';
 
 interface DeviceModalProps {
   isOpen: boolean;
-  availableAdapters?: Array<{ name: string; type: string; category: string }>;
 }
 
-export function DeviceModal({ isOpen }: DeviceModalProps) {
-  const { connectDevice, devicesLoading, devicesError, hideDeviceModal } = useLabPilotStore();
-  const [step, setStep] = useState<'manufacturer' | 'category' | 'model' | 'connect'>('manufacturer');
+const TYPE_LABELS: Record<string, string> = {
+  detector_0d: '0D Detectors',
+  detector_1d: '1D Detectors',
+  detector_2d: '2D Detectors (Cameras)',
+  actuator_0d: '0D Actuators (Switches)',
+  actuator_1d: '1D Actuators (Motors/Stages)',
+  actuator_nd: 'Multi-axis Actuators',
+  source: 'Sources',
+  generic: 'Other',
+};
 
-  // Selection state
-  const [selectedManufacturer, setSelectedManufacturer] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState('');
-  const [selectedModel, setSelectedModel] = useState<any>(null);
+// Mirrors src/instruments/connections.py's CONNECTION_METHODS — the field
+// shape for each way an instrument can be reached, selected here instead
+// of assumed from backend. Kept as a small frontend constant (like
+// TYPE_LABELS above) rather than a new backend route, since this is
+// stable UI metadata, not live state.
+interface ConnectionField {
+  name: string;
+  dtype: 'str' | 'int' | 'float';
+  label: string;
+  default?: string | number;
+}
+const CONNECTION_METHODS: Record<string, { label: string; fields: ConnectionField[] }> = {
+  visa: { label: 'VISA', fields: [{ name: 'resource', dtype: 'str', label: 'VISA resource string', default: 'GPIB::1' }] },
+  serial: {
+    label: 'Serial / COM port',
+    fields: [
+      { name: 'port', dtype: 'str', label: 'Serial port', default: 'COM3' },
+      { name: 'baudrate', dtype: 'int', label: 'Baud rate', default: 9600 },
+      { name: 'timeout', dtype: 'float', label: 'Timeout (s)', default: 1.0 },
+    ],
+  },
+  tcp: {
+    label: 'TCP/IP',
+    fields: [
+      { name: 'host', dtype: 'str', label: 'Host', default: '192.168.1.100' },
+      { name: 'port', dtype: 'int', label: 'Port', default: 5025 },
+    ],
+  },
+  usb_serial_number: { label: 'USB (serial number)', fields: [{ name: 'serial_number', dtype: 'str', label: 'Device serial number' }] },
+  none: { label: 'No connection (mock/simulated)', fields: [] },
+};
+
+export function DeviceModal({ isOpen }: DeviceModalProps) {
+  const { catalog, catalogLoading, loadCatalog, createDeviceFromCatalog, devicesLoading, devicesError, hideDeviceModal } = useLabPilotStore();
+
+  const [search, setSearch] = useState('');
+  const [selected, setSelected] = useState<CatalogEntry | null>(null);
   const [customName, setCustomName] = useState('');
+  const [connectionMethod, setConnectionMethod] = useState('');
+  const [connectionFields, setConnectionFields] = useState<Record<string, string>>({});
+  const [collapsedTypes, setCollapsedTypes] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (isOpen && catalog.length === 0 && !catalogLoading) {
+      loadCatalog();
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
-  // Get dynamic lists based on selections
-  const manufacturers = useMemo(() => getManufacturers(), []);
-  const categories = useMemo(() =>
-    selectedManufacturer ? getCategoriesByManufacturer(selectedManufacturer) : [],
-    [selectedManufacturer]
-  );
-  const models = useMemo(() =>
-    selectedManufacturer && selectedCategory
-      ? getInstrumentsByManufacturerAndCategory(selectedManufacturer, selectedCategory)
-      : [],
-    [selectedManufacturer, selectedCategory]
-  );
+  // Always the real backend catalog (285 verified instruments from
+  // instruments/) — no local/fake fallback.
+  const source: CatalogEntry[] = catalog;
 
-  const handleManufacturerSelect = (mfr: string) => {
-    setSelectedManufacturer(mfr);
-    setSelectedCategory('');
-    setSelectedModel(null);
-    setStep('category');
-  };
-
-  const handleCategorySelect = (cat: string) => {
-    setSelectedCategory(cat);
-    setSelectedModel(null);
-    setStep('model');
-  };
-
-  const handleModelSelect = (model: any) => {
-    setSelectedModel(model);
-    setCustomName(model.name);
-    setStep('connect');
-  };
-
-  const handleConnect = async () => {
-    if (!customName || !selectedModel) return;
-
-    await connectDevice(customName, selectedModel.adapterType, {
-      manufacturer: selectedModel.manufacturer,
-      model: selectedModel.modelNumber,
+  const filtered = useMemo(() => {
+    const tokens = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return source;
+    return source.filter(i => {
+      const haystack = [i.manufacturer, i.model, i.display_name, i.adapter_key, ...i.tags]
+        .join(' ')
+        .toLowerCase();
+      return tokens.every(t => haystack.includes(t));
     });
+  }, [source, search]);
 
-    // Reset form
-    setStep('manufacturer');
-    setSelectedManufacturer('');
-    setSelectedCategory('');
-    setSelectedModel(null);
-    setCustomName('');
+  const grouped = useMemo(() => {
+    const groups: Record<string, CatalogEntry[]> = {};
+    for (const item of filtered) {
+      (groups[item.instrument_type] ??= []).push(item);
+    }
+    return groups;
+  }, [filtered]);
+
+  const toggleType = (type: string) => {
+    setCollapsedTypes(prev => {
+      const next = new Set(prev);
+      if (next.has(type)) next.delete(type); else next.add(type);
+      return next;
+    });
   };
 
-  const handleBack = () => {
-    if (step === 'category') {
-      setStep('manufacturer');
-      setSelectedCategory('');
-    } else if (step === 'model') {
-      setStep('category');
-      setSelectedModel(null);
-    } else if (step === 'connect') {
-      setStep('model');
+  const handleSelect = (item: CatalogEntry) => {
+    setSelected(item);
+    setCustomName(item.display_name);
+    const firstMethod = item.connection_types[0] || 'none';
+    setConnectionMethod(firstMethod);
+    const defaults: Record<string, string> = {};
+    for (const field of CONNECTION_METHODS[firstMethod]?.fields || []) {
+      if (field.default !== undefined) defaults[field.name] = String(field.default);
     }
+    setConnectionFields(defaults);
+  };
+
+  const handleMethodChange = (method: string) => {
+    setConnectionMethod(method);
+    const defaults: Record<string, string> = {};
+    for (const field of CONNECTION_METHODS[method]?.fields || []) {
+      if (field.default !== undefined) defaults[field.name] = String(field.default);
+    }
+    setConnectionFields(defaults);
+  };
+
+  const handleCreate = async () => {
+    if (!selected) return;
+    const fieldSpecs = CONNECTION_METHODS[connectionMethod]?.fields || [];
+    const connectionParams: Record<string, string | number> = {};
+    for (const field of fieldSpecs) {
+      const raw = connectionFields[field.name];
+      if (raw === undefined || raw === '') continue;
+      connectionParams[field.name] = field.dtype === 'str' ? raw : Number(raw);
+    }
+    try {
+      await createDeviceFromCatalog(selected.adapter_key, {
+        name: customName || selected.display_name,
+        connectionParams,
+      });
+    } catch {
+      // Failed — stay on this step with the form and error intact so the
+      // user can fix (e.g. a missing connection address) and retry.
+      return;
+    }
+    setSearch('');
+    setSelected(null);
+    setCustomName('');
+    setConnectionMethod('');
+    setConnectionFields({});
   };
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg max-w-lg w-full mx-4">
-        <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-                {step === 'manufacturer' && 'Select Manufacturer'}
-                {step === 'category' && 'Select Category'}
-                {step === 'model' && 'Select Model'}
-                {step === 'connect' && 'Connect Device'}
-              </h2>
-              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                Step {['manufacturer', 'category', 'model', 'connect'].indexOf(step) + 1} of 4
-              </p>
-            </div>
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg max-w-2xl w-full mx-4 max-h-[85vh] flex flex-col">
+        <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Connect Device</h2>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              {catalogLoading ? 'Loading catalog…' : `${source.length} instruments available`}
+            </p>
           </div>
+          <button onClick={hideDeviceModal} className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
+            <X className="h-5 w-5" />
+          </button>
         </div>
 
-        <div className="p-6 space-y-5">
-          {devicesError && (
-            <div className="p-3 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 rounded text-sm">
-              {devicesError}
-            </div>
-          )}
-
-          {/* Step 1: Manufacturer Selection */}
-          {step === 'manufacturer' && (
-            <div className="space-y-3">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                Choose Manufacturer
-              </label>
-              <div className="grid grid-cols-2 gap-2 max-h-60 overflow-y-auto">
-                {manufacturers.map((mfr) => (
-                  <button
-                    key={mfr}
-                    onClick={() => handleManufacturerSelect(mfr)}
-                    className={clsx(
-                      'px-4 py-3 rounded-lg border-2 transition-all text-sm font-medium text-left',
-                      selectedManufacturer === mfr
-                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300'
-                        : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
-                    )}
-                  >
-                    {mfr}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Step 2: Category Selection */}
-          {step === 'category' && (
-            <div className="space-y-3">
-              <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-sm">
-                <span className="text-blue-700 dark:text-blue-300">
-                  ✓ Manufacturer: <strong>{selectedManufacturer}</strong>
-                </span>
-              </div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                Choose Category
-              </label>
-              <div className="grid grid-cols-2 gap-2 max-h-60 overflow-y-auto">
-                {categories.map((cat) => (
-                  <button
-                    key={cat}
-                    onClick={() => handleCategorySelect(cat)}
-                    className={clsx(
-                      'px-4 py-3 rounded-lg border-2 transition-all text-sm font-medium text-left',
-                      selectedCategory === cat
-                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300'
-                        : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
-                    )}
-                  >
-                    {cat}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Step 3: Model Selection */}
-          {step === 'model' && (
-            <div className="space-y-3">
-              <div className="space-y-1 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-sm">
-                <div className="text-blue-700 dark:text-blue-300">
-                  ✓ Manufacturer: <strong>{selectedManufacturer}</strong>
-                </div>
-                <div className="text-blue-700 dark:text-blue-300">
-                  ✓ Category: <strong>{selectedCategory}</strong>
-                </div>
-              </div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                Select Model
-              </label>
-              <div className="space-y-2 max-h-60 overflow-y-auto">
-                {models.map((model) => (
-                  <button
-                    key={model.id}
-                    onClick={() => handleModelSelect(model)}
-                    className={clsx(
-                      'w-full px-4 py-3 rounded-lg border-2 transition-all text-left',
-                      selectedModel?.id === model.id
-                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-                        : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
-                    )}
-                  >
-                    <div className="font-medium text-gray-900 dark:text-white">
-                      {model.name}
-                    </div>
-                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                      {model.modelNumber} • {model.dimensionality}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Step 4: Device Connection */}
-          {step === 'connect' && selectedModel && (
-            <div className="space-y-4">
-              <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
-                <div className="space-y-2">
-                  <div className="text-sm text-blue-700 dark:text-blue-300">
-                    ✓ <strong>{selectedModel.manufacturer}</strong> - <strong>{selectedModel.category}</strong>
-                  </div>
-                  <div className="text-lg font-semibold text-gray-900 dark:text-white">
-                    {selectedModel.name}
-                  </div>
-                  <div className="text-xs text-gray-600 dark:text-gray-400">
-                    {selectedModel.modelNumber}
-                  </div>
-                  <div className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-                    {selectedModel.description}
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                  Device Name (optional)
-                </label>
+        {!selected ? (
+          <>
+            {/* Search */}
+            <div className="px-6 pt-4">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
                 <input
+                  autoFocus
                   type="text"
-                  value={customName}
-                  onChange={(e) => setCustomName(e.target.value)}
-                  placeholder={selectedModel.name}
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  disabled={devicesLoading}
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search by manufacturer, model, or tag (e.g. Keithley, camera, lock-in)"
+                  className="w-full pl-9 pr-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
               </div>
             </div>
-          )}
 
-          {/* Buttons */}
-          <div className="flex gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
-            <button
-              type="button"
-              onClick={step === 'manufacturer' ? hideDeviceModal : handleBack}
-              className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700/50 font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              disabled={devicesLoading}
-            >
-              {step === 'manufacturer' ? 'Cancel' : 'Back'}
-            </button>
-            <button
-              type="button"
-              onClick={
-                step === 'manufacturer' || step === 'category' || step === 'model'
-                  ? () => {} // Navigation handled by select clicks
-                  : handleConnect
-              }
-              disabled={step === 'connect' ? (devicesLoading || !customName || !selectedModel) : true}
-              className={clsx(
-                'flex-1 px-4 py-2 rounded-md font-medium transition-colors flex items-center justify-center gap-2',
-                step === 'connect' && !devicesLoading && customName && selectedModel
-                  ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                  : 'bg-gray-300 dark:bg-gray-600 text-gray-600 dark:text-gray-400 cursor-not-allowed'
+            {devicesError && (
+              <div className="mx-6 mt-3 p-2 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 rounded text-sm">
+                {devicesError}
+              </div>
+            )}
+
+            {/* Results, organized by instrument type */}
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+              {!catalogLoading && source.length === 0 && (
+                <div className="text-center py-8">
+                  <AlertTriangle className="h-8 w-8 mx-auto text-amber-500 mb-2" />
+                  <p className="text-sm text-gray-700 dark:text-gray-300 font-medium">Backend unreachable</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Instrument catalog comes from the backend — start it with <code>labpilot start</code> (or <code>./launch.sh</code>) to browse and add devices.
+                  </p>
+                </div>
               )}
-            >
-              {devicesLoading ? (
-                <>
-                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  Connecting...
-                </>
-              ) : step === 'connect' ? (
-                'Connect Device'
-              ) : (
-                'Next'
+              {source.length > 0 && Object.keys(grouped).length === 0 && (
+                <p className="text-sm text-gray-500 dark:text-gray-400 text-center py-8">
+                  No instruments match "{search}"
+                </p>
               )}
+              {Object.entries(grouped).map(([type, items]) => {
+                const isCollapsed = collapsedTypes.has(type);
+                return (
+                  <div key={type}>
+                    <button
+                      onClick={() => toggleType(type)}
+                      className="w-full flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2 hover:text-gray-700 dark:hover:text-gray-200"
+                    >
+                      {isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                      {TYPE_LABELS[type] || type} ({items.length})
+                    </button>
+                    {!isCollapsed && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {items.map((item) => (
+                          <button
+                            key={item.adapter_key}
+                            onClick={() => handleSelect(item)}
+                            className="text-left px-3 py-2 rounded-lg border-2 border-gray-200 dark:border-gray-700 hover:border-blue-400 dark:hover:border-blue-500 transition-colors"
+                          >
+                            <div className="text-sm font-medium text-gray-900 dark:text-white">
+                              {item.manufacturer} {item.model}
+                            </div>
+                            <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                              {item.display_name}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        ) : (
+          /* Confirm + connection details */
+          <div className="p-6 space-y-4">
+            <button
+              onClick={() => setSelected(null)}
+              className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
+            >
+              ← Back to search
             </button>
+
+            {devicesError && (
+              <div className="p-3 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 rounded text-sm">
+                {devicesError}
+              </div>
+            )}
+
+            <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+              <div className="text-sm text-blue-700 dark:text-blue-300">
+                {selected.manufacturer} • {TYPE_LABELS[selected.instrument_type] || selected.instrument_type}
+              </div>
+              <div className="text-lg font-semibold text-gray-900 dark:text-white">{selected.display_name}</div>
+              <div className="text-xs text-gray-600 dark:text-gray-400">{selected.model} ({selected.adapter_key})</div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Device Name
+              </label>
+              <input
+                type="text"
+                value={customName}
+                onChange={(e) => setCustomName(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+
+            {selected.connection_types.length > 0 && connectionMethod !== 'none' && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Connection Method
+                </label>
+                <select
+                  value={connectionMethod}
+                  onChange={(e) => handleMethodChange(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                >
+                  {selected.connection_types.map((method) => (
+                    <option key={method} value={method}>
+                      {CONNECTION_METHODS[method]?.label || method}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {(CONNECTION_METHODS[connectionMethod]?.fields || []).map((field) => (
+              <div key={field.name}>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  {field.label}
+                </label>
+                <input
+                  type={field.dtype === 'str' ? 'text' : 'number'}
+                  step={field.dtype === 'float' ? 'any' : undefined}
+                  value={connectionFields[field.name] ?? ''}
+                  onChange={(e) => setConnectionFields((prev) => ({ ...prev, [field.name]: e.target.value }))}
+                  placeholder={field.default !== undefined ? String(field.default) : ''}
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+            ))}
+
+            {connectionMethod === 'none' && (
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                No connection parameters needed — this is a mock/simulated instrument.
+              </p>
+            )}
+
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={() => setSelected(null)}
+                disabled={devicesLoading}
+                className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700/50 font-medium disabled:opacity-50"
+              >
+                Back
+              </button>
+              <button
+                onClick={handleCreate}
+                disabled={devicesLoading || !customName}
+                className={clsx(
+                  'flex-1 px-4 py-2 rounded-md font-medium transition-colors flex items-center justify-center gap-2',
+                  !devicesLoading && customName
+                    ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                    : 'bg-gray-300 dark:bg-gray-600 text-gray-600 dark:text-gray-400 cursor-not-allowed'
+                )}
+              >
+                {devicesLoading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Adding...
+                  </>
+                ) : (
+                  'Add Device'
+                )}
+              </button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
 }
-

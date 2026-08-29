@@ -25,10 +25,12 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt, QRectF, QTimer
+from PyQt6.QtCore import QObject, Qt, QRectF, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QTabWidget,
 )
+
+from components.nd_math import compute_1d_projection, compute_panel_projection, parse_flat_data
 
 from components.widgets import dock
 
@@ -295,6 +297,13 @@ class _ScanImagePanel(QWidget):
         if y_label:
             plot_item.setLabel("left", y_label)
         self.image_item = pg.ImageItem()
+        # A large panel image (e.g. a 2000x2000 projection) is expensive
+        # to rasterize at full resolution every frame regardless of how
+        # cheaply the underlying array was computed — pyqtgraph downsamples
+        # to the actual on-screen pixel count instead when this is set,
+        # which is a pure rendering-side win, orthogonal to the
+        # NDProjectionComputer background-thread work above it.
+        self.image_item.setAutoDownsample(True)
         plot_item.addItem(self.image_item)
 
         # The image and any extra controls (e.g. NDScanResultView's
@@ -606,6 +615,105 @@ def _linspace(lo: float, hi: float, n: int) -> list[float]:
     return [lo + step * i for i in range(n)]
 
 
+class _NDProjectionWorker(QObject):
+    """Runs on NDProjectionComputer's background QThread. Does the
+    O(array-size) flat-list parsing + per-panel/per-tab nanmean reductions
+    that used to run directly on the GUI thread inside update_data()/
+    _refresh_projections()/_compute_1d_projection() — for a large ND scan
+    that could block the GUI for seconds at a time (the reshape alone
+    measured ~0.1-0.2s per ~5M elements). numpy releases the GIL for these
+    C-level operations, so running them here lets Qt's event loop on the
+    GUI thread keep responding (repainting, handling clicks) concurrently
+    instead of freezing for the duration.
+
+    Every call is pure: takes/returns plain numpy arrays and Python
+    containers (see components/nd_math.py), never touches a Qt widget —
+    that's the caller's job, back on the GUI thread, once `resultReady`
+    delivers the (already-computed, cheap-to-apply) result.
+    """
+
+    resultReady = pyqtSignal(object)  # dict — see NDProjectionComputer.submit()'s docstring
+
+    @pyqtSlot(object)
+    def compute(self, request: dict) -> None:
+        # Skip stale work: if a newer request has already been submitted
+        # by the time this one reaches the front of the queue, computing
+        # this one is pure waste — the GUI only cares about the latest.
+        # `request_id`/`latest_id_holder` are plain-int-attribute reads,
+        # safe across threads under the GIL (no torn reads on a single
+        # attribute), same reasoning as workflow_result.py's other
+        # cross-thread coalescing.
+        holder = request["latest_id_holder"]
+        if request["request_id"] != holder.latest_request_id:
+            return
+
+        array = request.get("array")
+        if array is None:
+            array = parse_flat_data(request["flat_data"], request["shape"])
+            if array is None:
+                return
+        if request["request_id"] != holder.latest_request_id:
+            return  # superseded while we were parsing — don't bother projecting
+
+        active = request["active"]
+        axis_positions = request["axis_positions"]
+        selections = request["selections"]
+
+        panels: dict[tuple, np.ndarray] = {}
+        for name_i, name_j in request["panel_keys"]:
+            projected = compute_panel_projection(array, active, name_i, name_j, axis_positions, selections)
+            if projected is not None:
+                panels[(name_i, name_j)] = projected
+
+        tabs: dict[str, tuple[list, list]] = {}
+        for name in request["tab_keys"]:
+            x, y = compute_1d_projection(array, active, name, axis_positions, selections)
+            if x and y:
+                tabs[name] = (x, y)
+
+        self.resultReady.emit({
+            "request_id": request["request_id"], "array": array, "active": active,
+            "panels": panels, "tabs": tabs,
+        })
+
+
+class NDProjectionComputer(QObject):
+    """Owns one background QThread that _NDProjectionWorker runs on — one
+    instance per NDScanResultView, created/torn down alongside it.
+
+    `submit()` is cheap (a dict + one queued signal emit) and always safe
+    to call from the GUI thread, however often — coalesces automatically
+    via `latest_request_id`: only the most recently submitted request's
+    computation actually runs to completion and gets emitted, any still-
+    queued older ones are skipped as soon as the worker notices they're
+    stale.
+    """
+
+    resultReady = pyqtSignal(object)
+    _computeRequested = pyqtSignal(object)
+
+    def __init__(self, parent: Optional[QObject] = None) -> None:
+        super().__init__(parent)
+        self.latest_request_id = 0
+        self._thread = QThread()
+        self._worker = _NDProjectionWorker()
+        self._worker.moveToThread(self._thread)
+        self._worker.resultReady.connect(self.resultReady)
+        self._computeRequested.connect(self._worker.compute)
+        self._thread.start()
+
+    def submit(self, request: dict) -> None:
+        self.latest_request_id += 1
+        request = dict(request)
+        request["request_id"] = self.latest_request_id
+        request["latest_id_holder"] = self
+        self._computeRequested.emit(request)
+
+    def stop(self) -> None:
+        self._thread.quit()
+        self._thread.wait(1000)
+
+
 class NDScanResultView:
     """Renders an N-dimensional scan array (`RESULT_UI["type"] ==
     "ndscan"`, see core/workflow_templates/omniscan.py) as one 2D
@@ -676,9 +784,11 @@ class NDScanResultView:
     vice versa: dragging a channel tab's region moves and resizes the
     matching 2D panel's box). A detector-internal axis has no box (never
     shown in any 2D panel), so its channel tab's region is the only way
-    to narrow it. Either direction immediately refreshes every 2D panel
-    and every other channel tab that projects over the changed axis
-    (`_refresh_projections`/`_refresh_channel_tabs`).
+    to narrow it. Either direction submits a refresh (`_submit_projection_request`)
+    covering every 2D panel and the currently-VISIBLE channel tab (not
+    every tab — switching tabs triggers its own refresh for whichever one
+    just became visible, see `_build_channel_dock`'s `currentChanged`
+    connection) to the background `NDProjectionComputer`.
 
     An optional crosshair (`add_crosshair`, opt-in per
     `RESULT_UI["crosshair"]` — see omniscan.py) puts one on every
@@ -746,6 +856,13 @@ class NDScanResultView:
 
         self._array: Optional[np.ndarray] = None
         self._array_axis_names: Optional[list[str]] = None  # which axes the CURRENT array actually covers
+        # A fresh update_data() frame not yet handed to the background
+        # computer — see _submit_projection_request(). None once consumed;
+        # a re-projection request with no new data (a crosshair/region
+        # drag) reuses self._array/_array_axis_names instead.
+        self._pending_flat_data: Optional[list] = None
+        self._pending_shape: Optional[list[int]] = None
+        self._pending_active: Optional[list[str]] = None
 
         self._auto_level = True
         self._curve = None  # single-declared-axis fallback only — see class docstring
@@ -755,7 +872,8 @@ class NDScanResultView:
         self._first_dock = None
 
         # The single per-axis "selected range" every projection/1D-curve
-        # computation reads from (_refresh_projections/_compute_1d_projection).
+        # computation reads from (see components/nd_math.py, run on the
+        # background NDProjectionComputer — _submit_projection_request).
         # For an actuator axis it's DERIVED from _position +/-
         # _box_half_width (the crosshair's own green box — kept in sync
         # across every panel sharing that axis, see _resync_box_sizes);
@@ -773,22 +891,29 @@ class NDScanResultView:
         self._channel_tab_widget: Optional[QTabWidget] = None
         self._channel_dock = None
 
-        # _refresh_projections()/_refresh_channel_tabs() each re-slice and
-        # nanmean-average the FULL ND array (up to millions of elements)
-        # across every 2D panel / every Channels-dock tab. _on_panel_changed
-        # and _on_panel_box_resized fire on EVERY mouse-move tick during a
-        # crosshair drag or box resize (by design, for live visual
-        # feedback) — calling the refresh directly from them reruns that
-        # full-array work on every single tick of a drag gesture, which is
-        # what made the UI "lag a lot". This timer coalesces bursts of
-        # ticks into one refresh ~50ms after the last one, the same
-        # debounce pattern _live_write_timer already uses for hardware
-        # writes. The crosshair/box's own repositioning stays undebounced
-        # (cheap Qt-item moves) so dragging itself still feels instant.
+        # _submit_projection_request() re-slices and nanmean-averages the
+        # FULL ND array (up to millions of elements) across every 2D panel
+        # / the visible Channels-dock tab — genuinely expensive for a
+        # large scan (measured ~0.1-0.2s per ~5M elements just for the
+        # initial reshape). _on_panel_changed and _on_panel_box_resized
+        # fire on EVERY mouse-move tick during a crosshair drag or box
+        # resize (by design, for live visual feedback) — submitting a
+        # request directly from them on every tick would flood the
+        # background computer with stale work. This timer coalesces
+        # bursts of ticks into one submission ~50ms after the last one,
+        # the same debounce pattern _live_write_timer already uses for
+        # hardware writes. The crosshair/box's own repositioning stays
+        # undebounced (cheap Qt-item moves) so dragging itself still feels
+        # instant; the actual reduction work now also runs on a background
+        # thread (see NDProjectionComputer) rather than blocking the GUI
+        # thread regardless of how it's paced.
         self._refresh_timer = QTimer()
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(50)
-        self._refresh_timer.timeout.connect(self._do_refresh)
+        self._refresh_timer.timeout.connect(self._submit_projection_request)
+
+        self._computer = NDProjectionComputer()
+        self._computer.resultReady.connect(self._on_projection_ready)
 
         self._crosshair_enabled = False
         self._crosshair_on_move: Optional[Callable[[dict], None]] = None
@@ -933,7 +1058,7 @@ class NDScanResultView:
         """(Re)builds the "Channels" dock — one tab per axis in
         `_axis_names` (actuator or detector-internal alike), each a real
         `pg.PlotWidget` (not a blank range strip) showing that axis's own
-        1D projection (`_compute_1d_projection`) with a draggable
+        1D projection (`components.nd_math.compute_1d_projection`) with a draggable
         `pg.LinearRegionItem` over the curve for that axis's own
         selection ("for each dimension you show a 1D plot of the average
         data over this rectangle, and you can keep that dynamic range
@@ -947,6 +1072,13 @@ class NDScanResultView:
             return  # nothing to project over yet
         if self._channel_dock is None:
             self._channel_tab_widget = QTabWidget()
+            # Only the VISIBLE tab's 1D projection is ever computed (see
+            # _submit_projection_request) — recomputing every tab on every
+            # refresh multiplies the already-expensive nanmean reduction
+            # by the axis count for tabs nobody's looking at. Switching
+            # tabs needs its own fresh request since the newly-shown one
+            # may be stale (last computed whenever it was last visible).
+            self._channel_tab_widget.currentChanged.connect(lambda _i: self._submit_projection_request())
             self._channel_dock = dock("Channels", self.window)
             self._channel_dock.setWidget(self._channel_tab_widget)
             self.window.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._channel_dock)
@@ -973,7 +1105,7 @@ class NDScanResultView:
             self._channel_tabs[name] = {"plot_item": plot_widget, "curve": curve, "region": region}
             self._channel_tab_widget.addTab(plot_widget, name)
 
-        self._refresh_channel_tabs()
+        self._submit_projection_request()
 
     def _selection_default(self, name: str, lo: float, hi: float) -> tuple[float, float]:
         """An actuator axis's default selection is centered on its
@@ -986,42 +1118,6 @@ class NDScanResultView:
             half = self._box_half_width.get(name, (hi - lo) * 0.03)
             return (center - half, center + half)
         return (lo, hi)
-
-    def _compute_1d_projection(self, name: str) -> tuple[list[float], list[float]]:
-        """`name`'s own data, averaged over every OTHER axis's current
-        `_selection` — the same slice-then-`nanmean` logic
-        `_refresh_projections` uses for a 2D panel, just leaving one axis
-        unreduced instead of two. Empty lists if no compatible array has
-        been captured yet, or this axis wasn't part of the most recent
-        run's `axis_names`."""
-        if self._array is None or self._array_axis_names is None or name not in self._array_axis_names:
-            return [], []
-        array = self._array
-        active = self._array_axis_names
-        axis_idx = active.index(name)
-        sliced = array
-        for idx, other_name in enumerate(active):
-            if other_name == name:
-                continue
-            positions = self._axis_positions.get(other_name) or list(range(array.shape[idx]))
-            lo, hi = self._selection.get(other_name, (min(positions), max(positions)))
-            keep = [k for k, p in enumerate(positions) if lo <= p <= hi] or list(range(len(positions)))
-            sliced = np.take(sliced, keep, axis=idx)
-        other_axes = tuple(k for k in range(len(active)) if k != axis_idx)
-        projected = np.nanmean(sliced, axis=other_axes) if other_axes else sliced
-        return self._axis_positions[name], projected.tolist()
-
-    def _refresh_channel_tabs(self) -> None:
-        for name, tab in self._channel_tabs.items():
-            x, y = self._compute_1d_projection(name)
-            if x and y:
-                tab["curve"].setData(x, [float("nan") if v is None else v for v in y])
-            region = tab["region"]
-            selection = self._selection.get(name)
-            if selection is not None:
-                region.blockSignals(True)
-                region.setRegion(selection)
-                region.blockSignals(False)
 
     def _on_channel_region_changed(self, name: str, region: pg.LinearRegionItem) -> None:
         """A Channels-dock tab's own region was dragged — "the ROIs that
@@ -1041,38 +1137,78 @@ class NDScanResultView:
             self._resync_box_sizes()
             if self._on_position_changed is not None:
                 self._on_position_changed(name, center)
-        self._refresh_projections()
-        self._refresh_channel_tabs()
+        self._submit_projection_request()
 
-    def _refresh_projections(self) -> None:
-        if self._array is None or self._array_axis_names is None:
-            return
-        array = self._array
-        active = self._array_axis_names
-        for (name_i, name_j), panel in self._panels.items():
-            if name_i not in active or name_j not in active:
-                continue  # this pair wasn't part of the most recent run — leave its panel showing its last image
-            pos_i, pos_j = active.index(name_i), active.index(name_j)
-            sliced = array
-            for axis_idx, name in enumerate(active):
-                if name in (name_i, name_j):
-                    continue
-                positions = self._axis_positions.get(name) or list(range(array.shape[axis_idx]))
-                lo, hi = self._selection.get(name, (min(positions), max(positions)))
-                keep = [k for k, p in enumerate(positions) if lo <= p <= hi] or list(range(len(positions)))
-                sliced = np.take(sliced, keep, axis=axis_idx)
-            other_axes = tuple(k for k in range(len(active)) if k not in (pos_i, pos_j))
-            projected = np.nanmean(sliced, axis=other_axes) if other_axes else sliced
-            # `active`'s order (not necessarily name_i-before-name_j) determines
-            # which of the two remaining axes np.nanmean left first — transpose
-            # back to the (name_i, name_j) = (rows, cols) convention this
-            # panel's x/y labels and set_extent() call assume.
-            if pos_i > pos_j:
-                projected = projected.T
+    def _active_channel_tab_name(self) -> Optional[str]:
+        """Which Channels-dock axis tab is actually visible right now —
+        only this one's 1D projection gets (re)computed on a refresh (see
+        _submit_projection_request); the rest stay showing whatever they
+        last had until the user actually switches to them (the
+        currentChanged connection in _build_channel_dock)."""
+        if self._channel_tab_widget is None:
+            return None
+        widget = self._channel_tab_widget.currentWidget()
+        for name, tab in self._channel_tabs.items():
+            if tab["plot_item"] is widget:
+                return name
+        return None
+
+    def _submit_projection_request(self) -> None:
+        """Hands the current state to the background NDProjectionComputer
+        — either a fresh update_data() frame (self._pending_flat_data,
+        set just before this is called) or a re-projection of the
+        already-parsed self._array with a changed selection (crosshair
+        drag, channel region drag, tab switch, add_crosshair, ...).
+        Either way the O(array-size) work happens off the GUI thread;
+        _on_projection_ready applies the (cheap) result once it's back."""
+        tab_name = self._active_channel_tab_name()
+        request: dict[str, Any] = {
+            "axis_positions": dict(self._axis_positions),
+            "selections": dict(self._selection),
+            "panel_keys": list(self._panels.keys()),
+            "tab_keys": [tab_name] if tab_name else [],
+        }
+        if self._pending_flat_data is not None:
+            request["flat_data"] = self._pending_flat_data
+            request["shape"] = self._pending_shape
+            request["active"] = self._pending_active
+            self._pending_flat_data = None
+            self._pending_shape = None
+            self._pending_active = None
+        elif self._array is not None and self._array_axis_names is not None:
+            request["array"] = self._array
+            request["active"] = self._array_axis_names
+        else:
+            return  # nothing to project yet — no frame has ever arrived
+        self._computer.submit(request)
+
+    def _on_projection_ready(self, result: dict) -> None:
+        """Applies an NDProjectionComputer result — cheap, GUI-thread-only
+        widget updates; all the expensive numpy work already happened on
+        the background thread."""
+        if result["request_id"] != self._computer.latest_request_id:
+            return  # a newer request was submitted before this one came back — drop it
+        self._array = result["array"]
+        self._array_axis_names = result["active"]
+        for (name_i, name_j), projected in result["panels"].items():
+            panel = self._panels.get((name_i, name_j))
+            if panel is None:
+                continue
             first = not self._panel_has_data.get((name_i, name_j), False)
             self._panel_has_data[(name_i, name_j)] = True
             panel.set_image(projected, first_frame=first)
             panel.set_extent(self._axis_positions[name_i], self._axis_positions[name_j])
+        for name, (x, y) in result["tabs"].items():
+            tab = self._channel_tabs.get(name)
+            if tab is None:
+                continue
+            tab["curve"].setData(x, [float("nan") if v is None else v for v in y])
+            selection = self._selection.get(name)
+            if selection is not None:
+                region = tab["region"]
+                region.blockSignals(True)
+                region.setRegion(selection)
+                region.blockSignals(False)
 
     def update_data(
         self, flat_data: Any, shape: Any, axis_names: Any = None, axis_positions: Any = None,
@@ -1081,13 +1217,8 @@ class NDScanResultView:
         if not flat_data or not shape:
             return
         shape = [int(s) for s in shape]
-        try:
-            values = np.array([np.nan if v is None else float(v) for v in flat_data], dtype=float)
-        except (TypeError, ValueError):
-            return
-        if values.size != int(np.prod(shape)):
+        if len(flat_data) != int(np.prod(shape)):
             return  # mid-scan partial frame whose size doesn't match its own declared shape yet — skip
-        array = values.reshape(shape)
 
         active = list(axis_names) if axis_names else self._axis_names[: len(shape)]
         axis_positions = list(axis_positions) if axis_positions else None
@@ -1102,17 +1233,25 @@ class NDScanResultView:
             for name, positions in zip(active, axis_positions):
                 self._axis_positions[name] = list(positions)
 
-        self._array = array
-        self._array_axis_names = active
-
         if len(active) <= 1:
+            # Small/rare fallback (a single declared axis, no projection
+            # panels involved at all) — parsed synchronously; nowhere near
+            # the expensive multi-panel/multi-tab case this class exists
+            # for, so no need to route it through the background computer.
+            array = parse_flat_data(flat_data, shape)
+            if array is None:
+                return
+            self._array = array
+            self._array_axis_names = active
             if self._curve is not None:
                 x = self._axis_positions.get(active[0], list(range(shape[0]))) if active else list(range(shape[0]))
                 self._curve.setData(x, array)
             return
 
-        self._refresh_projections()
-        self._refresh_channel_tabs()
+        self._pending_flat_data = flat_data
+        self._pending_shape = shape
+        self._pending_active = active
+        self._submit_projection_request()
 
     # ---- crosshair: one per actuator-actuator panel, coupled through a shared position ----
 
@@ -1135,11 +1274,7 @@ class NDScanResultView:
             if name_i in self._actuator_axis_names and name_j in self._actuator_axis_names:
                 self._add_panel_crosshair(name_i, name_j, panel)
         self._resync_crosshairs()
-        self._refresh_channel_tabs()
-
-    def _do_refresh(self) -> None:
-        self._refresh_projections()
-        self._refresh_channel_tabs()
+        self._submit_projection_request()
 
     def _schedule_refresh(self) -> None:
         """Coalesces bursts of drag-tick-driven refreshes — see
@@ -1209,8 +1344,7 @@ class NDScanResultView:
         for name in positions:
             self._update_selection_from_box(name)
         self._resync_crosshairs()
-        self._refresh_projections()
-        self._refresh_channel_tabs()
+        self._submit_projection_request()
 
     def show_crosshair(self) -> None:
         for panel in self._panels.values():
@@ -1224,6 +1358,12 @@ class NDScanResultView:
         self._auto_level = auto_level
         for panel in self._panels.values():
             panel.set_auto_level(auto_level)
+
+    def stop(self) -> None:
+        """Shuts down the background projection thread — call once, when
+        this view's window is closing (see workflow_window.py's
+        closeEvent). Not needed between runs of the same window."""
+        self._computer.stop()
 
     @property
     def panels(self) -> dict[tuple[str, str], _ScanImagePanel]:
@@ -1268,5 +1408,4 @@ class NDScanResultView:
             lo, hi = self._selection.get(name, (0.0, 0.0))
             center = (lo + hi) / 2
             self._selection[name] = (center - half, center + half)
-        self._refresh_projections()
-        self._refresh_channel_tabs()
+        self._submit_projection_request()

@@ -7,10 +7,10 @@ from typing import Any
 import numpy as np
 import pytest
 
-from labpilot.core.events import EventBus, EventKind
-from labpilot.device.schema import DeviceSchema
-from labpilot.plans.base import ScanPlan
-from labpilot.plans.scan import scan
+from core.events import EventBus, EventKind
+from core.device.schema import DeviceSchema
+from core.plans.base import ScanPlan
+from core.plans.scan import scan
 
 
 class MockMotor:
@@ -234,16 +234,21 @@ async def test_scan_broadcasts_to_bus() -> None:
     async with asyncio.TaskGroup() as tg:
         tg.create_task(bus_subscriber())
 
-        # Give subscriber time to start
-        await asyncio.sleep(0.01)
+        # Wait until the subscriber's queue is actually registered rather
+        # than a fixed sleep — bus.subscribe() is an async generator, so
+        # its body (including registration) only runs once something
+        # actually drives it; a fixed delay is not a reliable guarantee of
+        # that having happened yet and was observed to flake.
+        while bus.subscriber_count() == 0:
+            await asyncio.sleep(0)
 
         # Run scan
         async for _ in scan(plan, motor, detector, bus):
             pass
 
     # Bus should have received same events as scan generator
-    # DESCRIPTOR + (READING + PROGRESS) * 3 + STOP = 10 events
-    assert len(bus_events) == 10
+    # DESCRIPTOR + (READING + PROGRESS) * 3 + STOP = 1 + 6 + 1 = 8 events
+    assert len(bus_events) == 8
 
 
 @pytest.mark.anyio

@@ -13,6 +13,8 @@ export function ChatBox() {
     session,
     sendMessage,
     clearChat,
+    aiChatContext,
+    clearAIChatContext,
   } = useLabPilotStore((state) => ({
     currentConversation: state.currentConversation,
     chatLoading: state.chatLoading,
@@ -20,6 +22,8 @@ export function ChatBox() {
     session: state.session,
     sendMessage: state.sendMessage,
     clearChat: state.clearChat,
+    aiChatContext: state.aiChatContext,
+    clearAIChatContext: state.clearAIChatContext,
   }));
 
   const [inputValue, setInputValue] = useState('');
@@ -27,6 +31,16 @@ export function ChatBox() {
   const [showSessionModal, setShowSessionModal] = useState(false);
   const [currentSession, setCurrentSession] = useState<ChatSession | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // openAIChat() (Workflows.tsx's "Ask AI" / "New Workflow" buttons) sets
+  // this to prefill the input with a draft the user can edit before
+  // sending — never auto-sent. workflowId (if any) rides along on every
+  // send for the rest of this chat session (see handleSubmit).
+  useEffect(() => {
+    if (aiChatContext?.seedText) {
+      setInputValue(aiChatContext.seedText);
+    }
+  }, [aiChatContext]);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -65,7 +79,7 @@ export function ChatBox() {
 
     const message = inputValue;
     setInputValue('');
-    await sendMessage(message);
+    await sendMessage(message, aiChatContext?.workflowId, aiChatContext?.conversationId);
   };
 
   const handleStructuredSubmit = async (values: Record<string, string | number | boolean>) => {
@@ -73,11 +87,12 @@ export function ChatBox() {
       .map(([key, value]) => `${key}: ${value}`)
       .join(', ');
     setInputValue('');
-    await sendMessage(message);
+    await sendMessage(message, aiChatContext?.workflowId, aiChatContext?.conversationId);
   };
 
   const handleClear = () => {
     clearChat();
+    clearAIChatContext();
     setInputValue('');
   };
 
@@ -166,6 +181,20 @@ export function ChatBox() {
           )}
         </div>
       </div>
+
+      {aiChatContext?.workflowId && (
+        <div className="px-6 py-2 bg-indigo-50 dark:bg-indigo-900/20 border-b border-indigo-200 dark:border-indigo-800 flex items-center justify-between text-xs">
+          <span className="text-indigo-700 dark:text-indigo-300">
+            Scoped to this workflow — the AI can see and edit its current script.
+          </span>
+          <button
+            onClick={clearAIChatContext}
+            className="text-indigo-600 dark:text-indigo-400 hover:underline"
+          >
+            Clear scope
+          </button>
+        </div>
+      )}
 
       {/* Messages Area */}
       <div className="flex-1 overflow-y-auto p-6 space-y-4">

@@ -21,7 +21,11 @@ from instruments import adapter_registry, INSTRUMENT_CATALOG
 from instruments.factory import create_adapter, UnknownAdapterError
 from core.config import DeviceConfig
 from core.config.instrument_sets import InstrumentSetPersistence, InstrumentSetError
-from core.config.instrument_ui_prefs import get_instrument_ui_prefs, set_instrument_ui_prefs
+from core.config.instrument_ui_prefs import (
+    get_instrument_ui_prefs,
+    set_instrument_ui_prefs,
+    get_display_pref_schema,
+)
 from core.session import Session
 
 
@@ -613,6 +617,19 @@ async def read_instrument_ui_prefs(instrument_id: str):
     return {"success": True, "data": get_instrument_ui_prefs(instrument_id)}
 
 
+@router.get("/instruments/{instrument_id}/ui_prefs_schema")
+async def read_instrument_ui_prefs_schema(instrument_id: str):
+    """Which display preferences this instrument's native-UI kind
+    declares (e.g. "use_slider" for a motor/source), so the Settings modal
+    can render its "Native UI" section generically instead of one-off JSX
+    per preference. See core/config/instrument_ui_prefs.py."""
+    manager = get_dashboard_manager()
+    if instrument_id not in manager.instruments:
+        raise HTTPException(status_code=404, detail=f"Instrument {instrument_id} not found")
+    schema = manager.instruments[instrument_id]["schema"]
+    return {"success": True, "data": get_display_pref_schema(schema.kind)}
+
+
 @router.put("/instruments/{instrument_id}/ui_prefs")
 async def write_instrument_ui_prefs(instrument_id: str, request: UIPrefsRequest):
     """Save this instrument's native-UI display preferences."""
@@ -636,6 +653,7 @@ async def get_catalog():
             "display_name": m.display_name,
             "instrument_type": m.instrument_type.value,
             "backend": m.backend.value,
+            "connection_types": m.connection_types,
             "tags": m.tags,
         }
         for m in INSTRUMENT_CATALOG

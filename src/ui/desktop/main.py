@@ -18,7 +18,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Optional
 from enum import Enum
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QMainWindow
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPalette, QColor
 import pyqtgraph as pg
@@ -80,6 +80,42 @@ class LabPilotStyle:
 
     ICONS_DIR = Path(__file__).parent / "styles" / "icons"
 
+    # Every application-level theme from qudi-legacy's own artwork/styles
+    # (https://github.com/Ulm-IQO/qudi-legacy/tree/master/artwork/styles/
+    # application), imported verbatim rather than re-invented. "qdark" is
+    # the default and the only one whose url(...) references point at real
+    # local image assets (styles/qdark_assets/, also vendored verbatim) —
+    # "dracula" and "qtdark" are qudi-legacy's own alternates, GPL-3.0
+    # licensed same as the rest of that repo (qdark.qss/qdark_assets are
+    # separately MIT-licensed within it, see styles/qdark_assets/LICENSE.txt).
+    # dracula.qss's checkbox/radio/spinner icons reference Qt Creator's own
+    # compiled qmldesigner resources (":/qmldesigner/images/...") which
+    # aren't available outside Qt Creator itself — those specific icons
+    # won't render under this theme, everything color/border-based still
+    # applies normally.
+    THEMES = {
+        "qdark": {
+            "label": "Qudi Dark (default)",
+            "qss_file": "qdark.qss",
+            "asset_token": "artwork/styles/application/qdark",
+            "asset_dir": "qdark_assets",
+        },
+        "dracula": {
+            "label": "Dracula",
+            "qss_file": "dracula.qss",
+            "asset_token": None,
+            "asset_dir": None,
+        },
+        "qtdark": {
+            "label": "Qt Dark (minimal)",
+            "qss_file": "qtdark.qss",
+            "asset_token": None,
+            "asset_dir": None,
+        },
+    }
+    DEFAULT_THEME = "qdark"
+    _THEME_CONFIG_PATH = Path.home() / ".labpilot" / "config" / "ui_theme.json"
+
     @staticmethod
     def icon(name: str) -> "QIcon":
         """Load a real Oxygen-set icon (see styles/icons/) instead of an
@@ -89,29 +125,56 @@ class LabPilotStyle:
         return QIcon(str(path)) if path.exists() else QIcon()
 
     @staticmethod
-    def apply_dark_theme(app: QApplication):
-        """Apply Qudi's actual qdark.qss theme (MIT-licensed, see
-        styles/qdark.qss) to the entire application, instead of a
-        hand-rolled approximation."""
+    def get_saved_theme() -> str:
+        """This machine's last-selected theme (native-desktop-only display
+        preference, so a plain local file — no backend round-trip needed,
+        unlike core/config/instrument_ui_prefs.py which both the React and
+        Qt apps read)."""
+        try:
+            import json
+            data = json.loads(LabPilotStyle._THEME_CONFIG_PATH.read_text())
+            name = data.get("theme")
+            return name if name in LabPilotStyle.THEMES else LabPilotStyle.DEFAULT_THEME
+        except (OSError, ValueError):
+            return LabPilotStyle.DEFAULT_THEME
+
+    @staticmethod
+    def save_theme(name: str) -> None:
+        import json
+        path = LabPilotStyle._THEME_CONFIG_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"theme": name}))
+
+    @staticmethod
+    def apply_theme(app: QApplication, theme: str = DEFAULT_THEME) -> None:
+        """Apply one of qudi-legacy's own application stylesheets
+        (THEMES above) to the entire application — live-switchable, not
+        just at startup, since this just recomputes and re-sets the app's
+        whole stylesheet."""
+        if theme not in LabPilotStyle.THEMES:
+            theme = LabPilotStyle.DEFAULT_THEME
+        spec = LabPilotStyle.THEMES[theme]
         app.setStyle('Fusion')
 
-        qss_path = Path(__file__).parent / "styles" / "qdark.qss"
-        assets_dir = Path(__file__).parent / "styles" / "qdark_assets"
+        qss_path = Path(__file__).parent / "styles" / spec["qss_file"]
         if qss_path.exists():
             qss = qss_path.read_text()
-            # The stylesheet's url(...) references are relative to
-            # "artwork/styles/application/qdark" in the original Qudi repo
-            # layout; point them at our copy instead, as an absolute path
-            # (Qt resolves stylesheet urls relative to CWD otherwise, which
-            # would break depending on how this app was launched).
-            qss = qss.replace(
-                "artwork/styles/application/qdark", assets_dir.as_posix()
-            )
+            if spec["asset_token"] and spec["asset_dir"]:
+                # The stylesheet's url(...) references are relative to the
+                # original Qudi repo layout; point them at our vendored
+                # copy instead, as an absolute path (Qt resolves
+                # stylesheet urls relative to CWD otherwise, which would
+                # break depending on how this app was launched).
+                assets_dir = Path(__file__).parent / "styles" / spec["asset_dir"]
+                qss = qss.replace(spec["asset_token"], assets_dir.as_posix())
             app.setStyleSheet(qss)
         else:
-            print(f"[LabPilotStyle] qdark.qss not found at {qss_path}, using Fusion defaults")
+            print(f"[LabPilotStyle] {spec['qss_file']} not found at {qss_path}, using Fusion defaults")
 
-        # A few additions qdark.qss doesn't define, used by our own widgets
+        # A few additions no qudi theme defines, used by our own widgets —
+        # kept theme-color-aware (TEXT_PRIMARY/SECONDARY/MUTED) rather than
+        # hardcoded, though these constants themselves currently only track
+        # qdark's own palette (see the class docstring).
         app.setStyleSheet(app.styleSheet() + f"""
             QLabel.title {{
                 font-size: 18px;
@@ -128,6 +191,64 @@ class LabPilotStyle:
                 color: {LabPilotStyle.TEXT_MUTED};
             }}
         """)
+        LabPilotStyle.save_theme(theme)
+        LabPilotStyle._sync_pyqtgraph_background()
+
+    @staticmethod
+    def _sync_pyqtgraph_background() -> None:
+        """Match pyqtgraph's plot background to whatever the just-applied
+        theme's own QSS actually renders as a window's background —
+        Qudi's own approach (gui/manager/managergui.py's on_activate:
+        `pg.setConfigOption('background', bgcolor)` derived from a
+        throwaway widget's live palette, not a hardcoded hex value), so
+        this stays correct across every theme (qdark/dracula/qtdark)
+        without hand-tuning colors per theme, and updates live on a theme
+        switch through the same call path. Probed with a QMainWindow
+        (what every real window in this app actually is) rather than a
+        bare QWidget — dracula.qss deliberately makes plain QWidget
+        transparent and only colors QMainWindow/QFrame/etc., so a bare
+        QWidget would pick up nothing under that theme specifically."""
+        probe = QMainWindow()
+        probe.ensurePolished()
+        bg_color = probe.palette().color(QPalette.ColorGroup.Normal, probe.backgroundRole())
+        pg.setConfigOption('background', bg_color)
+
+    @staticmethod
+    def apply_dark_theme(app: QApplication):
+        """Back-compat alias — applies the default qdark theme."""
+        LabPilotStyle.apply_theme(app, LabPilotStyle.DEFAULT_THEME)
+
+def add_view_menu_to_window(window):
+    """Add a View > Theme menu for live-switching between qudi-legacy's
+    application stylesheets (LabPilotStyle.THEMES) — applies instantly
+    (re-sets QApplication.styleSheet()) and persists the choice for next
+    launch, no restart needed."""
+    try:
+        from PyQt6.QtWidgets import QMenuBar, QApplication as _QApp
+        from PyQt6.QtGui import QAction, QActionGroup
+
+        if not window.menuBar():
+            window.setMenuBar(QMenuBar(window))
+        menu_bar = window.menuBar()
+
+        view_menu = menu_bar.addMenu("View")
+        theme_menu = view_menu.addMenu("Theme")
+        group = QActionGroup(window)
+        group.setExclusive(True)
+        current = LabPilotStyle.get_saved_theme()
+
+        for name, spec in LabPilotStyle.THEMES.items():
+            action = QAction(spec["label"], window)
+            action.setCheckable(True)
+            action.setChecked(name == current)
+            action.triggered.connect(
+                lambda _checked, n=name: LabPilotStyle.apply_theme(_QApp.instance(), n)
+            )
+            group.addAction(action)
+            theme_menu.addAction(action)
+    except Exception as e:
+        print(f"Warning: Failed to add view menu: {e}")
+
 
 def add_session_menu_to_window(window):
     """Add session management menu to a window"""
@@ -201,6 +322,19 @@ def add_session_menu_to_window(window):
     except Exception as e:
         print(f"Warning: Failed to add session menu: {e}")
 
+def _force_to_front(window: QMainWindow) -> None:
+    """window.raise_()/activateWindow() alone often fail to bring a window
+    forward on macOS when the process was spawned via subprocess.Popen
+    (e.g. from the Qt Manager's "launch workflow" button) rather than
+    double-clicked/launched by LaunchServices — the OS leaves whatever app
+    was already active in front, so the new window opens silently behind
+    it and looks like it "didn't open". QApplication.alert() triggers the
+    dock-icon bounce (standard attention request, no extra permissions/
+    dependencies needed) so the user notices even when focus doesn't move."""
+    app = QApplication.instance()
+    if app is not None:
+        app.alert(window, 0)
+
 def main():
     """Main application entry point - launches individual instrument windows only"""
     parser = argparse.ArgumentParser(description='LabPilot Individual Qt Instrument Windows')
@@ -215,8 +349,8 @@ def main():
     app.setApplicationVersion("1.0.0")
     app.setOrganizationName("Laboratory Automation")
 
-    # Apply professional dark theme
-    LabPilotStyle.apply_dark_theme(app)
+    # Apply this machine's last-selected theme (default: qdark)
+    LabPilotStyle.apply_theme(app, LabPilotStyle.get_saved_theme())
 
     if args.instrument:
         # Launch specific instrument window, fetching its real status from
@@ -250,10 +384,12 @@ def main():
 
             # Add session menu to window
             add_session_menu_to_window(window)
+            add_view_menu_to_window(window)
 
             window.show()
             window.raise_()
             window.activateWindow()
+            _force_to_front(window)
 
         except Exception as e:
             print(f"Failed to launch instrument window: {e}")
@@ -272,10 +408,12 @@ def main():
             window_id = f"workflow_{args.workflow}"
             session_manager.register_window(window_id, window)
             add_session_menu_to_window(window)
+            add_view_menu_to_window(window)
 
             window.show()
             window.raise_()
             window.activateWindow()
+            _force_to_front(window)
 
         except Exception as e:
             print(f"Failed to launch workflow window: {e}")

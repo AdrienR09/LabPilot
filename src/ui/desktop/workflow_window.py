@@ -316,11 +316,14 @@ class WorkflowWindow(QMainWindow):
         execute_action.setToolTip("Run this workflow now.")
         execute_action.triggered.connect(self._on_execute)
         toolbar.addAction(execute_action)
+        self._execute_action = execute_action
 
         stop_action = QAction(LabPilotStyle.icon("media-playback-stop"), "Stop", self)
         stop_action.setToolTip("Stop this workflow if it's running.")
         stop_action.triggered.connect(self._on_stop)
+        stop_action.setEnabled(False)
         toolbar.addAction(stop_action)
+        self._stop_action = stop_action
 
         # Replaces the per-panel Save buttons _ScanImagePanel used to have
         # (one qudi-style button duplicated on every axis-pair panel) —
@@ -1111,6 +1114,13 @@ class WorkflowWindow(QMainWindow):
     def _on_execution_state(self, state: dict) -> None:
         running = state.get("running")
         last_status = state.get("last_status")
+        # The engine already rejects a second /execute for the same
+        # workflow_id server-side, but leaving the action clickable anyway
+        # invites exactly the repeated-click pattern seen when a run looks
+        # stalled (see _resync_live_data's docstring) — each stray click
+        # still round-trips a rejected request while the real run continues.
+        self._execute_action.setEnabled(not running)
+        self._stop_action.setEnabled(bool(running))
         if running:
             self.status_label.set_status("● Running", LabPilotStyle.PRIMARY)
         elif last_status == "completed":
@@ -1254,6 +1264,8 @@ class WorkflowWindow(QMainWindow):
         self._state_poller.stop()
         if self._optimize_poller is not None:
             self._optimize_poller.stop()
+        if isinstance(self.result_view, NDScanResultView):
+            self.result_view.stop()
         for ctx in self.instrument_contexts.values():
             ctx.stop_polling()
         super().closeEvent(event)

@@ -68,6 +68,14 @@ class WorkflowEngine:
         self.store = store
         self._running_workflows: dict[str, asyncio.Task] = {}
         self._execution_results: dict[str, dict[str, Any]] = {}
+        # Latest session.report_progress(...) payload per workflow_id — kept
+        # after completion (only the session's progress *context* is
+        # cleared, see _execute_workflow's finally block) so a poller sees
+        # the last frame rather than nothing once a run finishes.
+        self._live_progress: dict[str, dict] = {}
+
+    def get_live_progress(self, workflow_id: str) -> dict | None:
+        return self._live_progress.get(workflow_id)
 
     async def start_workflow(
         self,
@@ -223,6 +231,12 @@ class WorkflowEngine:
         """Execute workflow graph (runs in asyncio task)."""
         workflow_id = graph.id
         self._apply_instrument_bindings(graph)
+        # Drop any frame left over from a previous run before this one's
+        # own report_progress() calls start landing — otherwise a poller
+        # would briefly see the *previous* run's finished frame while
+        # running=True at the very start of this one.
+        self._live_progress.pop(workflow_id, None)
+        self.session.set_progress_context(workflow_id, execution_id, self._live_progress)
 
         try:
             # Initialize execution context
@@ -341,9 +355,13 @@ class WorkflowEngine:
             raise
 
         finally:
-            # Clean up — aliases are scoped to this one execution, never
-            # left registered for whatever runs next.
+            # Clean up — aliases and the progress context are scoped to this
+            # one execution, never left registered for whatever runs next.
+            # _live_progress[workflow_id] itself is NOT cleared here — the
+            # last reported frame stays available for polling after the run
+            # ends (see get_live_progress).
             self.session.clear_aliases()
+            self.session.clear_progress_context()
             if workflow_id in self._running_workflows:
                 del self._running_workflows[workflow_id]
 

@@ -1,21 +1,151 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Activity,
   Play,
   Square,
-  Settings,
+  FileCode2,
   Trash2,
   Monitor,
-  Plus,
   RotateCcw,
+  FolderOpen,
+  LayoutTemplate,
+  X,
+  Sparkles,
 } from 'lucide-react';
 import { useLabPilotStore } from '@/store';
 import type { Workflow } from '@/store/index';
 import { qtBridge, initQtBridge } from '@/utils/qtBridge';
+import { WorkflowScriptModal } from '@/components/WorkflowScriptModal';
+import { ChatBox } from '@/components/ChatBox';
+import { getWorkflowTemplates, loadWorkflowTemplate, WorkflowTemplate } from '@/api';
+
+// Opens the AI chat as an in-page dialog rather than navigating to the
+// /ai tab — `aiChatContext` (set by openAIChat()) is what actually scopes
+// the conversation to a workflow; this is just presentation. Closing
+// clears that scope (clearAIChatContext) so a later, unscoped chat open
+// doesn't inherit it, but leaves any conversation history in the store
+// alone (a fresh scope call replaces it anyway — see openAIChat()).
+function AIChatModal({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-2xl h-[80vh] relative">
+        <button
+          onClick={onClose}
+          className="absolute -top-3 -right-3 z-10 p-1.5 bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white rounded-full shadow-lg"
+          title="Close"
+        >
+          <X className="h-4 w-4" />
+        </button>
+        <ChatBox />
+      </div>
+    </div>
+  );
+}
+
+// Ready-made, general-purpose workflow templates (core/workflow_templates/)
+// — each declares the instrument "roles" it needs (kind + dimensionality)
+// rather than hardcoding a specific instrument. Loading one creates a real
+// workflow with every role unbound; the user then binds each role to a
+// real connected instrument on the Flow page.
+function TemplateLibraryModal({ onClose, onLoaded }: { onClose: () => void; onLoaded: (workflowId: string) => void }) {
+  const [templates, setTemplates] = useState<WorkflowTemplate[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loadingName, setLoadingName] = useState<string | null>(null);
+
+  useEffect(() => {
+    getWorkflowTemplates()
+      .then(setTemplates)
+      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load template library'));
+  }, []);
+
+  const handleLoad = async (name: string) => {
+    setLoadingName(name);
+    setError(null);
+    try {
+      const { workflow_id } = await loadWorkflowTemplate(name);
+      onLoaded(workflow_id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to load template ${name}`);
+    } finally {
+      setLoadingName(null);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] flex flex-col">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Workflow Template Library</h2>
+          <button onClick={onClose} className="p-1 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="p-5 overflow-y-auto space-y-3">
+          {error && (
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 text-sm text-red-700 dark:text-red-400">
+              {error}
+            </div>
+          )}
+          {templates === null && !error && (
+            <p className="text-sm text-gray-500 dark:text-gray-400">Loading templates…</p>
+          )}
+          {templates?.length === 0 && (
+            <p className="text-sm text-gray-500 dark:text-gray-400">No templates available.</p>
+          )}
+          {templates?.map((tpl) => (
+            <div
+              key={tpl.name}
+              className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 flex items-start justify-between gap-4"
+            >
+              <div>
+                <p className="text-sm font-semibold text-gray-900 dark:text-white">
+                  {tpl.name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+                </p>
+                <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">{tpl.description}</p>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {Object.entries(tpl.required_instruments).map(([role, req]) => (
+                    <span
+                      key={role}
+                      className="inline-flex items-center px-2 py-0.5 rounded text-xs bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300"
+                    >
+                      {role}: {req.dimensionality} {req.kind}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <button
+                onClick={() => handleLoad(tpl.name)}
+                disabled={loadingName !== null}
+                className="shrink-0 px-3 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-md"
+              >
+                {loadingName === tpl.name ? 'Loading…' : 'Load'}
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function Workflows() {
-  const { workflows, devices } = useLabPilotStore();
+  const { workflows, devices, executeWorkflow, stopWorkflow, unloadWorkflow, loadWorkflowScript, loadWorkflows, workflowsError, openAIChat, aiChatContext, clearAIChatContext } = useLabPilotStore();
   const [selectedWorkflow, setSelectedWorkflow] = useState<string | null>(null);
+  const [scriptModalWorkflow, setScriptModalWorkflow] = useState<Workflow | null>(null);
+  const [loadPathInput, setLoadPathInput] = useState('');
+  const [showLoadInput, setShowLoadInput] = useState(false);
+  const [showTemplateLibrary, setShowTemplateLibrary] = useState(false);
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+
+  const handleTemplateLoaded = async (workflowId: string) => {
+    setShowTemplateLibrary(false);
+    await loadWorkflows();
+    // Templates always need their roles bound to real instruments before
+    // they can run — send the user straight to the flowchart to do that.
+    navigate(`/flow?workflow=${workflowId}`);
+  };
 
   useEffect(() => {
     // Initialize Qt Bridge
@@ -24,21 +154,67 @@ export default function Workflows() {
     });
   }, []);
 
-  const handleExecuteWorkflow = (workflowId: string) => {
-    console.log('🚀 Executing workflow:', workflowId);
-    alert(`Executing workflow: ${workflowId}`);
+  // Arriving via `?workflow=id` (e.g. a double-click on a workflow's box in
+  // the flowchart) highlights that card the same way clicking it would.
+  useEffect(() => {
+    const id = searchParams.get('workflow');
+    if (id) setSelectedWorkflow(id);
+  }, [searchParams]);
+
+  const handleExecuteWorkflow = async (workflowId: string) => {
+    try {
+      await executeWorkflow(workflowId);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to execute workflow');
+    }
   };
 
-  const handleStopWorkflow = (workflowId: string) => {
-    console.log('⏹️  Stopping workflow:', workflowId);
-    alert(`Stopping workflow: ${workflowId}`);
+  const handleStopWorkflow = async (workflowId: string) => {
+    try {
+      await stopWorkflow(workflowId);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to stop workflow');
+    }
   };
 
+  // Inside the Qt desktop shell this opens a real native combined window
+  // (every instrument the workflow references — see qt_bridge.py ->
+  // launch_workflow.py -> workflow_window.py) as a separate OS window,
+  // mirroring how Devices.tsx opens a single instrument's native window.
+  // In a plain browser tab there's no Qt process to open a window in, so
+  // fall back to the existing read-only graph view.
   const handleOpenUI = (workflowId: string) => {
-    const workflow = workflows.find(w => w.id === workflowId);
-    if (workflow) {
-      console.log('📊 Opening UI for workflow:', workflow.name);
-      alert(`Opening UI for workflow: ${workflow.name}`);
+    if (qtBridge?.isInQt() && typeof qtBridge.launchWorkflowUI === 'function') {
+      try {
+        qtBridge.launchWorkflowUI(workflowId);
+        return;
+      } catch (err) {
+        console.error('Error launching native workflow UI, falling back to graph view:', err);
+      }
+    }
+    navigate(`/flow?workflow=${workflowId}`);
+  };
+
+  const handleUnloadWorkflow = async (workflowId: string, name: string) => {
+    if (!confirm(`Unload "${name}" from the Workflows tab? The script file stays on disk and can be reloaded later.`)) {
+      return;
+    }
+    try {
+      await unloadWorkflow(workflowId);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to unload workflow');
+    }
+  };
+
+  const handleLoadScript = async () => {
+    const path = loadPathInput.trim();
+    if (!path) return;
+    try {
+      await loadWorkflowScript(path);
+      setLoadPathInput('');
+      setShowLoadInput(false);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to load workflow script');
     }
   };
 
@@ -60,11 +236,67 @@ export default function Workflows() {
             Manage laboratory workflows ({workflows.length})
           </p>
         </div>
-        <button className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700">
-          <Plus className="h-4 w-4 mr-2" />
-          New Workflow
-        </button>
+        <div className="flex items-center space-x-2">
+          {showLoadInput ? (
+            <div className="flex items-center space-x-2">
+              <input
+                type="text"
+                autoFocus
+                value={loadPathInput}
+                onChange={(e) => setLoadPathInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleLoadScript();
+                  if (e.key === 'Escape') setShowLoadInput(false);
+                }}
+                placeholder="/path/to/workflow_script.py"
+                className="px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white w-72"
+              />
+              <button
+                onClick={handleLoadScript}
+                className="px-3 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md"
+              >
+                Load
+              </button>
+              <button
+                onClick={() => { setShowLoadInput(false); setLoadPathInput(''); }}
+                className="px-3 py-2 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowLoadInput(true)}
+              className="inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 text-sm font-medium rounded-md text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+            >
+              <FolderOpen className="h-4 w-4 mr-2" />
+              Load script…
+            </button>
+          )}
+          <button
+            onClick={() => setShowTemplateLibrary(true)}
+            className="inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 text-sm font-medium rounded-md text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+          >
+            <LayoutTemplate className="h-4 w-4 mr-2" />
+            Templates…
+          </button>
+          <button
+            onClick={() => openAIChat({
+              seedText: 'Create a new lab automation workflow that ',
+            })}
+            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
+          >
+            <Sparkles className="h-4 w-4 mr-2" />
+            New Workflow (AI)
+          </button>
+        </div>
       </div>
+
+      {workflowsError && (
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 text-sm text-red-700 dark:text-red-400">
+          {workflowsError}
+        </div>
+      )}
 
       {/* Workflows Grid */}
       {workflows.length === 0 ? (
@@ -102,26 +334,37 @@ export default function Workflows() {
                     {workflow.description || 'No description'}
                   </p>
 
-                  {/* Status */}
+                  {/* Status — from the most recent execution_logs row (see
+                      GET /api/workflows); a workflow that's never run shows
+                      "Ready". */}
                   <div className="flex items-center justify-between">
                     <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
                       workflow.running
                         ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400'
-                        : workflow.has_data
+                        : workflow.last_status === 'completed'
                         ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
+                        : workflow.last_status === 'failed'
+                        ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
                         : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-400'
                     }`}>
-                      {workflow.running ? 'Running' : workflow.has_data ? 'Completed' : 'Ready'}
+                      {workflow.running
+                        ? 'Running'
+                        : workflow.last_status === 'completed'
+                        ? 'Completed'
+                        : workflow.last_status === 'failed'
+                        ? 'Failed'
+                        : workflow.last_status === 'cancelled'
+                        ? 'Cancelled'
+                        : 'Ready'}
                     </span>
                   </div>
 
-                  {/* Progress Bar (if running) */}
+                  {/* Running indicator — no numeric progress is tracked at
+                      the workflow-list level (see the native "Open UI"
+                      window for a live per-pixel view). */}
                   {workflow.running && (
-                    <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-                      <div
-                        className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                        style={{ width: `${workflow.progress || 0}%` }}
-                      />
+                    <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5 overflow-hidden">
+                      <div className="bg-blue-600 h-1.5 w-1/3 rounded-full animate-pulse" />
                     </div>
                   )}
 
@@ -184,14 +427,35 @@ export default function Workflows() {
                     </div>
                     <div className="flex items-center space-x-1">
                       <button
-                        className="p-2 text-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg transition-colors"
-                        title="Settings"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openAIChat({
+                            workflowId: workflow.id,
+                            seedText: `Help me modify the "${workflow.name}" workflow: `,
+                          });
+                        }}
+                        className="p-2 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg transition-colors"
+                        title="Ask AI to modify this workflow"
                       >
-                        <Settings className="h-4 w-4" />
+                        <Sparkles className="h-4 w-4" />
                       </button>
                       <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setScriptModalWorkflow(workflow);
+                        }}
                         className="p-2 text-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg transition-colors"
-                        title="Remove"
+                        title="View/edit script"
+                      >
+                        <FileCode2 className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleUnloadWorkflow(workflow.id, workflow.name);
+                        }}
+                        className="p-2 text-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                        title="Unload"
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>
@@ -202,6 +466,25 @@ export default function Workflows() {
             );
           })}
         </div>
+      )}
+
+      {scriptModalWorkflow && (
+        <WorkflowScriptModal
+          workflowId={scriptModalWorkflow.id}
+          workflowName={scriptModalWorkflow.name}
+          onClose={() => setScriptModalWorkflow(null)}
+        />
+      )}
+
+      {showTemplateLibrary && (
+        <TemplateLibraryModal
+          onClose={() => setShowTemplateLibrary(false)}
+          onLoaded={handleTemplateLoaded}
+        />
+      )}
+
+      {aiChatContext && (
+        <AIChatModal onClose={clearAIChatContext} />
       )}
     </div>
   );

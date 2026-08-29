@@ -7,6 +7,7 @@ Includes system prompt, current state, available resources, and conversation his
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any
 
 from instruments import adapter_registry
@@ -26,14 +27,31 @@ MANDATORY RULES:
 3. NEVER explain what you could do
 4. ALWAYS call the appropriate function IMMEDIATELY
 
-When user says "list adapters" → CALL list_adapters()
-When user says "create workflow" → for a simple one, CALL create_workflow()
-    then add_node()/connect_nodes(); for anything with real control flow
-    (loops, conditionals, several instruments in sequence), CALL
-    write_workflow_script() instead and just write the Python directly
-When user says "connect device" → CALL connect_device()
+Available actions and when to use them: list_adapters (user wants to see
+available instrument types); create_workflow (a simple workflow, no real
+control flow); write_workflow_script (anything with real control flow —
+loops, conditionals, several instruments in sequence, or changing an
+EXISTING workflow's script shown below — pass the FULL script text, not a
+diff, as its "script" argument); connect_device (user wants to connect an
+instrument).
 
-USE TOOLS NOW. NO EXCEPTIONS.
+Any script passed as write_workflow_script's "script" argument follows
+this role-based pattern (full reference: core/workflow_templates/confocal_scanner.py) —
+never a hardcoded instrument id:
+REQUIRED_INSTRUMENTS = {{"<role>": {{"kind": "motor"|"detector"|"source", "dimensionality": "0D"|"1D"|"2D"|"ND"}}, ...}}
+async def run(session) -> dict: ...   # entry point, calls session.get("<role>") using the same role names
+Inside the scan loop: await session.report_progress({{...}})  # same shape run() will return
+Optional: RESULT_UI = {{"type": "image2d"|"spectrum", "value_key": ..., "x_key": ..., "y_key": ...}}
+After writing an actuator's target, poll read() until in tolerance with
+`await asyncio.sleep(0.01)` between polls (not sleep(0)) before reading
+the detector.
+
+You MUST invoke the action through the real function-calling mechanism,
+never by writing its name as text (not "write_workflow_script(...)", not
+a description of the call). If your connection cannot deliver a native
+function call, respond with ONLY a single JSON object and nothing else
+around it — no code fences, no prose before or after:
+{{"name": "<action name>", "arguments": {{...its parameters...}}}}
 
 State: {connected_devices} | {current_workflow}"""
 
@@ -199,14 +217,28 @@ class ContextBuilder:
             return f"Error loading adapters: {e}"
 
     def _get_current_workflow(self, workflow_id: str | None = None) -> str:
-        """Get current workflow JSON."""
+        """Get current workflow JSON — plus its script's actual source when
+        it has one (a role-based/externally_authored workflow has no
+        `nodes`, so `to_json()` alone would show an empty graph and hide
+        the real code the user is asking to modify)."""
         if not workflow_id or not self.workflow_store:
             return "No active workflow."
 
         try:
             workflow = self.workflow_store.load(workflow_id)
-            # Return compact JSON representation
-            return f"Active workflow '{workflow.name}':\n```json\n{workflow.to_json()}\n```"
+            parts = [f"Active workflow '{workflow.name}':\n```json\n{workflow.to_json()}\n```"]
+            script_path = workflow.metadata.get("script_path")
+            if script_path:
+                try:
+                    script_text = Path(script_path).read_text()
+                    parts.append(
+                        f"Its current script ({script_path}) — modify this in place with "
+                        f"write_workflow_script() rather than starting over, unless asked "
+                        f"to replace it entirely:\n```python\n{script_text}\n```"
+                    )
+                except OSError as e:
+                    parts.append(f"(Could not read script file {script_path}: {e})")
+            return "\n\n".join(parts)
         except Exception as e:
             return f"Error loading workflow {workflow_id}: {e}"
 

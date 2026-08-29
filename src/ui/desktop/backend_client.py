@@ -12,150 +12,20 @@ import json
 import time
 from typing import Any
 
-import httpx
 from PyQt6.QtCore import (
     QCoreApplication, QObject, QThread, QTimer, QUrl, Qt, QMetaObject, Q_ARG, pyqtSignal, pyqtSlot,
 )
 from PyQt6.QtWebSockets import QWebSocket
 
+from core.api_client import LabPilotClient
 
-class BackendClient:
-    def __init__(self, base_url: str = "http://localhost:8000") -> None:
-        self.base_url = base_url.rstrip("/")
-        self._client = httpx.Client(base_url=self.base_url, timeout=5.0)
-
-    def get_instrument(self, instrument_id: str) -> dict[str, Any] | None:
-        """Fetch one instrument's status by id from the live registry."""
-        resp = self._client.get("/api/dashboard/instruments")
-        resp.raise_for_status()
-        for inst in resp.json()["data"]:
-            if inst["id"] == instrument_id:
-                return inst
-        return None
-
-    def get_schema(self, instrument_id: str) -> dict[str, Any]:
-        resp = self._client.get(f"/api/dashboard/instruments/{instrument_id}/schema")
-        resp.raise_for_status()
-        return resp.json()["data"]
-
-    def read(self, instrument_id: str) -> dict[str, Any]:
-        """Raises httpx.HTTPStatusError with status 409 if not connected."""
-        resp = self._client.get(f"/api/dashboard/instruments/{instrument_id}/data")
-        resp.raise_for_status()
-        return resp.json()["data"]
-
-    def write(self, instrument_id: str, values: dict[str, Any]) -> None:
-        resp = self._client.post(
-            f"/api/dashboard/instruments/{instrument_id}/settings",
-            json={"values": values},
-        )
-        resp.raise_for_status()
-
-    def connect(self, instrument_id: str) -> None:
-        resp = self._client.post(f"/api/dashboard/instruments/{instrument_id}/connect")
-        resp.raise_for_status()
-
-    def get_ui_prefs(self, instrument_id: str) -> dict[str, Any]:
-        """This instrument's native-UI display preferences (set via its
-        Settings modal in the React Instruments tab — see
-        core/config/instrument_ui_prefs.py). Best-effort: returns {} on
-        any failure rather than raising, since a missing/unreachable
-        prefs endpoint shouldn't block a window from opening."""
-        try:
-            resp = self._client.get(f"/api/dashboard/instruments/{instrument_id}/ui_prefs")
-            resp.raise_for_status()
-            return resp.json()["data"]
-        except Exception:
-            return {}
-
-    def get_workflow(self, workflow_id: str) -> dict[str, Any]:
-        """Full graph (nodes/edges/metadata) — see GET /api/workflows/{id}."""
-        resp = self._client.get(f"/api/workflows/{workflow_id}")
-        resp.raise_for_status()
-        return resp.json()["data"]
-
-    def get_workflow_script(self, workflow_id: str) -> str | None:
-        """Raw script text, or None if this workflow has no script file yet."""
-        resp = self._client.get(f"/api/workflows/{workflow_id}/script")
-        if resp.status_code == 404:
-            return None
-        resp.raise_for_status()
-        return resp.json()["data"]["content"]
-
-    def get_workflow_params(self, workflow_id: str) -> dict[str, Any]:
-        """This workflow's own tunable parameters (e.g. a scan's
-        range/resolution) — distinct from any bound instrument's own
-        settings. See GET /api/workflows/{id}/params."""
-        resp = self._client.get(f"/api/workflows/{workflow_id}/params")
-        resp.raise_for_status()
-        return resp.json()["data"]
-
-    def set_workflow_param(self, workflow_id: str, name: str, value: Any) -> Any:
-        """Changes one workflow parameter in place. See
-        PUT /api/workflows/{id}/params/{name}."""
-        resp = self._client.put(f"/api/workflows/{workflow_id}/params/{name}", json={"value": value})
-        resp.raise_for_status()
-        return resp.json()["data"]["value"]
-
-    def start_optimize(
-        self, workflow_id: str, axes: list[str] | None = None,
-        ranges: dict[str, float] | None = None, points: int = 5,
-        points_per_axis: dict[str, int] | None = None,
-    ) -> dict[str, Any]:
-        """Starts (as a background task on the server) re-centering a
-        workflow's optimizer-capability-bound actuator on its detector's
-        local maximum — a small ad-hoc sequence of <=2D sub-scans (any
-        number of actuator axes; see `core/workflow/capabilities.py`'s
-        `OptimizerCapability`), not a full run of the workflow. `axes`,
-        if given, restricts which actuator axes to optimize over
-        (omit for every available one — today's default); `ranges`/
-        `points_per_axis` override the per-axis search span/resolution
-        (an axis not present in either uses the server's own default — a
-        fraction of its declared AXIS_RANGES span, and `points`,
-        respectively). Returns immediately; poll get_optimize_state() for
-        live progress (see OptimizePoller/OptimizerDockWidget/
-        OptimizerSettingsDialog). Raises httpx.HTTPStatusError with
-        status 409 if one's already running for this workflow. See
-        POST /api/workflows/{id}/optimize/start."""
-        resp = self._client.post(
-            f"/api/workflows/{workflow_id}/optimize/start",
-            json={"axes": axes, "ranges": ranges, "points": points, "points_per_axis": points_per_axis},
-        )
-        resp.raise_for_status()
-        return resp.json()["data"]
-
-    def stop_optimize(self, workflow_id: str) -> None:
-        resp = self._client.post(f"/api/workflows/{workflow_id}/optimize/stop")
-        resp.raise_for_status()
-
-    def get_optimize_state(self, workflow_id: str) -> dict[str, Any]:
-        """{running, progress (the grid so far, live), last_result (the
-        final grid once finished), error}. See
-        GET /api/workflows/{id}/optimize/state."""
-        resp = self._client.get(f"/api/workflows/{workflow_id}/optimize/state")
-        resp.raise_for_status()
-        return resp.json()["data"]
-
-    def execute_workflow(self, workflow_id: str) -> dict[str, Any]:
-        resp = self._client.post(f"/api/workflows/{workflow_id}/execute")
-        resp.raise_for_status()
-        return resp.json()["data"]
-
-    def stop_workflow(self, workflow_id: str) -> None:
-        resp = self._client.post(f"/api/workflows/{workflow_id}/stop")
-        resp.raise_for_status()
-
-    def get_workflow_execution_state(self, workflow_id: str) -> dict[str, Any]:
-        """Live progress (while running) + last-completed status/results —
-        see GET /api/workflows/{id}/execution_state, and
-        core/session.py's report_progress() for how "progress" gets
-        populated during a run."""
-        resp = self._client.get(f"/api/workflows/{workflow_id}/execution_state")
-        resp.raise_for_status()
-        return resp.json()["data"]
-
-    def close(self) -> None:
-        self._client.close()
+# The Qt-free HTTP client body used to live here directly; it's now
+# core.api_client.LabPilotClient (also used by notebook_api.py, so
+# notebook/IPython kernels don't need to pull in PyQt6 just to talk to
+# the backend). Re-exported under this name since every desktop-app
+# caller (instrument_windows.py, workflow_window.py, ...) imports
+# BackendClient from here.
+BackendClient = LabPilotClient
 
 
 class _PollWorker(QObject):
@@ -315,6 +185,7 @@ class WorkflowStatePoller(QObject):
     _RECONNECT_DELAY_MS = 1500
     _PROGRESS_REFRESH_MS = 150
     _REDRAW_MS = 50
+    _LIVE_RESYNC_MS = 3000
 
     def __init__(self, base_url: str, workflow_id: str, interval_ms: int = 400, parent=None) -> None:
         super().__init__(parent)
@@ -373,6 +244,26 @@ class WorkflowStatePoller(QObject):
         self._redraw_timer.timeout.connect(self._maybe_redraw)
         self._redraw_timer.start()
 
+        # Safety net against a dropped READING event: core/events.py's
+        # EventBus.emit() does queue.put_nowait() into a bounded (1000)
+        # per-subscriber queue and silently discards the event on
+        # asyncio.QueueFull — which a fast/large scan can hit, since
+        # _event_broadcaster does one real network send per event,
+        # serially, and omniscan.py emits two events per point (progress +
+        # reading). A dropped READING event leaves a permanent gap in
+        # _live_data (nothing else ever re-fills that index — see
+        # _on_message's WORKFLOW_PROGRESS branch, which skips its own
+        # resync once reading data is flowing). session.report_progress()'s
+        # sink write is synchronous/in-process and bypasses the event bus
+        # entirely, so it's always current regardless of any drop — this
+        # timer periodically re-fetches it and heals any gap. Rare enough
+        # (every few seconds, not every point) to not reintroduce the
+        # per-point refetch cost this class exists to avoid.
+        self._live_resync_timer = QTimer(self)
+        self._live_resync_timer.setInterval(self._LIVE_RESYNC_MS)
+        self._live_resync_timer.timeout.connect(self._resync_live_data)
+        self._live_resync_timer.start()
+
         self._stopped = True
 
     def start(self) -> None:
@@ -384,6 +275,7 @@ class WorkflowStatePoller(QObject):
         self._reconnect_timer.stop()
         self._progress_refresh_timer.stop()
         self._redraw_timer.stop()
+        self._live_resync_timer.stop()
         self._socket.close()
         self._client.close()
 
@@ -500,6 +392,24 @@ class WorkflowStatePoller(QObject):
         self._redraw_pending = False
         self._state["progress"] = {"data": self._live_data, **self._live_meta}
         self.stateReady.emit(dict(self._state))
+
+    def _resync_live_data(self) -> None:
+        if not self._state.get("running") or self._live_data is None:
+            return
+        try:
+            state = self._client.get_workflow_execution_state(self._workflow_id)
+        except Exception:
+            return
+        progress = state.get("progress") or {}
+        data = progress.get("data")
+        # Only trust it if it's still describing the run we think is live —
+        # a stale/mismatched shape (e.g. a new run started between the
+        # request and this reply) would corrupt _live_data worse than the
+        # gap it's meant to fix.
+        if not data or progress.get("shape") != self._live_meta.get("shape"):
+            return
+        self._live_data = list(data)
+        self._redraw_pending = True
 
 
 class _OptimizePollWorker(QObject):

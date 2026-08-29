@@ -8,13 +8,6 @@
 </head>
 <body>
     <div id="root"></div>
-    <script type="module">
-        import { createRoot } from 'react-dom/client'
-        import { WorkflowWindowContent } from './src/components/WorkflowWindow/index.tsx'
-        import './src/index.css'
-
-        const root = createRoot(document.getElementById('root'))
-        root.render(<WorkflowWindowContent />)
-    </script>
+    <script type="module" src="/src/workflow-entry.tsx"></script>
 </body>
 </html>

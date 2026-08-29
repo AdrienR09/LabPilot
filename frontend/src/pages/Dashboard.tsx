@@ -3,36 +3,36 @@ import { Activity, Cpu, Zap, TrendingUp } from 'lucide-react';
 import { useLabPilotStore } from '@/store';
 
 export default function Dashboard() {
-  const { sessionStatus, devices, workflows } = useLabPilotStore();
+  const { session, devices, workflows } = useLabPilotStore();
 
   const stats = [
     {
       name: 'Connected Devices',
-      value: devices.filter(d => d.status === 'connected').length,
+      value: devices.filter(d => d.connected).length,
       icon: Cpu,
-      change: '+4.5%',
+      change: `${devices.length} total`,
       changeType: 'increase' as const,
     },
     {
       name: 'Active Workflows',
       value: workflows.filter(w => w.status === 'running').length,
       icon: Activity,
-      change: '+2.1%',
+      change: `${workflows.length} total`,
       changeType: 'increase' as const,
     },
     {
       name: 'System Health',
-      value: sessionStatus?.session_id ? 'Online' : 'Offline',
+      value: session.isConnected ? 'Online' : 'Offline',
       icon: Zap,
-      change: sessionStatus?.session_id ? 'Connected' : 'Disconnected',
-      changeType: sessionStatus?.session_id ? 'increase' : 'decrease' as const,
+      change: session.isConnected ? 'Connected' : 'Disconnected',
+      changeType: session.isConnected ? 'increase' as const : 'decrease' as const,
     },
     {
       name: 'AI Status',
-      value: sessionStatus?.ai_available ? 'Available' : 'Unavailable',
+      value: session.aiAvailable ? 'Available' : 'Unavailable',
       icon: TrendingUp,
-      change: sessionStatus?.ai_available ? 'Ready' : 'Offline',
-      changeType: sessionStatus?.ai_available ? 'increase' : 'decrease' as const,
+      change: session.aiAvailable ? 'Ready' : 'Offline',
+      changeType: session.aiAvailable ? 'increase' as const : 'decrease' as const,
     },
   ];
 
@@ -109,7 +109,7 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {sessionStatus?.session_id && (
+            {session.sessionId && (
               <div className="flex items-center space-x-3">
                 <div className="flex-shrink-0">
                   <Zap className="h-5 w-5 text-blue-500" />
@@ -119,7 +119,7 @@ export default function Dashboard() {
                     Connected to backend server
                   </p>
                   <p className="text-xs text-gray-500 dark:text-gray-400">
-                    Session ID: {sessionStatus.session_id}
+                    Session ID: {session.sessionId}
                   </p>
                 </div>
               </div>
