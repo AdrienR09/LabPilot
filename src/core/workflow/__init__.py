@@ -1,61 +1,25 @@
-"""LabPilot Workflow Engine.
+"""LabPilot workflow engine.
 
-Provides workflow graph models, execution engine, and code sandbox for
-experiment automation and AI-assisted workflow creation.
+A workflow is a Python module exposing `async def run(session) -> dict`.
+`WorkflowGraph` is its persistence record — id, name, metadata, and the
+role -> instrument bindings resolved at run time — not an execution model;
+see engine.py for why the node interpreter that once read it was removed.
 
 Key components:
-- WorkflowGraph: DAG model with nodes and edges
-- WorkflowNode types: Acquire, Analyse, Branch, Loop, Optimise, Set, Wait, Notify
-- WorkflowEngine: Async executor with checkpointing
-- CodeSandbox: Restricted Python execution for AnalyseNodes
-- WorkflowStore: Append-only SQLite storage
+- WorkflowGraph: the stored record for one workflow
+- WorkflowEngine: runs a workflow's script and reports its lifecycle
+- WorkflowStore: append-only SQLite storage with version history
 """
 
-from core.workflow.code_sandbox import (
-    CodeSandbox,
-    SandboxError,
-    execute_analysis_code,
-)
 from core.workflow.engine import WorkflowEngine, WorkflowExecutionError
 from core.workflow.graph import WorkflowEdge, WorkflowGraph
-from core.workflow.nodes import (
-    AcquireNode,
-    AnalyseNode,
-    BranchNode,
-    LoopNode,
-    NodeStatus,
-    NotifyNode,
-    OptimiseNode,
-    SetNode,
-    WaitNode,
-    WorkflowNode,
-    create_node,
-)
 from core.workflow.store import WorkflowStore, WorkflowSummary, WorkflowVersion
 
 __all__ = [
-    # Core graph components
-    "WorkflowGraph",
     "WorkflowEdge",
-    # Node types
-    "WorkflowNode",
-    "AcquireNode",
-    "AnalyseNode",
-    "BranchNode",
-    "LoopNode",
-    "OptimiseNode",
-    "SetNode",
-    "WaitNode",
-    "NotifyNode",
-    "NodeStatus",
-    "create_node",
-    # Execution components
     "WorkflowEngine",
     "WorkflowExecutionError",
-    "CodeSandbox",
-    "SandboxError",
-    "execute_analysis_code",
-    # Storage components
+    "WorkflowGraph",
     "WorkflowStore",
     "WorkflowSummary",
     "WorkflowVersion",

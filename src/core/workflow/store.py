@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 from core.workflow.graph import WorkflowGraph
-from core.workflow.script import graph_to_script
 
 __all__ = ["WorkflowStore", "WorkflowSummary", "WorkflowVersion"]
 
@@ -339,26 +338,26 @@ class WorkflowStore:
         }
 
     def _ensure_script(self, graph: WorkflowGraph) -> None:
-        """Give `graph` a `script_path` (default: core/workflow_library/,
-        the directory that module's own docstring already documents as
-        where generated workflows land) and (re)write the generated script
-        there — unless it's an externally-authored placeholder graph
-        (`metadata.externally_authored`), where the .py file at
-        `script_path` *is* the source of truth and must not be
-        overwritten by a graph-derived rendering (see script.py)."""
-        if graph.metadata.get("externally_authored"):
+        """Give `graph` a `script_path` if it has none, and make sure the
+        directory exists.
+
+        This no longer *writes* the script. It used to re-render the file
+        from the node graph on every save unless the graph was flagged
+        `externally_authored`, which silently discarded anything saved
+        through PUT /api/workflows/{id}/script for a graph missing that
+        flag. The graph renderer is gone along with the node interpreter it
+        described (see engine.py), so the .py file is now always the source
+        of truth."""
+        if graph.metadata.get("script_path"):
             return
 
-        script_path = graph.metadata.get("script_path")
-        if not script_path:
-            import core.workflow_library as _workflow_library
-            default_dir = Path(_workflow_library.__path__[0])
-            script_path = str(default_dir / f"{_slug(graph.name)}_{graph.id[:8]}.py")
-            graph.metadata["script_path"] = script_path
+        import core.workflow_library as _workflow_library
 
-        path = Path(script_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(graph_to_script(graph))
+        default_dir = Path(_workflow_library.__path__[0])
+        default_dir.mkdir(parents=True, exist_ok=True)
+        graph.metadata["script_path"] = str(
+            default_dir / f"{_slug(graph.name)}_{graph.id[:8]}.py"
+        )
 
     def _save_code_files(self, graph: WorkflowGraph, version: int) -> None:
         """Save AnalyseNode code to permanent files.
