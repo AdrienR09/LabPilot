@@ -181,7 +181,16 @@ class WorkflowEngine:
         if not required:
             return  # not a role-based script — nothing to check
         bindings = graph.metadata.get("instrument_bindings", {})
-        missing = [role for role in required if not bindings.get(role)]
+        # A role declared {"optional": True} (e.g. omniscan.py's "scanner"
+        # role, an alternative to its "actuator"/"detector" pair — see
+        # that template's own run() for the "at least one path is bound"
+        # check it does instead) is allowed to stay unbound; the script
+        # itself is responsible for checking session.has(role) before
+        # calling session.get(role) on anything optional.
+        missing = [
+            role for role in required
+            if not bindings.get(role) and not required[role].get("optional")
+        ]
         if missing:
             raise WorkflowExecutionError(
                 f"Unbound instrument role(s): {', '.join(missing)} — "

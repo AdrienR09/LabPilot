@@ -30,6 +30,10 @@ echo "🧹 Clearing any leftover processes on ports 3000/8000..."
 lsof -ti :3000 2>/dev/null | xargs kill -9 2>/dev/null || true
 lsof -ti :8000 2>/dev/null | xargs kill -9 2>/dev/null || true
 pkill -9 -f "manager_qt_webview" 2>/dev/null || true
+# The manager spawns its own backend subprocess (see next comment below) —
+# a manager that was force-killed rather than closed normally can leave
+# that subprocess orphaned, so clear it too.
+pkill -9 -f "labpilot start" 2>/dev/null || true
 sleep 1
 
 # Cleanup function
@@ -37,46 +41,10 @@ cleanup() {
     echo ""
     echo "🛑 Shutting down..."
     pkill -f "vite" 2>/dev/null || true
-    if [[ -n "$BACKEND_PID" ]]; then
-        kill $BACKEND_PID 2>/dev/null || true
-    fi
     echo "✅ Done"
 }
 
 trap cleanup EXIT INT TERM
-
-# Start Backend (real instrument registry, dashboard/catalog/connect/disconnect routes)
-echo "🐍 Starting Backend (port 8000)..."
-cd "$PROJECT_ROOT"
-labpilot start > /tmp/labpilot_backend.log 2>&1 &
-BACKEND_PID=$!
-echo "  Backend PID: $BACKEND_PID"
-
-echo "  Waiting for backend to be ready..."
-# A cold Python bytecode cache (e.g. right after pulling/editing a lot of
-# files) can make the first import noticeably slower than a normal restart
-# — 45s comfortably covers that without dragging out a genuine failure,
-# which is instead caught fast below by noticing the process already died.
-for i in $(seq 1 45); do
-    if curl -s -o /dev/null http://localhost:8000/api/health; then
-        break
-    fi
-    if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
-        echo "❌ Backend process exited unexpectedly"
-        tail /tmp/labpilot_backend.log
-        exit 1
-    fi
-    sleep 1
-done
-
-if ! curl -s -o /dev/null http://localhost:8000/api/health; then
-    echo "❌ Backend failed to start"
-    tail /tmp/labpilot_backend.log
-    exit 1
-fi
-
-echo "✅ Backend ready at http://localhost:8000"
-echo ""
 
 # Start React Frontend
 # npm's shebang is `#!/usr/bin/env node` — node only lives in the base conda
@@ -100,9 +68,16 @@ fi
 echo "✅ React Frontend ready at http://localhost:3000"
 echo ""
 
-# Launch Qt Manager
-echo "🪟 Launching Qt Manager..."
+# Launch Qt Manager — this spawns and owns its own backend server process
+# (src/ui/desktop/managed_server.py) as a real subprocess, not something
+# this script needs to start separately anymore: manager_qt_webview.py
+# starts `labpilot start` itself and waits for it to be ready before the
+# window even opens, printing a clear error and exiting non-zero if it
+# can't (e.g. port 8000 already in use by something else). Pass
+# --external-backend here instead if you want to point this at an
+# already-running/remote server rather than let the manager own one.
+echo "🪟 Launching Qt Manager (it will start its own backend server)..."
 cd "$PROJECT_ROOT/src/ui/desktop"
-python manager_qt_webview.py
+python manager_qt_webview.py "$@"
 
 # Cleanup runs on exit

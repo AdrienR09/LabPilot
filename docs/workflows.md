@@ -88,7 +88,7 @@ occurrence of the same text.
 
 A `RESULT_UI` constant tells the native desktop window (and the REST
 `execution_state` response) how to render this workflow's live/last
-result, without any per-template UI code. Three shapes exist today:
+result, without any per-template UI code. Four shapes exist today:
 
 **`spectrum`** (a growing 1D trace) — `grating_spectrometer.py`:
 
@@ -99,6 +99,49 @@ RESULT_UI = {
     "x_label": "Wavelength (nm)", "y_label": "Intensity",
 }
 ```
+
+`spectrum` (and `odmr`, below) also accept an optional fit-curve overlay
+(a dashed curve plus a vertical center marker, drawn over the raw trace
+once a run finishes):
+
+```python
+RESULT_UI = {
+    "type": "spectrum",
+    "x_key": "...", "y_key": "...",
+    "fit_x_key": "fit_curve_x", "fit_y_key": "fit_curve_y",
+    "fit_center_key": "fit_center",
+}
+```
+
+`fit_x_key`/`fit_y_key` name a dense reconstructed curve (see
+`core/analysis/fits.py`'s `evaluate_dip`) in your script's return dict —
+only meaningful in the final result (a per-iteration `report_progress()`
+call has nothing to put there yet), so the overlay appears once the run
+completes, not while it's live. Omit all three keys for a plain trace.
+
+**`odmr`** (qudi's own ODMR GUI shape: the averaged spectrum + fit,
+stacked above a "matrix" accumulation image — one row per repeat, so
+drift or a bad average is visible directly, not just in the final
+number) — `odmr_sweep.py`:
+
+```python
+RESULT_UI = {
+    "type": "odmr",
+    "x_key": "sweep_values", "y_key": "counts",
+    "matrix_key": "matrix", "repeat_key": "repeats_done",
+    "fit_x_key": "fit_curve_x", "fit_y_key": "fit_curve_y", "fit_center_key": "fit_center",
+    "x_label": "Frequency (Hz)", "y_label": "Detector reading",
+}
+```
+
+`matrix_key` names a list-of-rows (one row per completed repeat, same
+length as `x_key`'s array) in your script's return dict/progress payload;
+`repeat_key` names how many repeats have completed so far. This
+workflow's own `SWEEP_START`/`SWEEP_STOP`/`SWEEP_POINTS`/`SWEEP_POWER`/
+`AVERAGES`/`FIT_SHAPE` constants are edited live from the native window's
+Sweep Control/Fit docks (`components/odmr_control.py`) via the same
+tunable-param mechanism `AXIS_RANGES` uses (see below) — plain literal
+numbers/strings, not a computed list, so they actually qualify.
 
 **`image2d`** (a 2D image, optionally with a draggable crosshair tracking
 a live actuator position) — `confocal_scanner.py`:

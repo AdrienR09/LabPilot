@@ -97,7 +97,7 @@ RESULT_UI = {
 # here for an axis the actuator doesn't have is simply ignored (edit this
 # dict to match a real actuator's real axis names — "x"/"y"/"z" are just
 # the common case).
-AXIS_RANGES = {'x': [-4.0, 4.0, 10], 'y': [-4.0, 4.0, 10]}
+AXIS_RANGES = {'x': [0.0, 4.0, 30], 'y': [0.0, 4.0, 30]}
 
 # Which of the axes declared above to actually raster THIS run — qudi's
 # own scanning_probe_logic pattern: any subset of the scanner's axes can

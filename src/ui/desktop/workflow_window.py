@@ -52,14 +52,15 @@ from pymodaq_data.data import DataIndexWarning
 warnings.filterwarnings("ignore", category=DataIndexWarning)
 
 from main import DashboardInstrument, LabPilotStyle
-from backend_client import BackendClient, WorkflowStatePoller, OptimizePoller
+from backend_client import BackendClient, WorkflowStatePoller, OptimizePoller, AsyncWriter
 from components.base import InstrumentContext
 from components.schema_utils import fetch_schema, pick_1d_series, primary_key
 from components.widgets import dock, StatusLabel
 from components.workflow_result import (
-    Image2DResultView, SpectrumResultView, NDScanResultView, _ScanImagePanel, _OptimizerCurvePanel,
+    Image2DResultView, SpectrumResultView, NDScanResultView, OdmrResultView, _ScanImagePanel, _OptimizerCurvePanel,
 )
 from components.axes_control import AxesControlWidget, AxisRangeSettingsDialog, OptimizerSettingsDialog
+from components.odmr_control import OdmrSweepControlWidget, OdmrFitControlWidget, fit_dip, evaluate_dip
 from components.hdf5_export import save_workflow_result_hdf5
 
 __all__ = ["WorkflowWindow"]
@@ -154,11 +155,46 @@ def _referenced_instrument_ids(graph: dict[str, Any], script_text: Optional[str]
     return ids
 
 
+def _required_instrument_roles(script_text: str) -> dict[str, dict]:
+    """{role: {"kind":..., "optional":...}, ...} declared by this script's
+    `REQUIRED_INSTRUMENTS` constant — mirrors
+    core/workflow/instrument_roles.py's `read_required_instruments`
+    (the desktop app talks to the backend only over HTTP, so it re-parses
+    the script text it already fetched rather than importing that
+    backend module directly, same pattern as `_result_ui` above)."""
+    try:
+        tree = ast.parse(script_text)
+    except SyntaxError:
+        return {}
+    for stmt in tree.body:
+        is_plain = (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+            and stmt.targets[0].id == "REQUIRED_INSTRUMENTS"
+        )
+        is_annotated = (
+            isinstance(stmt, ast.AnnAssign)
+            and isinstance(stmt.target, ast.Name)
+            and stmt.target.id == "REQUIRED_INSTRUMENTS"
+            and stmt.value is not None
+        )
+        if is_plain or is_annotated:
+            try:
+                return ast.literal_eval(stmt.value)
+            except Exception:
+                pass
+    return {}
+
+
 def _unbound_roles(graph: dict[str, Any], script_text: Optional[str]) -> list[str]:
     """Role names this script declares (session.get("...") calls) that
     have no entry, or a null entry, in instrument_bindings — used to warn
     that some docks are missing rather than silently showing fewer than
-    expected."""
+    expected. A role declared `"optional": True` (e.g. omniscan.py's
+    "scanner" role — an alternative to its "actuator"/"detector" pair)
+    is excluded here even when unbound, since leaving it unbound is
+    normal/expected for that role, not a missing-binding problem."""
     bindings = graph.get("metadata", {}).get("instrument_bindings")
     if not bindings or not script_text:
         return []
@@ -166,9 +202,10 @@ def _unbound_roles(graph: dict[str, Any], script_text: Optional[str]) -> list[st
         tree = ast.parse(script_text)
     except SyntaxError:
         return []
+    required = _required_instrument_roles(script_text)
     return [
         role for role in _scan_session_get_roles(tree)
-        if role in bindings and not bindings.get(role)
+        if role in bindings and not bindings.get(role) and not required.get(role, {}).get("optional")
     ]
 
 
@@ -214,6 +251,15 @@ class WorkflowWindow(QMainWindow):
         super().__init__(parent)
         self.workflow_id = workflow_id
         self.client = client
+        # Every instrument write triggered by a live drag (crosshair,
+        # axes-control slider, optimizer-fit sync) goes through this
+        # instead of self.client.write() directly — see AsyncWriter's own
+        # docstring for why a direct call there was the actual cause of
+        # "the slider and crosshair... should move synchronously" not
+        # working (a blocking HTTP call on the GUI thread, once per
+        # ~30ms-debounced drag tick).
+        self._writer = AsyncWriter(client.base_url)
+        self._writer.errorOccurred.connect(lambda msg: self.status_bar.showMessage(f"Write failed: {msg}"))
         self.instrument_contexts: dict[str, InstrumentContext] = {}
         self.axes_control: Optional[AxesControlWidget] = None
         self._axes_control_actuator_id: Optional[str] = None
@@ -226,6 +272,16 @@ class WorkflowWindow(QMainWindow):
         # matters), not lazily from the first frame's data.
         self._omniscan_axis_ranges: Optional[dict] = None
         self._omniscan_hold_positions: Optional[dict] = None
+        # ODMR sweep/fit docks (see _add_odmr_sweep_control) — only built
+        # for a workflow whose params match odmr_sweep.py's shape.
+        self.odmr_sweep_control: Optional[OdmrSweepControlWidget] = None
+        self.odmr_fit_control: Optional[OdmrFitControlWidget] = None
+        self._odmr_sweep_control_dock: Optional[QDockWidget] = None
+        self._odmr_fit_control_dock: Optional[QDockWidget] = None
+        # Latest data the "odmr" result view is showing — read by the Fit
+        # dock's on-demand client-side re-fit (see _add_odmr_sweep_control).
+        self._last_odmr_x: Optional[list] = None
+        self._last_odmr_y: Optional[list] = None
         # OptimizerDockWidget state (see _add_optimizer_dock/_on_toggle_optimize)
         # — empty for any workflow with no optimizer capability declared
         # (see read_capabilities's RESULT_UI["crosshair"] fallback,
@@ -446,19 +502,18 @@ class WorkflowWindow(QMainWindow):
         panel while that panel is still untabbed (see `_add_result_view`'s
         ndscan branch).
 
-        A 2-axis step gets a `_ScanImagePanel` with a display-only,
-        BOXLESS marker (`show_box=False`) at the fit center — the
-        resizable range-defining box lives on the corresponding MAIN scan
-        panel instead (`NDScanResultView.panels`, same axis pair), read by
-        `_on_toggle_optimize`, not duplicated here (an earlier version had
-        its own separate resizable box on this pane too, which just meant
-        two disconnected boxes, only one of which actually controlled
-        anything — see this dock's now-magenta marker color, distinct
-        from the interactive green crosshair, so it's visually obvious
-        this one only marks where a fit converged and isn't the same
-        draggable target). A leftover single-axis step (an odd axis
-        count, e.g. qudi's own 3-axis confocal case) gets a
-        `_OptimizerCurvePanel` instead."""
+        A 2-axis step gets a `_ScanImagePanel` with no crosshair of its
+        own at all — qudi's optimizer dock only ever overlays a marker on
+        its OWN separate fine-scan plot (optimizer_dockwidget.py's
+        `set_2d_position`), never a second one on the same plot as the
+        live scanner target; this pane showed one anyway (a magenta,
+        boxless marker at the fit center) and it could visibly disagree
+        with the main panel's green crosshair — confusing, and not what
+        qudi does. `_on_optimize_state` still moves the REAL target (and
+        so the one green crosshair) to the fit center via
+        `_sync_optimized_position`; this pane just shows the image. A
+        leftover single-axis step (an odd axis count, e.g. qudi's own
+        3-axis confocal case) gets a `_OptimizerCurvePanel` instead."""
         axes = self._resolve_optimizer_axes(crosshair)
         self.optimizer_sequence = self._decompose_axes(axes)
         # Only called once _result_ui_spec is set (_add_result_view's
@@ -475,10 +530,6 @@ class WorkflowWindow(QMainWindow):
                 panel = _ScanImagePanel(
                     x_label=step_axes[0], y_label=step_axes[1], channel_label=value_label,
                 )
-                # Display-only marker (fit result), no box of its own —
-                # magenta so it reads as clearly distinct from the
-                # interactive green crosshair on the main scan panel.
-                panel.add_crosshair(on_move=None, show_box=False, color="#ff00ff")
             else:
                 panel = _OptimizerCurvePanel(axis_label=step_axes[0])
             grid.addWidget(panel, 0, col)
@@ -602,7 +653,6 @@ class WorkflowWindow(QMainWindow):
                     panel.set_image(array, first_frame=first)
                     panel.set_extent(x_positions, y_positions)
                 if fit is not None:
-                    panel.set_crosshair_pos(fit["center_x"], fit["center_y"])
                     best_parts.append(f"{step_axes[0]}={fit['center_x']:.4g}, {step_axes[1]}={fit['center_y']:.4g}")
                     self._sync_optimized_position(
                         step_axes, {step_axes[0]: fit["center_x"], step_axes[1]: fit["center_y"]}
@@ -627,15 +677,14 @@ class WorkflowWindow(QMainWindow):
 
     def _sync_optimized_position(self, step_axes: tuple, target: dict[str, float]) -> None:
         """Once a step's fit is available, moves the main crosshair (and
-        the real actuator) to match it — "the target actuator position
-        [should] correspond to the optimized position... the purple
-        crosshair should represent the same position as the green one".
-        The optimizer pane's own magenta marker (set_crosshair_pos, above)
-        only ever showed WHERE the fit landed; nothing moved the real
-        target to match until now. Idempotent per exact fit value (see
-        _optimizer_synced_fit) so this doesn't re-write the same target on
-        every ~150ms optimize-poll tick once a step has settled — only
-        when the fit actually changes."""
+        the real actuator) to match it — the one green crosshair on the
+        main scan panel is the only place a fit result gets shown as a
+        position now (see _build_optimizer_panel: the optimizer dock's
+        own panes used to duplicate this with a second, magenta marker
+        that could visibly disagree with this one — removed). Idempotent
+        per exact fit value (see _optimizer_synced_fit) so this doesn't
+        re-write the same target on every ~150ms optimize-poll tick once
+        a step has settled — only when the fit actually changes."""
         key = tuple(round(v, 9) for v in target.values())
         if self._optimizer_synced_fit.get(step_axes) == key:
             return
@@ -646,10 +695,7 @@ class WorkflowWindow(QMainWindow):
             for axis, value in target.items():
                 self.axes_control.set_target(axis, value)
         if self._axes_control_actuator_id:
-            try:
-                self.client.write(self._axes_control_actuator_id, target)
-            except Exception as e:
-                self.status_bar.showMessage(f"Failed to move to optimized position: {e}")
+            self._writer.write(self._axes_control_actuator_id, target)
 
     # ---- menu bar (File/View, matching qudi's ConfocalMainWindow) ----
 
@@ -872,6 +918,101 @@ class WorkflowWindow(QMainWindow):
                 self._omniscan_axis_ranges = axis_ranges
                 self._omniscan_hold_positions = hold_positions
                 self._add_axes_control(actuator_id, axis_ranges, scan_axes, hold_positions, actuator_schema)
+        elif all(k in params for k in ("SWEEP_START", "SWEEP_STOP", "SWEEP_POINTS")):
+            self._add_odmr_sweep_control(graph, params)
+
+    def _add_odmr_sweep_control(self, graph: dict, params: dict) -> None:
+        """odmr_sweep.py-family workflow: a Sweep Control dock (range/
+        power/averages + a CW park mini-section) and a Fit dock — qudi's
+        `OdmrScanControlDockWidget`/`OdmrCwControlDockWidget`/
+        `OdmrFitDockWidget`, see components/odmr_control.py. Dumb-view
+        widgets; every signal is wired here to the actual PUT/write/
+        action call, same separation `_add_axes_control` already uses."""
+        source_id = graph.get("metadata", {}).get("instrument_bindings", {}).get("source")
+
+        def _set_param(name: str, value) -> None:
+            try:
+                self.client.set_workflow_param(self.workflow_id, name, value)
+                self.status_bar.showMessage(f"{name} set to {value}")
+            except Exception as e:
+                self.status_bar.showMessage(f"Failed to update {name}: {e}")
+
+        sweep = OdmrSweepControlWidget(
+            params.get("SWEEP_START", 2.82e9), params.get("SWEEP_STOP", 2.86e9),
+            params.get("SWEEP_POINTS", 21), params.get("SWEEP_POWER", -10.0),
+            params.get("AVERAGES", 5), has_cw=bool(source_id),
+        )
+        sweep.sigStartChanged.connect(lambda v: _set_param("SWEEP_START", v))
+        sweep.sigStopChanged.connect(lambda v: _set_param("SWEEP_STOP", v))
+        sweep.sigPointsChanged.connect(lambda v: _set_param("SWEEP_POINTS", v))
+        sweep.sigPowerChanged.connect(lambda v: _set_param("SWEEP_POWER", v))
+        sweep.sigAveragesChanged.connect(lambda v: _set_param("AVERAGES", v))
+
+        def _cw_write(values: dict) -> None:
+            if not source_id:
+                return
+            self._writer.write(source_id, values)
+
+        def _cw_action(name: str) -> None:
+            if not source_id:
+                return
+            try:
+                self.client.call_action(source_id, name)
+                self.status_bar.showMessage(f"MW source: {name}")
+            except Exception as e:
+                self.status_bar.showMessage(f"CW {name} failed: {e}")
+
+        if source_id:
+            source_schema = fetch_schema(self.client, source_id)
+            settable = source_schema.get("settable", {})
+            cw_freq_key = next((k for k, dt in settable.items() if dt != "bool" and "power" not in k.lower()), None)
+            cw_power_key = next((k for k, dt in settable.items() if "power" in k.lower()), None)
+            sweep.sigCwFrequencyChanged.connect(
+                lambda v: _cw_write({cw_freq_key: v}) if cw_freq_key else None
+            )
+            sweep.sigCwPowerChanged.connect(
+                lambda v: _cw_write({cw_power_key: v}) if cw_power_key else None
+            )
+            sweep.sigCwOnRequested.connect(lambda: _cw_action("cw_on"))
+            sweep.sigCwOffRequested.connect(lambda: _cw_action("off"))
+
+        self.odmr_sweep_control = sweep
+        d = dock("Sweep Control", self)
+        d.setWidget(sweep)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, d)
+        self._odmr_sweep_control_dock = d
+
+        fit_widget = OdmrFitControlWidget(params.get("FIT_SHAPE", "lorentzian"))
+        fit_widget.sigShapeChanged.connect(lambda shape: _set_param("FIT_SHAPE", shape))
+
+        def _on_fit_requested(shape: str) -> None:
+            if not self._last_odmr_x or not self._last_odmr_y:
+                fit_widget.set_result_text("No data to fit yet")
+                return
+            result = fit_dip(self._last_odmr_x, self._last_odmr_y, shape)
+            if result is None:
+                fit_widget.set_result_text("Fit did not converge")
+                if isinstance(self.result_view, OdmrResultView):
+                    self.result_view.clear_fit()
+                return
+            fit_widget.set_result_text(
+                f"Center: {result['center']:.6g}\n"
+                f"Amplitude: {result['amplitude']:.6g}\n"
+                f"FWHM: {result['fwhm']:.6g}\n"
+                f"Baseline: {result['baseline']:.6g}"
+            )
+            if isinstance(self.result_view, OdmrResultView):
+                curve_x = np.linspace(min(self._last_odmr_x), max(self._last_odmr_x), 200).tolist()
+                curve_y = evaluate_dip(result, curve_x, shape)
+                self.result_view.set_fit(curve_x, curve_y, result["center"])
+
+        fit_widget.sigFitRequested.connect(_on_fit_requested)
+
+        self.odmr_fit_control = fit_widget
+        fit_dock = dock("Fit", self)
+        fit_dock.setWidget(fit_widget)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, fit_dock)
+        self._odmr_fit_control_dock = fit_dock
 
     def _add_axes_control(
         self, actuator_id: Optional[str], axis_ranges: dict, scan_axes: list,
@@ -902,17 +1043,17 @@ class WorkflowWindow(QMainWindow):
         def _on_move(axis: str, value: float) -> None:
             if not actuator_id:
                 return
-            try:
-                self.client.write(actuator_id, {axis: value})
-            except Exception as e:
-                self.status_bar.showMessage(f"Failed to move {axis}: {e}")
             # Bidirectional link with the scan panels' own crosshair (the
             # opposite direction of NDScanResultView's own
             # on_position_changed callback below) — both display the same
             # commanded target, so dragging this slider should move the
-            # crosshair too, not just write hardware.
+            # crosshair too, not just write hardware. Done BEFORE the
+            # write (which is fire-and-forget via AsyncWriter, not
+            # awaited) so the crosshair updates instantly regardless of
+            # how long the write takes — see AsyncWriter's docstring.
             if isinstance(self.result_view, NDScanResultView):
                 self.result_view.set_position({axis: value})
+            self._writer.write(actuator_id, {axis: value})
 
         def _on_hold_changed(new_hold_positions: dict) -> None:
             self._omniscan_hold_positions = new_hold_positions
@@ -1076,6 +1217,10 @@ class WorkflowWindow(QMainWindow):
             self.result_view = SpectrumResultView(
                 result_ui.get("x_label", ""), result_ui.get("y_label", "")
             )
+        elif kind == "odmr":
+            self.result_view = OdmrResultView(
+                result_ui.get("x_label", ""), result_ui.get("y_label", "")
+            )
         elif kind == "ndscan":
             # Unlike the other result views, NDScanResultView isn't a
             # single QWidget to embed in one generic dock — it manages its
@@ -1132,6 +1277,9 @@ class WorkflowWindow(QMainWindow):
         else:
             self.status_label.set_status("Idle", LabPilotStyle.TEXT_MUTED)
 
+        if self.odmr_sweep_control is not None:
+            self.odmr_sweep_control.set_locked(bool(running))
+
         if self.axes_control is not None:
             self.axes_control.set_locked(bool(running))
         if self._axes_control_dock is not None:
@@ -1163,6 +1311,44 @@ class WorkflowWindow(QMainWindow):
                 # not "value_key" (that's image2d's key name).
                 y_key = self._result_ui_spec.get("y_key")
                 self.result_view.update_data(source.get(x_key), source.get(y_key))
+                # Optional fit overlay (see odmr_sweep.py) — only populated
+                # in last_results once a run's fit has actually run, so
+                # this clears the overlay while a run is still in progress.
+                fit_x_key = self._result_ui_spec.get("fit_x_key")
+                fit_y_key = self._result_ui_spec.get("fit_y_key")
+                fit_center_key = self._result_ui_spec.get("fit_center_key")
+                if fit_x_key and fit_y_key:
+                    self.result_view.set_fit(
+                        source.get(fit_x_key), source.get(fit_y_key),
+                        source.get(fit_center_key) if fit_center_key else None,
+                    )
+            elif isinstance(self.result_view, OdmrResultView):
+                # odmr's own RESULT_UI convention: same x_key/y_key/fit_*
+                # keys as "spectrum", plus matrix_key/repeat_key for the
+                # accumulation image below the spectrum (see odmr_sweep.py).
+                y_key = self._result_ui_spec.get("y_key")
+                matrix_key = self._result_ui_spec.get("matrix_key")
+                repeat_key = self._result_ui_spec.get("repeat_key")
+                x_values = source.get(x_key)
+                y_values = source.get(y_key)
+                self.result_view.update_data(
+                    x_values, y_values,
+                    source.get(matrix_key) if matrix_key else None,
+                    source.get(repeat_key) if repeat_key else None,
+                )
+                # Cached for the Fit dock's on-demand client-side re-fit
+                # (see _add_odmr_sweep_control) — always the same data the
+                # view is currently showing.
+                self._last_odmr_x = x_values
+                self._last_odmr_y = y_values
+                fit_x_key = self._result_ui_spec.get("fit_x_key")
+                fit_y_key = self._result_ui_spec.get("fit_y_key")
+                fit_center_key = self._result_ui_spec.get("fit_center_key")
+                if fit_x_key and fit_y_key:
+                    self.result_view.set_fit(
+                        source.get(fit_x_key), source.get(fit_y_key),
+                        source.get(fit_center_key) if fit_center_key else None,
+                    )
             elif isinstance(self.result_view, NDScanResultView):
                 # ndscan's own RESULT_UI convention (see omniscan.py): each
                 # of these names a key in `source`, not the value itself.
@@ -1212,13 +1398,13 @@ class WorkflowWindow(QMainWindow):
 
         if isinstance(self.result_view, NDScanResultView):
             self.result_view.add_crosshair(
-                on_move=lambda changes: self.client.write(actuator_id, changes)
+                on_move=lambda changes: self._writer.write(actuator_id, changes)
             )
         else:
             x_axis = crosshair.get("x_axis", "x")
             y_axis = crosshair.get("y_axis", "y")
             self.result_view.add_crosshair(
-                on_move=lambda x, y: self.client.write(actuator_id, {x_axis: x, y_axis: y})
+                on_move=lambda x, y: self._writer.write(actuator_id, {x_axis: x, y_axis: y})
             )
 
     # ---- per-instrument context (no visible UI — see module docstring) ----
@@ -1268,4 +1454,5 @@ class WorkflowWindow(QMainWindow):
             self.result_view.stop()
         for ctx in self.instrument_contexts.values():
             ctx.stop_polling()
+        self._writer.stop()
         super().closeEvent(event)

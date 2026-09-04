@@ -444,8 +444,8 @@ class OptimizerSettingsDialog(QDialog):
 
     def _values(self) -> tuple[list, dict, dict]:
         selected = [name for name, row in self._rows.items() if row["check"].isChecked()]
-        ranges = {name: row["range"].value() for name in self._rows}
-        points = {name: int(row["points"].value()) for name in self._rows}
+        ranges = {name: row["range"].value() for name, row in self._rows.items()}
+        points = {name: int(row["points"].value()) for name, row in self._rows.items()}
         return selected, ranges, points
 
     def _on_apply(self) -> None:

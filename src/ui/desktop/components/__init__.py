@@ -15,6 +15,8 @@ from components import (  # noqa: F401 — import for registration side effect
     poll_rate,
     time_series,
     hyperspectral_viewer,
+    actions,
+    pulse_sequence,
 )
 
 __all__ = ["COMPONENT_REGISTRY", "ComponentMeta", "UIComponent"]

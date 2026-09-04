@@ -155,6 +155,46 @@ def _flat_len(value: Any, _depth: int = 0) -> int:
     return len(value)
 
 
+def _strip_oversized_fields(data: dict) -> dict:
+    """Recursively drops any list value whose flattened element count
+    exceeds `_PROGRESS_BROADCAST_LIMIT`, at any nesting depth reached
+    through dicts — not just `data`'s own top-level fields.
+
+    A purely top-level filter (this function's earlier shape) missed
+    WORKFLOW_COMPLETED entirely: its `data` is `{"workflow_id":...,
+    "execution_id":..., "results": {...}}` (engine.py's
+    _execute_workflow) — the template's whole return value (e.g.
+    omniscan's own bulky "data" array) lives one level deeper, inside
+    that "results" dict, not as one of `data`'s own top-level values. A
+    top-level-only check sees "results" itself (a dict, not a list) and
+    lets the whole thing through unexamined — measured: a single
+    un-thinned WORKFLOW_COMPLETED for one modest 30x30 2D-detector scan
+    produced a ~70MB WebSocket frame, ~65x over that protocol's own 1MB
+    limit, killing the connection outright rather than just being slow.
+    Recursing into dict values (but not lists — a list's own elements
+    are never themselves oversized dicts/lists in anything this project
+    produces) catches "results.data" the same way it catches
+    WORKFLOW_PROGRESS's own top-level "data"."""
+    result: dict = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            result[key] = _strip_oversized_fields(value)
+        elif isinstance(value, list):
+            # Strict "<": a 64x64 camera frame (a common real detector
+            # resolution) is exactly 4096 elements — with "<=" here that
+            # coincidence let every READING event for that exact size
+            # sail through un-thinned (900 points x ~81KB each = ~72MB of
+            # otherwise-avoidable per-point broadcast traffic, measured).
+            if _flat_len(value) < _PROGRESS_BROADCAST_LIMIT:
+                result[key] = value
+            # else: omit — client re-fetches the full value via REST
+            # (off the GUI thread — see WorkflowStatePoller in the
+            # desktop app) instead of receiving it over the socket.
+        else:
+            result[key] = value
+    return result
+
+
 # WebSocket Manager
 class WebSocketManager:
     """Manages WebSocket connections for real-time communication."""
@@ -273,32 +313,40 @@ class LabPilotServer:
                 if not self.websocket_manager.active_connections:
                     continue
                 event_dict = event.to_dict()
-                if event.kind == EventKind.WORKFLOW_PROGRESS:
-                    # Even WITH a listener connected, broadcasting the full
-                    # array on every single point reintroduces the same
-                    # O(size) cost per tick, now permanently (a workflow
-                    # window is always listening while open) instead of
-                    # only every poll interval. Measured: the same scan
-                    # went from finishing in <6s with no listener to still
-                    # running after 9s (and climbing per-point) with one
-                    # connected, purely from this serialization. The WS
-                    # push only needs to tell the client "something changed
-                    # and here's the shape of it" — the client re-fetches
-                    # the actual (still full, but throttled) snapshot via
-                    # GET execution_state when it wants to render (see
-                    # WorkflowStatePoller._on_message in the desktop app).
-                    # Every RESULT_UI-producing template names its bulky
-                    # array differently (omniscan's "data", generic_2d_scan/
-                    # confocal_scanner/hyperspectral_imaging's "image"/
-                    # "live_image", ...), so this drops by estimated size,
-                    # not by name — any field whose total element count
-                    # (flattening one level of nesting for image-style
-                    # list-of-lists) is past the threshold.
-                    event_dict = dict(event_dict)
-                    event_dict["data"] = {
-                        k: v for k, v in event_dict["data"].items()
-                        if _flat_len(v) <= _PROGRESS_BROADCAST_LIMIT
-                    }
+                # Applies to EVERY event kind, not just WORKFLOW_PROGRESS
+                # (a narrower version of this check used to only cover
+                # that one kind — but WORKFLOW_COMPLETED's own data
+                # carries the FULL final `results` dict (engine.py's
+                # _execute_workflow, "results": node_results — the whole
+                # return value of the template's run(), e.g. omniscan's
+                # complete flat "data" array), and READING's own "values"
+                # is only small for a 0D/1D detector — for a 2D/ND one,
+                # "small" means per-point-array-sized (4096+ elements for
+                # a 64x64 camera, 65536+ for a hyperspectral cube), sent
+                # on EVERY point. Measured: an un-thinned WORKFLOW_COMPLETED
+                # for one modest 30x30 2D-detector scan produced a single
+                # ~15MB WebSocket text frame — over that protocol's own
+                # 1MB frame limit, which outright KILLED the connection
+                # (websockets.exceptions.ConnectionClosedError: "message
+                # too big"), not just a slow one. Broadcasting the full
+                # array on every single point/every completion also
+                # reintroduces the same O(size) cost per tick, now
+                # permanently (a workflow window is always listening
+                # while open). The WS push only needs to tell the client
+                # "something changed and here's the shape of it" — the
+                # client re-fetches the actual full snapshot via GET
+                # execution_state (off the GUI thread — see
+                # WorkflowStatePoller._request_snapshot in the desktop
+                # app) whenever a kind it cares about arrives with a field
+                # missing. Every RESULT_UI-producing template names its
+                # bulky array differently (omniscan's "data",
+                # generic_2d_scan/confocal_scanner/hyperspectral_imaging's
+                # "image"/"live_image", ...), so this drops by estimated
+                # size, not by name — any field whose total element count
+                # (flattening one level of nesting for image-style
+                # list-of-lists) is past the threshold.
+                event_dict = dict(event_dict)
+                event_dict["data"] = _strip_oversized_fields(event_dict["data"])
                 event_data = {
                     "type": "event",
                     "event": event_dict,
@@ -1041,6 +1089,13 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
                 "kind": requirement.get("kind"),
                 "dimensionality": requirement.get("dimensionality"),
                 "instrument_id": bindings.get(role),
+                # e.g. omniscan.py's "scanner" role — an alternative to
+                # its "actuator"/"detector" pair, not required alongside
+                # them (see engine.py's _check_instrument_bindings, which
+                # already skips this same flag). Surfaced so a client can
+                # visually de-emphasize/hide an optional, unbound role
+                # instead of showing it identically to a required one.
+                "optional": bool(requirement.get("optional")),
             }
             for role, requirement in required.items()
         ]

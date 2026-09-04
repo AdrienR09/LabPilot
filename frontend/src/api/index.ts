@@ -174,6 +174,7 @@ export interface WorkflowBindingRole {
   kind: string;
   dimensionality: string;
   instrument_id: string | null;
+  optional: boolean;
 }
 
 export const getWorkflowBindings = (id: string): Promise<{ roles: WorkflowBindingRole[] }> =>

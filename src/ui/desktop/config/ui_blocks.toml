@@ -93,4 +93,23 @@ blocks = [
   { type = "move_control" },
   { type = "poll_rate", default_ms = 200 },
   { type = "settings_tree" },
+  { type = "actions" },
+]
+
+# A "generic"-kind instrument that isn't 0D/1D/2D/ND (currently just a
+# TTL pulse sequencer — see instruments/mock/pulse_sequencers.py) resolves
+# here (config_kind() collapses "generic" -> "detector",
+# config_dimensionality() passes its raw "GENERIC" dimensionality through
+# unchanged — see instrument_blocks.py). Its `sequence` field is a
+# structured value settings_tree can't render, so it gets a dedicated
+# editor instead of the plain detector-0D fallback this used to
+# accidentally resolve to.
+[detector."GENERIC"]
+blocks = [
+  { type = "toolbar", title = "Sequencer", actions = [
+      { name = "snapshot", label = "Refresh status", icon = "trace-snapshot", tooltip = "Read current running/length/duration status." },
+  ] },
+  { type = "pulse_sequence_editor" },
+  { type = "actions" },
+  { type = "settings_tree" },
 ]

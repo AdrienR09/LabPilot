@@ -12,6 +12,11 @@ from .lock_in_amplifiers import *
 from .source_meters import *
 from .temperature_controllers import *
 from .oscilloscopes import *
+from .lasers import *
+from .microwave_sources import *
+from .optical_modulators import *
+from .pulse_sequencers import *
+from .hardware_scan import *
 
 __all__ = [
     # Spectrometers (6)
@@ -58,4 +63,12 @@ __all__ = [
     'MockOscilloscope',
     'MockUSBOscilloscope',
     'MockHighSpeedOscilloscope',
+    # ODMR/pulsed-sensing instruments (4) — src/instruments/mock/{lasers,
+    # microwave_sources,optical_modulators,pulse_sequencers}.py
+    'MockLaser',
+    'MockMicrowaveSource',
+    'MockAOM',
+    'MockPulseSequencer',
+    # Hardware-timed (NI-card-style) scanning — src/instruments/mock/hardware_scan.py
+    'MockNIScanner',
 ]

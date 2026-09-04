@@ -222,6 +222,15 @@ class Session:
             )
         )
 
+    def has(self, name: str) -> bool:
+        """Whether `get(name)` would succeed — a literal registered
+        device, or a role with an active alias (`register_alias`). Lets a
+        role-based template check an *optional* role (see
+        `REQUIRED_INSTRUMENTS`'s `"optional": True`,
+        core/workflow/instrument_roles.py) is actually bound before
+        calling `get()` on it, without relying on a try/except KeyError."""
+        return name in self.devices or name in self._aliases
+
     def get(self, name: str) -> Readable:
         """Retrieve device from registry by name — or, if `name` isn't a
         literal registered device but a role with an active alias (see

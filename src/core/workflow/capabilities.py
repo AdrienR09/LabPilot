@@ -21,6 +21,7 @@ each fit and centered before the next one runs) is re-derived independently.
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 from typing import Any, Awaitable, Callable, Optional
 
@@ -29,7 +30,9 @@ import numpy as np
 from core.analysis.fits import fit_peak, fit_peak_2d
 from core.workflow_templates._common import detector_axes, move_and_settle
 
-__all__ = ["ScanCapability", "OptimizerSequence", "OptimizerCapability"]
+__all__ = [
+    "ScanCapability", "OptimizerSequence", "OptimizerCapability", "HardwareTimedScanCapability",
+]
 
 ProgressCallback = Optional[Callable[[dict], Awaitable[None]]]
 
@@ -125,6 +128,72 @@ class ScanCapability:
             await self.detector.unstage()
 
         return {"axes": axes, "positions": axis_position_lists, "shape": shape, "readings": readings}
+
+
+class HardwareTimedScanCapability:
+    """A whole scan frame driven by one `HardwareScanMixin`-implementing
+    device (`instruments/hardware_scan_mixin.py`) instead of
+    `ScanCapability`'s per-point actuator-write + detector-read loop — no
+    per-pixel software round-trip, since the device itself clocks its
+    own position waveform and detector readback together (a real NI DAQ
+    card doing this: `instruments/NI/generic.py`'s `NIDAQScannerAdapter`;
+    a physically-meaningful mock: `instruments/mock/hardware_scan.py`'s
+    `MockNIScanner`). Modeled on Qudi's own
+    `ScanningProbeInterface.configure_scan`/`start_scan`/`get_scan_data`
+    non-blocking-then-poll pattern (`scanning_probe_logic.py`'s
+    `start_scan`), not on anything in `ScanCapability` above — this is a
+    different device category, not an optimization of the same one.
+
+    Reports progress in the same shape `ScanCapability`/omniscan's own
+    `on_progress` produces (`shape`/`axis_names` not included here —
+    the calling template already knows its own axis names; see
+    `hardware_timed_scan.py`) specifically so the existing
+    `Image2DResultView`/`NDScanResultView` render it with no frontend
+    changes at all — a not-yet-acquired cell is `None`, same convention
+    `ScanCapability`'s own callers already produce.
+    """
+
+    #: How often to poll get_scan_data() while a frame is running.
+    POLL_INTERVAL_S = 0.1
+
+    def __init__(self, scanner) -> None:
+        self.scanner = scanner
+
+    async def run_scan(
+        self,
+        axes: list[str],
+        ranges: dict[str, tuple[float, float]],
+        resolution: dict[str, int],
+        frequency: float,
+        on_progress: ProgressCallback = None,
+    ) -> dict:
+        """Configures and runs one whole scan frame. Returns
+        `{"axes": axes, "positions": [...], "shape": [...], "data": [...]}` —
+        same field names as `ScanCapability.run_grid`'s return, `data`
+        flat and row-major (fast axis varies fastest, matching
+        `build_scan_waveform`'s acquisition order)."""
+        from instruments.hardware_scan_mixin import build_scan_waveform
+
+        _flat_waveforms, axis_positions, frame_size = build_scan_waveform(axes, ranges, resolution)
+        shape = [len(p) for p in axis_positions]
+
+        await self.scanner.configure_scan(axes, ranges, resolution, frequency)
+        await self.scanner.start_scan()
+        try:
+            while True:
+                chunk = await self.scanner.get_scan_data()
+                if on_progress is not None:
+                    await on_progress({
+                        "axes": axes, "positions": axis_positions, "shape": shape,
+                        "data": chunk["data"], "completed": chunk["completed"], "total": chunk["total"],
+                    })
+                if chunk["done"]:
+                    break
+                await asyncio.sleep(self.POLL_INTERVAL_S)
+        finally:
+            await self.scanner.stop_scan()
+
+        return {"axes": axes, "positions": axis_positions, "shape": shape, "data": chunk["data"]}
 
 
 class OptimizerSequence:

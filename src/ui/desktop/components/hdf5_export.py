@@ -69,6 +69,8 @@ def save_workflow_result_hdf5(
             _write_image2d(f, result_ui, results)
         elif kind == "spectrum":
             _write_spectrum(f, result_ui, results)
+        elif kind == "odmr":
+            _write_odmr(f, result_ui, results)
         else:
             # Unknown/absent RESULT_UI type — fall back to dumping every
             # plain scalar/array value present so nothing is silently lost.
@@ -122,6 +124,34 @@ def _write_spectrum(f: h5py.File, result_ui: dict, results: dict) -> None:
         f.create_dataset("x", data=np.asarray(results[x_key], dtype=float))
     if results.get(y_key):
         f.create_dataset("y", data=np.asarray(results[y_key], dtype=float))
+
+    # Optional fit overlay (see odmr_sweep.py) — dropped entirely before
+    # this, even though the template already computed it.
+    fit_x_key = result_ui.get("fit_x_key")
+    fit_y_key = result_ui.get("fit_y_key")
+    if results.get(fit_x_key):
+        f.create_dataset("fit_x", data=np.asarray(results[fit_x_key], dtype=float))
+    if results.get(fit_y_key):
+        f.create_dataset("fit_y", data=np.asarray(results[fit_y_key], dtype=float))
+    fit = results.get("fit")
+    if isinstance(fit, dict):
+        for key, value in fit.items():
+            if isinstance(value, (int, float)):
+                f.attrs[f"fit_{key}"] = value
+
+
+def _write_odmr(f: h5py.File, result_ui: dict, results: dict) -> None:
+    """`RESULT_UI["type"] == "odmr"` (odmr_sweep.py) — the averaged
+    spectrum + fit (same as `_write_spectrum`) plus the per-repeat raw
+    accumulation matrix qudi's own ODMR GUI shows below the spectrum."""
+    _write_spectrum(f, result_ui, results)
+    matrix_key = result_ui.get("matrix_key")
+    matrix = results.get(matrix_key)
+    if matrix:
+        f.create_dataset("matrix", data=np.asarray(matrix, dtype=float), compression="gzip")
+    repeat_key = result_ui.get("repeat_key")
+    if repeat_key and results.get(repeat_key) is not None:
+        f.attrs["repeats_done"] = results[repeat_key]
 
 
 def _write_generic(f: h5py.File, results: dict) -> None:

@@ -28,7 +28,7 @@ import pyqtgraph as pg
 from pyqtgraph.graphicsItems.GradientEditorItem import Gradients
 from PyQt6.QtCore import QObject, Qt, QRectF, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QDoubleSpinBox, QTabWidget,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QDoubleSpinBox, QTabWidget, QSplitter,
 )
 
 from components.nd_math import compute_1d_projection, compute_panel_projection, parse_flat_data
@@ -37,7 +37,7 @@ from components.widgets import dock
 
 pg.setConfigOption("imageAxisOrder", "row-major")  # match numpy's (row, col) convention
 
-__all__ = ["Image2DResultView", "SpectrumResultView", "NDScanResultView"]
+__all__ = ["Image2DResultView", "SpectrumResultView", "NDScanResultView", "OdmrResultView"]
 
 
 def _image_rect(x_values: list[float], y_values: list[float]) -> Optional[QRectF]:
@@ -98,9 +98,19 @@ class _Crosshair:
         show_box: bool = True,
         color: Optional[str] = None,
         on_size_changed: Optional[Callable[[float, float], None]] = None,
+        x_bounds: Optional[tuple[float, float]] = None,
+        y_bounds: Optional[tuple[float, float]] = None,
     ) -> None:
         self._on_move = on_move
         self._on_change = on_change
+        # The actuator's own declared axis range — qudi clamps its own
+        # crosshair the same way (InfiniteLine(bounds=...)/RectangleROI's
+        # _clip_area, qudi-core/util/widgets/plotting/roi.py), rejecting
+        # an out-of-range drag position live rather than after the fact.
+        # None means unbounded (e.g. before the first frame establishes a
+        # real extent — see Image2DResultView.update_data/set_bounds).
+        self._x_bounds = x_bounds
+        self._y_bounds = y_bounds
         # Fires with the box's new (half_width_x, half_width_y) whenever
         # its resize handles are dragged — NDScanResultView couples this
         # across every panel sharing an axis (the same per-axis "selected
@@ -146,7 +156,24 @@ class _Crosshair:
     def pos(self) -> tuple[float, float]:
         return self.v.value(), self.h.value()
 
+    def set_bounds(self, x_bounds: Optional[tuple[float, float]], y_bounds: Optional[tuple[float, float]]) -> None:
+        """Set/replace the clamp range — e.g. Image2DResultView calling
+        this once its first frame establishes a real extent, which
+        isn't known yet at add_crosshair() time."""
+        self._x_bounds = x_bounds
+        self._y_bounds = y_bounds
+
+    def _clamp(self, x: float, y: float) -> tuple[float, float]:
+        if self._x_bounds is not None:
+            lo, hi = self._x_bounds
+            x = min(max(x, min(lo, hi)), max(lo, hi))
+        if self._y_bounds is not None:
+            lo, hi = self._y_bounds
+            y = min(max(y, min(lo, hi)), max(lo, hi))
+        return x, y
+
     def set_pos(self, x: float, y: float) -> None:
+        x, y = self._clamp(x, y)
         self.h.blockSignals(True)
         self.v.blockSignals(True)
         self.h.setPos(y)
@@ -211,6 +238,17 @@ class _Crosshair:
 
     def _on_line_dragged(self, _line=None) -> None:
         x, y = self.pos()
+        clamped_x, clamped_y = self._clamp(x, y)
+        if (clamped_x, clamped_y) != (x, y):
+            # Snap the dragged line back within bounds — blockSignals so
+            # this reposition doesn't re-enter this same handler.
+            self.h.blockSignals(True)
+            self.v.blockSignals(True)
+            self.h.setPos(clamped_y)
+            self.v.setPos(clamped_x)
+            self.h.blockSignals(False)
+            self.v.blockSignals(False)
+            x, y = clamped_x, clamped_y
         self._sync_roi(x, y)
         if self._on_change is not None:
             self._on_change(x, y)
@@ -220,12 +258,14 @@ class _Crosshair:
         size = self.roi.size()
         pos = self.roi.pos()
         x, y = pos[0] + size[0] / 2, pos[1] + size[1] / 2
+        x, y = self._clamp(x, y)
         self.h.blockSignals(True)
         self.v.blockSignals(True)
         self.h.setPos(y)
         self.v.setPos(x)
         self.h.blockSignals(False)
         self.v.blockSignals(False)
+        self._sync_roi(x, y)
         if self._on_change is not None:
             self._on_change(x, y)
         if self._on_size_changed is not None:
@@ -274,6 +314,9 @@ class _ColorBarControls(QWidget):
     ) -> None:
         super().__init__(parent)
         self.image_item = image_item
+        # Capped overall width — a colorbar sidebar is a secondary control,
+        # not a plot; it shouldn't compete with the image for space.
+        self.setMaximumWidth(100)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
@@ -287,25 +330,27 @@ class _ColorBarControls(QWidget):
 
         self.histogram = pg.HistogramLUTWidget()
         self.histogram.setImageItem(image_item)
-        self.histogram.setMinimumWidth(130)
+        self.histogram.setFixedWidth(70)
         self.histogram.item.gradient.loadPreset(self.colormap_combo.currentText())
         self.histogram.item.sigLevelsChanged.connect(self._on_histogram_levels_changed)
         layout.addWidget(self.histogram, 1)
 
-        levels_row = QHBoxLayout()
-        levels_row.addWidget(QLabel("Min"))
+        # Min/Max stacked (not side by side) and prefix-labeled instead of
+        # a separate QLabel each — keeps the whole sidebar narrow.
         self.min_spin = QDoubleSpinBox()
+        self.min_spin.setPrefix("min ")
         self.min_spin.setRange(-1e12, 1e12)
         self.min_spin.setDecimals(4)
         self.min_spin.setKeyboardTracking(False)
-        levels_row.addWidget(self.min_spin)
-        levels_row.addWidget(QLabel("Max"))
+        self.min_spin.setMaximumWidth(90)
+        layout.addWidget(self.min_spin)
         self.max_spin = QDoubleSpinBox()
+        self.max_spin.setPrefix("max ")
         self.max_spin.setRange(-1e12, 1e12)
         self.max_spin.setDecimals(4)
         self.max_spin.setKeyboardTracking(False)
-        levels_row.addWidget(self.max_spin)
-        layout.addLayout(levels_row)
+        self.max_spin.setMaximumWidth(90)
+        layout.addWidget(self.max_spin)
 
         self.min_spin.valueChanged.connect(self._on_spin_changed)
         self.max_spin.valueChanged.connect(self._on_spin_changed)
@@ -490,7 +535,30 @@ class _ScanImagePanel(QWidget):
         self._last_y_values = y_values
         rect = _image_rect(x_values, y_values)
         if rect is not None:
-            self.image_item.setRect(rect)
+            if self.image_item.image is not None:
+                self.image_item.setRect(rect)
+            else:
+                # pyqtgraph's own ImageItem.setRect() docstring: "This
+                # method cannot be used before an image is assigned" —
+                # NDScanResultView builds every axis-pair panel (and
+                # calls set_extent on it) eagerly, before any scan has
+                # run and so before set_image() has ever been called on
+                # it (see _add_panel); calling setRect here crashed
+                # immediately (TypeError: unsupported operand type(s)
+                # for /: 'float' and 'NoneType', inside pyqtgraph's own
+                # setRect, dividing by self.width() which is None with
+                # no image set). But just skipping it left the
+                # ViewBox's visible range at pyqtgraph's tiny (0,0)-(1,1)
+                # default while the crosshair was created at a real
+                # coordinate (e.g. the axis range's midpoint) —
+                # correctly positioned, just entirely outside the
+                # visible viewport, so it looked like it had vanished.
+                # Setting the ViewBox's own range directly (rather than
+                # the ImageItem's transform) needs no image and gets the
+                # real axis extent on screen immediately; set_image()'s
+                # own first-frame autoRange() call supersedes this once
+                # real data arrives.
+                self.plot_widget.getPlotItem().getViewBox().setRange(rect, padding=0)
         if self._crosshair is not None:
             self._crosshair.update_box_size(x_values, y_values)
 
@@ -503,12 +571,15 @@ class _ScanImagePanel(QWidget):
         show_box: bool = True,
         color: Optional[str] = None,
         on_size_changed: Optional[Callable[[float, float], None]] = None,
+        x_bounds: Optional[tuple[float, float]] = None,
+        y_bounds: Optional[tuple[float, float]] = None,
     ) -> None:
         view = self.plot_widget.getPlotItem().getViewBox()
         self._move_callback = on_move
         self._crosshair = _Crosshair(
             view, on_move=on_move, on_change=on_change or self._update_position_label,
             show_box=show_box, color=color, on_size_changed=on_size_changed,
+            x_bounds=x_bounds, y_bounds=y_bounds,
         )
         if on_move is not None:
             view.scene().sigMouseClicked.connect(self._on_scene_clicked)
@@ -518,6 +589,15 @@ class _ScanImagePanel(QWidget):
         # otherwise it keeps _Crosshair's qudi-matching (1, 1) placeholder
         # until the first real set_extent() call replaces it.
         self._crosshair.update_box_size(self._last_x_values, self._last_y_values)
+
+    def set_crosshair_bounds(
+        self, x_bounds: Optional[tuple[float, float]], y_bounds: Optional[tuple[float, float]],
+    ) -> None:
+        """Updates the crosshair's clamp range — e.g. once
+        Image2DResultView's first frame establishes a real extent, not
+        known yet at add_crosshair() time. A no-op before add_crosshair()."""
+        if self._crosshair is not None:
+            self._crosshair.set_bounds(x_bounds, y_bounds)
 
     def set_crosshair_box_size(self, x_half: float, y_half: float) -> None:
         """Explicit external box half-widths — NDScanResultView harmonizes
@@ -668,14 +748,30 @@ class Image2DResultView(QWidget):
         self._got_first_frame = True
         self.panel.set_image(array, first_frame=first)
         self.panel.set_extent(self._x_values, self._y_values)
+        # The real extent (and so the crosshair's valid range) usually
+        # isn't known yet at add_crosshair() time — the first frame here
+        # is what actually establishes it.
+        self.panel.set_crosshair_bounds(self._axis_bounds(self._x_values), self._axis_bounds(self._y_values))
+
+    @staticmethod
+    def _axis_bounds(values: Optional[list[float]]) -> Optional[tuple[float, float]]:
+        if not values:
+            return None
+        return min(values), max(values)
 
     def add_crosshair(self, on_move: Optional[Callable[[float, float], None]] = None) -> None:
         """Adds a qudi-scanner-style crosshair (see `_Crosshair`).
         Dragging it — or clicking anywhere on the image — calls
         `on_move(x, y)` with the crosshair's real (x, y), live while the
         drag is happening (debounced) so the actuator visibly tracks the
-        drag in real time, not just once it's released."""
-        self.panel.add_crosshair(on_move=on_move)
+        drag in real time, not just once it's released. Clamped to the
+        scan's own real extent once known (see update_data) — qudi's own
+        crosshair can't be dragged past the scanner's declared axis range
+        either."""
+        self.panel.add_crosshair(
+            on_move=on_move,
+            x_bounds=self._axis_bounds(self._x_values), y_bounds=self._axis_bounds(self._y_values),
+        )
         self.panel.set_extent(self._x_values, self._y_values)
 
     def set_crosshair_pos(self, x: float, y: float) -> None:
@@ -699,7 +795,13 @@ class Image2DResultView(QWidget):
 
 
 class SpectrumResultView(QWidget):
-    """Renders a growing 1D trace (`RESULT_UI["type"] == "spectrum"`)."""
+    """Renders a growing 1D trace (`RESULT_UI["type"] == "spectrum"`),
+    plus an optional fit-curve overlay + center marker — same precedent
+    as `_OptimizerCurvePanel.set_fit_center` below, just alongside the
+    raw-data curve rather than replacing it. Opt-in per
+    `RESULT_UI["fit_x_key"/"fit_y_key"/"fit_center_key"]` (see
+    odmr_sweep.py); a template that doesn't declare them just never calls
+    set_fit(), leaving the overlay hidden."""
 
     def __init__(self, x_label: str = "", y_label: str = "", parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -711,12 +813,31 @@ class SpectrumResultView(QWidget):
         if y_label:
             self.plot_widget.setLabel("left", y_label)
         self.curve = self.plot_widget.plot(pen="c")
+        self.fit_curve = self.plot_widget.plot(pen=pg.mkPen("#ff8800", width=2, style=Qt.PenStyle.DashLine))
+        self.fit_marker = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("#ff8800", width=1, style=Qt.PenStyle.DotLine))
+        self.fit_marker.setVisible(False)
+        self.plot_widget.addItem(self.fit_marker, ignoreBounds=True)
         layout.addWidget(self.plot_widget)
 
     def update_data(self, x_values: Any, y_values: Any) -> None:
         if not x_values or not y_values:
             return
         self.curve.setData(list(x_values), list(y_values))
+
+    def set_fit(self, x_values: Any, y_values: Any, center: Optional[float]) -> None:
+        if not x_values or not y_values:
+            self.clear_fit()
+            return
+        self.fit_curve.setData(list(x_values), list(y_values))
+        if center is None:
+            self.fit_marker.setVisible(False)
+        else:
+            self.fit_marker.setPos(center)
+            self.fit_marker.setVisible(True)
+
+    def clear_fit(self) -> None:
+        self.fit_curve.setData([], [])
+        self.fit_marker.setVisible(False)
 
     # No crosshair on a 1D trace — no-ops so workflow_window.py can call
     # these polymorphically across every result-view type.
@@ -728,6 +849,71 @@ class SpectrumResultView(QWidget):
 
     def set_auto_level(self, auto_level: bool) -> None:
         pass
+
+
+class OdmrResultView(QWidget):
+    """Renders `RESULT_UI["type"] == "odmr"` — qudi's own ODMR GUI shape:
+    the averaged spectrum (+ fit overlay) stacked above a "matrix" image
+    where each row is one repeat's raw, unaveraged trace (qudi's
+    `OdmrPlotWidget`: a spectrum plot over a scan-line accumulation image,
+    sharing one colorbar for the image). Built entirely by composing the
+    two pieces that already do each half — `SpectrumResultView` on top,
+    `_ScanImagePanel` (with its own colorbar) below — in a `QSplitter` so
+    a user can resize the split, rather than a fresh plotting
+    implementation.
+    """
+
+    def __init__(
+        self,
+        x_label: str = "",
+        y_label: str = "",
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        self.spectrum = SpectrumResultView(x_label, y_label)
+        self.matrix_panel = _ScanImagePanel(x_label=x_label, y_label="Repeat", channel_label="Counts")
+        splitter.addWidget(self.spectrum)
+        splitter.addWidget(self.matrix_panel)
+        splitter.setSizes([2, 1])  # spectrum gets more room by default — matrix is a secondary view
+        layout.addWidget(splitter)
+
+        self._got_first_matrix_frame = False
+
+    def update_data(self, x_values: Any, y_values: Any, matrix: Any = None, repeats_done: Any = None) -> None:
+        self.spectrum.update_data(x_values, y_values)
+        if not matrix:
+            return
+        rows = [[np.nan if v is None else float(v) for v in row] for row in matrix]
+        array = np.array(rows, dtype=float)
+        if array.size == 0:
+            return
+        first = not self._got_first_matrix_frame
+        self._got_first_matrix_frame = True
+        self.matrix_panel.set_image(array, first_frame=first)
+        # X = frequency (same axis as the spectrum above), Y = repeat index.
+        self.matrix_panel.set_extent(list(x_values) if x_values else None, list(range(len(rows))))
+
+    def set_fit(self, x_values: Any, y_values: Any, center: Optional[float]) -> None:
+        self.spectrum.set_fit(x_values, y_values, center)
+
+    def clear_fit(self) -> None:
+        self.spectrum.clear_fit()
+
+    # No crosshair on either sub-panel here (the matrix's Y axis is repeat
+    # index, not a real actuator position) — no-ops so workflow_window.py
+    # can call these polymorphically across every result-view type.
+    def show_crosshair(self) -> None:
+        pass
+
+    def hide_crosshair(self) -> None:
+        pass
+
+    def set_auto_level(self, auto_level: bool) -> None:
+        self.matrix_panel.set_auto_level(auto_level)
 
 
 def _linspace(lo: float, hi: float, n: int) -> list[float]:
@@ -1095,6 +1281,10 @@ class NDScanResultView:
             on_move=lambda x, y, ni=name_i, nj=name_j: self._on_panel_moved(ni, nj, x, y),
             on_change=lambda x, y, ni=name_i, nj=name_j: self._on_panel_changed(ni, nj, x, y),
             on_size_changed=lambda w, h, ni=name_i, nj=name_j: self._on_panel_box_resized(ni, nj, w, h),
+            # The actuator's own declared AXIS_RANGES — known up front
+            # (unlike Image2DResultView), so bounds apply from the start.
+            x_bounds=(min(self._axis_positions[name_i]), max(self._axis_positions[name_i])),
+            y_bounds=(min(self._axis_positions[name_j]), max(self._axis_positions[name_j])),
         )
         hw_i = self._box_half_width.get(name_i)
         hw_j = self._box_half_width.get(name_j)

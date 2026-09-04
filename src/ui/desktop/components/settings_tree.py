@@ -41,20 +41,54 @@ class SettingsTreeComponent(UIComponent):
         except Exception:
             pass
 
-        children = []
-        for name in names:
+        def _param_for(name: str):
             dtype = settable.get(name, "float64")
+            if dtype == "json":
+                # No generic editor for a structured value here — a
+                # dedicated component (e.g. pulse_sequence_editor) owns
+                # rendering/writing it instead. float(list-or-dict) would
+                # otherwise crash the whole tree the moment a real value
+                # is staged.
+                return None
             unit = units.get(name, "")
             if dtype == "bool":
-                children.append({"name": name, "type": "bool", "value": bool(current.get(name, False))})
+                return {"name": name, "type": "bool", "value": bool(current.get(name, False))}
+            opts = {"name": name, "type": "float", "value": float(current.get(name, 0.0))}
+            if unit:
+                opts["suffix"] = f" {unit}"
+            lim = limits.get(name)
+            if lim:
+                opts["limits"] = tuple(lim)
+            return opts
+
+        # Group names sharing a prefix before the first "_" (e.g. a
+        # microwave source's cw_frequency/cw_power -> "cw",
+        # scan_start/scan_stop/scan_power -> "scan") under one nested
+        # parametertree group — purely a display grouping, no effect on
+        # what gets written. A name with no shared prefix (the common
+        # case — e.g. a spectrometer's lone integration_time_ms) renders
+        # exactly as it always has.
+        groups: dict[str, list[str]] = {}
+        for name in names:
+            prefix = name.split("_", 1)[0] if "_" in name else name
+            groups.setdefault(prefix, []).append(name)
+
+        children = []
+        row_count = 0
+        for prefix, group_names in groups.items():
+            if len(group_names) > 1:
+                sub = [p for n in group_names if (p := _param_for(n)) is not None]
+                if sub:
+                    children.append({"name": prefix, "type": "group", "children": sub, "expanded": True})
+                    row_count += len(sub)
             else:
-                opts = {"name": name, "type": "float", "value": float(current.get(name, 0.0))}
-                if unit:
-                    opts["suffix"] = f" {unit}"
-                lim = limits.get(name)
-                if lim:
-                    opts["limits"] = tuple(lim)
-                children.append(opts)
+                p = _param_for(group_names[0])
+                if p is not None:
+                    children.append(p)
+                    row_count += 1
+
+        if not children:
+            return  # every name was e.g. json-typed — nothing left to show
 
         params = Parameter.create(name="settings", type="group", children=children)
 
@@ -78,6 +112,6 @@ class SettingsTreeComponent(UIComponent):
         # area — cap it to roughly its actual content height instead of
         # letting the surrounding QMainWindow stretch it to fill whatever
         # space is available.
-        d.setMaximumHeight(min(360, 40 + 34 * len(children)))
+        d.setMaximumHeight(min(360, 40 + 34 * row_count))
         window.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, d)
         self.dock_widget = d

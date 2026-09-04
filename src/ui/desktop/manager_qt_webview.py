@@ -15,6 +15,7 @@ from PyQt6.QtWebEngineCore import QWebEngineSettings
 from PyQt6.QtWebChannel import QWebChannel
 
 from console_window import ConsoleWindow
+from managed_server import ManagedServer
 from main import LabPilotStyle
 from qt_bridge import QtBridge
 
@@ -195,7 +196,27 @@ class LabPilotManagerWindow(QMainWindow):
 
 
 def main():
-    """Main entry point"""
+    """Main entry point.
+
+    By default, this manager now OWNS the LabPilot server's lifecycle —
+    it spawns `labpilot start` itself as a separate OS process
+    (`managed_server.ManagedServer`, same "launch a subprocess, log to a
+    file, own its lifetime" convention as
+    `launch_instrument.py`/`launch_workflow.py`), instead of assuming one
+    is already running at `--backend-url`. It's a genuinely separate
+    process rather than an in-process thread deliberately: that was
+    tried first and reliably crashed (SIGBUS) as soon as `QWebEngineView`
+    actually rendered anything, on both an offscreen test environment
+    and real hardware — the same fork()-safety hazard the OS-process
+    isolation for instrument/workflow windows already exists to avoid,
+    now also applied to the server. The REST/WebSocket API itself is
+    unaffected either way (same routes, same behavior) — everything
+    downstream (the React frontend embedded below, QtBridge, spawned
+    instrument/workflow windows, any remote client) only ever talks to
+    "a server at host:port," not who's hosting it. Pass
+    --external-backend to keep the old behavior (connect to an
+    already-running, possibly remote, server instead).
+    """
     import argparse
 
     parser = argparse.ArgumentParser(description="LabPilot Manager with embedded React frontend")
@@ -205,20 +226,53 @@ def main():
         help="URL of the React frontend (default: http://localhost:3000)"
     )
     parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host to run the managed backend server on (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port to run the managed backend server on (default: 8000)",
+    )
+    parser.add_argument(
+        "--external-backend",
+        action="store_true",
+        help="Don't launch a server — connect to an already-running one at --backend-url instead "
+             "(e.g. a standalone `labpilot start`, possibly on a different machine).",
+    )
+    parser.add_argument(
         "--backend-url",
         default="http://localhost:8000",
-        help="URL of the backend API (default: http://localhost:8000)"
+        help="URL of an already-running backend API — only used with --external-backend "
+             "(default: http://localhost:8000)",
     )
 
     args = parser.parse_args()
+
+    managed_server: ManagedServer | None = None
+    if args.external_backend:
+        backend_url = args.backend_url
+    else:
+        managed_server = ManagedServer(host=args.host, port=args.port)
+        managed_server.start()
+        try:
+            managed_server.wait_until_ready()
+        except RuntimeError as exc:
+            print(f"❌ {exc}", file=sys.stderr)
+            return 1
+        backend_url = managed_server.base_url
 
     # Create Qt application
     app = QApplication(sys.argv)
     app.setApplicationName("LabPilot Manager")
     app.setOrganizationName("Laboratory Automation")
+    if managed_server is not None:
+        app.aboutToQuit.connect(managed_server.stop)
 
     # Create and show manager window
-    window = LabPilotManagerWindow(react_url=args.url, backend_url=args.backend_url)
+    window = LabPilotManagerWindow(react_url=args.url, backend_url=backend_url)
     window.show()
 
     print(f"""
@@ -226,7 +280,8 @@ def main():
 ║                  LabPilot Manager Started                    ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  React Frontend: {args.url:44} ║
-║  Backend API:    {args.backend_url:44} ║
+║  Backend API:    {backend_url:44} ║
+║  Backend mode:   {"external (--external-backend)" if args.external_backend else "managed subprocess":44} ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  The React frontend is embedded in this Qt window.           ║
 ║  Instrument UIs will open as separate Qt windows.            ║

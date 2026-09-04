@@ -61,6 +61,15 @@ class DeviceSchema(BaseModel):
         default_factory=list,
         description="Supported trigger modes (e.g., ['software', 'hardware'])",
     )
+    actions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Zero-argument adapter methods callable as UI buttons, beyond "
+            "the settable/set_<key> write contract (e.g. 'cw_on', "
+            "'reset_scan') — for state transitions that aren't a single "
+            "parameter write."
+        ),
+    )
     tags: list[str] = Field(
         default_factory=list,
         description="Searchable tags (e.g., ['spectroscopy', 'NI', 'VISA'])",

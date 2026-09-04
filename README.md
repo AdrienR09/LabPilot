@@ -71,7 +71,7 @@ adapter_registry.search(tags=["camera"])  # filter by DeviceSchema tags
 INSTRUMENT_CATALOG                        # manufacturer/model/dimensionality metadata
 ```
 
-`src/instruments/` is organized by manufacturer, then instrument type (`<Manufacturer>/<type>.py`) — not by which library backs the adapter. 258 instruments are catalogued across 80 manufacturers: 36 mock, 9 test fixtures, 188 PyMeasure (6 hand-written + 182 auto-generated from every real class in the installed pymeasure library), 25 pylablib. See [src/instruments/README.md](src/instruments/README.md) for coverage notes, including what's not covered yet (PyMoDAQ).
+`src/instruments/` is organized by manufacturer, then instrument type (`<Manufacturer>/<type>.py`) — not by which library backs the adapter. 262 instruments are catalogued across 80 manufacturers: 40 mock, 9 test fixtures, 188 PyMeasure (6 hand-written + 182 auto-generated from every real class in the installed pymeasure library), 25 pylablib. See [src/instruments/README.md](src/instruments/README.md) for coverage notes, including what's not covered yet (PyMoDAQ).
 
 To add a new instrument, create an adapter under `src/instruments/<Manufacturer>/` following `instruments/_base.py`'s `AdapterBase`, and add a matching entry to `instruments/catalog.py`.
 

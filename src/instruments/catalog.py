@@ -82,7 +82,7 @@ def _pymeasure(key: str, mfg: str, model: str, name: str, itype: InstrumentType,
 
 
 INSTRUMENT_CATALOG: list[InstrumentMetadata] = [
-    # Mock adapters (36) — src/instruments/mock/
+    # Mock adapters (41) — src/instruments/mock/
     _mock("mock_spectrometer", "Basic", "Mock Spectrometer", InstrumentType.DETECTOR_1D, ["spectrometer", "visible"]),
     _mock("mock_hi_res_spectrometer", "HighRes", "Mock High-Resolution Spectrometer", InstrumentType.DETECTOR_1D, ["spectrometer", "high-res"]),
     _mock("mock_uv_vis_spectrometer", "UV-VIS", "Mock UV-VIS Spectrometer", InstrumentType.DETECTOR_1D, ["spectrometer", "uv-vis"]),
@@ -119,6 +119,22 @@ INSTRUMENT_CATALOG: list[InstrumentMetadata] = [
     _mock("mock_oscilloscope", "Digital", "Mock Oscilloscope", InstrumentType.DETECTOR_1D, ["oscilloscope", "waveform"]),
     _mock("mock_usb_oscilloscope", "USB", "Mock USB Oscilloscope", InstrumentType.DETECTOR_1D, ["oscilloscope", "usb"]),
     _mock("mock_hs_oscilloscope", "HighSpeed", "Mock High-Speed Oscilloscope", InstrumentType.DETECTOR_1D, ["oscilloscope", "high-speed"]),
+
+    # ODMR/pulsed-sensing instruments (4) — src/instruments/mock/{lasers,
+    # microwave_sources,optical_modulators,pulse_sequencers}.py. Modeled on
+    # qudi's MicrowaveInterface/PulserInterface and the real-world PyMoDAQ
+    # S2QT ODMR plugin — see docs/workflows.md's ODMR notes.
+    _mock("mock_laser", "Pump", "Mock CW Pump Laser", InstrumentType.SOURCE, ["laser", "cw", "odmr"]),
+    _mock("mock_microwave_source", "RF", "Mock Microwave Source", InstrumentType.SOURCE, ["microwave", "rf", "signal-generator", "odmr"]),
+    _mock("mock_aom", "Gate", "Mock Acousto-Optic Modulator", InstrumentType.ACTUATOR_0D, ["aom", "modulator", "gate", "odmr"]),
+    _mock("mock_pulse_sequencer", "TTL", "Mock Pulse Sequencer", InstrumentType.GENERIC, ["pulser", "sequencer", "ttl", "odmr"]),
+
+    # Hardware-timed scanning — src/instruments/mock/hardware_scan.py.
+    # Modeled on Qudi's ScanningProbeInterface/NI hardware module: a single
+    # combined position+detector device clocked as one, not a generic
+    # actuator+detector pair — see core/workflow/capabilities.py's
+    # HardwareTimedScanCapability and core/workflow_library/hardware_timed_scan.py.
+    _mock("mock_ni_scanner", "Scanner", "Mock NI-Card Scanner", InstrumentType.GENERIC, ["ni", "daq", "scanner", "hardware-scan"]),
 
     # Test fixtures (9) — src/instruments/test_fixtures.py, high-fidelity simulations
     _fixture("fake_tunable_laser", "Tunable", "Test Tunable Laser", InstrumentType.SOURCE, ["laser", "tunable"]),
@@ -403,6 +419,11 @@ INSTRUMENT_CATALOG.extend([
     InstrumentMetadata("pco", "PCO", "pco.edge", "PCO Camera", InstrumentType.DETECTOR_2D, InstrumentBackend.PYLABLIB, tags=['camera', 'scmos']),
     InstrumentMetadata("hamamatsu_dcam", "Hamamatsu", "DCAM", "Hamamatsu Camera (DCAM)", InstrumentType.DETECTOR_2D, InstrumentBackend.PYLABLIB, tags=['camera']),
     InstrumentMetadata("ni_daq", "National Instruments", "NI-DAQmx", "NI-DAQmx Analog I/O", InstrumentType.GENERIC, InstrumentBackend.PYLABLIB, tags=['daq', 'analog-io', 'ni-daqmx']),
+    # Hardware-timed scanning (position output + detector input clocked as
+    # one) — see core/workflow/capabilities.py's HardwareTimedScanCapability.
+    # Untested against physical hardware (built directly against pylablib's
+    # verified API; no NI card in this dev environment — see NIDAQScannerAdapter's docstring).
+    InstrumentMetadata("ni_daq_scanner", "National Instruments", "NI-DAQmx Scanner", "NI-DAQmx Hardware-Timed Scanner", InstrumentType.GENERIC, InstrumentBackend.PYLABLIB, tags=['daq', 'ni-daqmx', 'scanner', 'hardware-scan']),
     InstrumentMetadata("pylablib_agilent33220a", "Agilent", "33220A", "Agilent 33220A Function Generator", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, tags=['awg', 'function-generator']),
     InstrumentMetadata("pylablib_agilent33500", "Agilent", "33500", "Agilent 33500 Function Generator", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, tags=['awg', 'function-generator']),
     InstrumentMetadata("pylablib_rigol_dg1000", "Rigol", "DG1000", "Rigol DG1000 Function Generator", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, tags=['awg', 'function-generator']),

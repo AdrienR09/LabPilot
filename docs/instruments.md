@@ -85,7 +85,7 @@ pick as a form built from these fields.
 
 ## The instrument catalog
 
-258 instruments are catalogued across 80 manufacturers: mock/test-fixture
+262 instruments are catalogued across 80 manufacturers: mock/test-fixture
 devices (for development without real hardware), PyMeasure-backed
 adapters (hand-written and auto-generated from every class in the
 installed `pymeasure` library), and pylablib-backed adapters. `catalog.py`

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["fit_peak", "fit_dip", "fit_peak_2d"]
+__all__ = ["fit_peak", "fit_dip", "fit_peak_2d", "evaluate_dip"]
 
 
 def fit_peak(x, y, shape: str = "gaussian") -> dict | None:
@@ -122,3 +122,20 @@ def fit_dip(x, y, shape: str = "lorentzian") -> dict | None:
         return None
     result["baseline"] = -result["baseline"]
     return result
+
+
+def evaluate_dip(fit: dict, x, shape: str = "lorentzian") -> list[float]:
+    """Reconstructs a `fit_dip()` result's curve over `x` — for a UI fit
+    overlay (see workflow_result.py's SpectrumResultView), not further
+    analysis. Same Lorentzian/Gaussian shapes as `fit_peak`'s inner
+    `model`, inverted about `baseline` to match fit_dip's own convention.
+    """
+    x = np.asarray(x, dtype=float)
+    amp, x0, base = fit["amplitude"], fit["center"], fit["baseline"]
+    if shape == "lorentzian":
+        gamma = fit["fwhm"] / 2.0
+        y = base - amp * gamma**2 / ((x - x0) ** 2 + gamma**2)
+    else:
+        sigma = fit["fwhm"] / 2.3548
+        y = base - amp * np.exp(-((x - x0) ** 2) / (2 * sigma**2))
+    return y.tolist()

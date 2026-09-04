@@ -3,12 +3,15 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import ReactFlow, {
   Node,
   Edge,
+  EdgeProps,
   Background,
   Controls,
   MiniMap,
   useNodesState,
   useEdgesState,
   addEdge,
+  getBezierPath,
+  EdgeLabelRenderer,
   Connection,
   ConnectionMode,
   Panel,
@@ -17,7 +20,7 @@ import ReactFlow, {
   Position,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Cpu, Microscope, Zap, RefreshCw, Camera, Calculator, GitBranch, RotateCw, Target, Sliders, Clock, Bell, Link2 } from 'lucide-react';
+import { Cpu, Microscope, Zap, RefreshCw, Camera, Calculator, GitBranch, RotateCw, Target, Sliders, Clock, Bell, Link2, X, Eye, EyeOff } from 'lucide-react';
 import { useLabPilotStore } from '@/store';
 import {
   getWorkflowGraph,
@@ -105,7 +108,12 @@ const PortNode = ({ data }: { data: any }) => {
       <div className="flex items-center space-x-2">
         <div className="p-1 rounded bg-white dark:bg-gray-700">{getIconForKind(data.kind)}</div>
         <div>
-          <div className="text-xs font-semibold text-gray-900 dark:text-white">{data.role}</div>
+          <div className="text-xs font-semibold text-gray-900 dark:text-white">
+            {data.role}
+            {data.optional && (
+              <span className="ml-1 text-[9px] font-normal text-gray-400 dark:text-gray-500">(optional)</span>
+            )}
+          </div>
           <div className="text-[10px] text-gray-500 dark:text-gray-400">
             needs {data.dimensionality} {data.kind}
           </div>
@@ -122,6 +130,40 @@ const PortNode = ({ data }: { data: any }) => {
         )}
       </div>
     </div>
+  );
+};
+
+// A binding edge (instrument -> role port) with an always-visible "x"
+// button at its midpoint to unbind it — pressing Delete/Backspace on a
+// selected edge already worked (onEdgesDelete below), but that's not
+// discoverable at all; this makes "there's a way to remove this link"
+// obvious without needing to know a keyboard shortcut exists.
+const BindingEdge = ({
+  id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style, markerEnd, data,
+}: EdgeProps) => {
+  const [edgePath, labelX, labelY] = getBezierPath({
+    sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition,
+  });
+  return (
+    <>
+      <path id={id} className="react-flow__edge-path" d={edgePath} style={style} markerEnd={markerEnd as string} />
+      <EdgeLabelRenderer>
+        <button
+          onClick={(event) => {
+            event.stopPropagation();
+            data?.onDelete?.();
+          }}
+          title="Unbind"
+          className="nodrag nopan absolute flex items-center justify-center h-5 w-5 rounded-full bg-white dark:bg-gray-700 border border-red-300 dark:border-red-500 text-red-600 dark:text-red-400 shadow hover:bg-red-50 dark:hover:bg-red-900/40"
+          style={{
+            transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+            pointerEvents: 'all',
+          }}
+        >
+          <X className="h-3 w-3" />
+        </button>
+      </EdgeLabelRenderer>
+    </>
   );
 };
 
@@ -197,6 +239,8 @@ const nodeTypes = {
   ...Object.fromEntries(Object.keys(WORKFLOW_NODE_STYLE).map((kind) => [kind, WorkflowGraphNode])),
 };
 
+const edgeTypes = { binding: BindingEdge };
+
 const PORT_ROW_HEIGHT = 74;
 const BOX_HEADER_HEIGHT = 40;
 const BOX_WIDTH = 260;
@@ -214,6 +258,7 @@ function buildBindingNodesAndEdges(
   roles: WorkflowBindingRole[],
   devices: any[],
   boxTop: number,
+  onUnbind: (workflowId: string, role: string) => void,
   status?: { running?: boolean; last_status?: string | null }
 ): { nodes: Node[]; edges: Edge[]; boxHeight: number } {
   const boxId = `wfbox:${workflowId}`;
@@ -252,17 +297,20 @@ function buildBindingNodesAndEdges(
         dimensionality: role.dimensionality,
         instrumentId: role.instrument_id,
         instrumentName: boundDevice ? boundDevice.name : role.instrument_id,
+        optional: role.optional,
       },
     });
     if (role.instrument_id) {
       edges.push({
         id: `binding:${workflowId}:${role.role}`,
+        type: 'binding',
         source: role.instrument_id,
         sourceHandle: 'instrument-out',
         target: portId,
         targetHandle: 'port-in',
         markerEnd: { type: MarkerType.ArrowClosed },
         style: { stroke: '#22c55e' },
+        data: { onDelete: () => onUnbind(workflowId, role.role) },
       });
     }
   });
@@ -370,6 +418,34 @@ export default function Flow() {
   // one case that still gets an isolated, single-workflow view instead of
   // the always-on merged topology.
   const [isolatedGraph, setIsolatedGraph] = useState(false);
+  // An optional, unbound role (e.g. omniscan.py's "scanner" — an
+  // alternative to its "actuator"/"detector" pair, not required
+  // alongside them) still shows by default so it isn't a surprise the
+  // first time — this only declutters once toggled off. A role that IS
+  // bound always shows regardless, so hiding this never makes an
+  // actually-in-use connection disappear.
+  const [showOptionalRoles, setShowOptionalRoles] = useState(true);
+
+  // Shared by both the delete-button on a BindingEdge and the built-in
+  // Delete/Backspace-on-selected-edge path (onEdgesDelete below).
+  const handleUnbind = useCallback(
+    async (targetWorkflowId: string, role: string) => {
+      setBindingError(null);
+      try {
+        await setWorkflowBinding(targetWorkflowId, role, null);
+        const portId = `port:${targetWorkflowId}:${role}`;
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === portId ? { ...n, data: { ...n.data, instrumentId: null, instrumentName: undefined } } : n
+          )
+        );
+        setEdges((eds) => eds.filter((e) => e.target !== portId));
+      } catch (err) {
+        setBindingError(err instanceof Error ? err.message : `Failed to unbind role ${role}`);
+      }
+    },
+    [setNodes, setEdges]
+  );
 
   // Devices + every role-based workflow's binding box+ports+edges, merged
   // onto one canvas and always shown — so any workflow's bindings can be
@@ -398,8 +474,16 @@ export default function Flow() {
       try {
         const bindings = await getWorkflowBindings(wf.id);
         if (bindings.roles.length === 0) continue;
+        // The summary count ("X/Y roles bound") always reflects every
+        // declared role — only which PortNodes actually get drawn is
+        // affected by showOptionalRoles, and even then only an optional
+        // role that's currently unbound is ever hidden (see
+        // showOptionalRoles' own docstring above).
         newRoleMap[wf.id] = bindings.roles;
-        const built = buildBindingNodesAndEdges(wf.id, wf.name, bindings.roles, devices, boxTop, {
+        const visibleRoles = bindings.roles.filter(
+          (r) => showOptionalRoles || !r.optional || r.instrument_id
+        );
+        const built = buildBindingNodesAndEdges(wf.id, wf.name, visibleRoles, devices, boxTop, handleUnbind, {
           running: wf.running,
           last_status: wf.last_status,
         });
@@ -457,7 +541,7 @@ export default function Flow() {
   useEffect(() => {
     loadView();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workflowId, devices]);
+  }, [workflowId, devices, showOptionalRoles]);
 
   const refresh = () => loadView();
 
@@ -510,34 +594,30 @@ export default function Flow() {
         // A port can only hold one binding — drop any previous edge into
         // it before adding the new one.
         setEdges((eds) => addEdge(
-          { ...params, id: `binding:${targetWorkflowId}:${role}`, sourceHandle: 'instrument-out', targetHandle: 'port-in', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#22c55e' } },
+          {
+            ...params, id: `binding:${targetWorkflowId}:${role}`, type: 'binding',
+            sourceHandle: 'instrument-out', targetHandle: 'port-in',
+            markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#22c55e' },
+            data: { onDelete: () => handleUnbind(targetWorkflowId, role) },
+          },
           eds.filter((e) => e.target !== portNode.id)
         ));
       } catch (err) {
         setBindingError(err instanceof Error ? err.message : `Failed to bind role ${role}`);
       }
     },
-    [nodes, devices, setNodes, setEdges]
+    [nodes, devices, setNodes, setEdges, handleUnbind]
   );
 
   const onEdgesDelete = useCallback(
-    async (deleted: Edge[]) => {
+    (deleted: Edge[]) => {
       for (const edge of deleted) {
         const portNode = nodes.find((n) => n.id === edge.target);
         if (!portNode || portNode.type !== 'port') continue;
-        const targetWorkflowId = portNode.data.workflowId as string;
-        const role = portNode.data.role as string;
-        try {
-          await setWorkflowBinding(targetWorkflowId, role, null);
-          setNodes((nds) =>
-            nds.map((n) => (n.id === portNode.id ? { ...n, data: { ...n.data, instrumentId: null, instrumentName: undefined } } : n))
-          );
-        } catch (err) {
-          setBindingError(err instanceof Error ? err.message : `Failed to unbind role ${role}`);
-        }
+        handleUnbind(portNode.data.workflowId as string, portNode.data.role as string);
       }
     },
-    [nodes, setNodes]
+    [nodes, handleUnbind]
   );
 
   return (
@@ -552,11 +632,21 @@ export default function Flow() {
               {isolatedGraph
                 ? 'Real workflow graph — nodes and edges as actually stored, not a mockup.'
                 : Object.keys(roleMap).length > 0
-                ? 'Drag an instrument onto a role to bind it — delete the connection to unbind. Every workflow stays visible here so bindings can always be edited.'
+                ? 'Drag an instrument onto a role to bind it — click the x on a connection to unbind it. Every workflow stays visible here so bindings can always be edited.'
                 : 'Visual representation of connected instruments'}
             </p>
           </div>
           <div className="flex items-center space-x-2">
+            {!isolatedGraph && Object.values(roleMap).some((roles) => roles.some((r) => r.optional)) && (
+              <button
+                onClick={() => setShowOptionalRoles((v) => !v)}
+                title={showOptionalRoles ? 'Hide unused optional roles' : 'Show optional roles'}
+                className="inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 text-sm font-medium rounded-md text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+              >
+                {showOptionalRoles ? <EyeOff className="h-4 w-4 mr-2" /> : <Eye className="h-4 w-4 mr-2" />}
+                {showOptionalRoles ? 'Hide Optional Roles' : 'Show Optional Roles'}
+              </button>
+            )}
             {devices.some((d: any) => !d.connected) && (
               <button
                 onClick={handleConnectAll}
@@ -598,6 +688,7 @@ export default function Flow() {
             onEdgesDelete={onEdgesDelete}
             isValidConnection={isValidConnection}
             nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
             connectionMode={ConnectionMode.Loose}
             fitView
             className="dark:bg-gray-800"

@@ -42,18 +42,36 @@ actuator or wait for it to settle.
 import numpy as np
 
 from core.session import Session
-from core.workflow.capabilities import ScanCapability
+from core.workflow.capabilities import ScanCapability, HardwareTimedScanCapability
 from core.workflow_templates._common import detector_axes
 
 REQUIRED_INSTRUMENTS = {
-    "actuator": {"kind": "motor", "dimensionality": "ND"},
+    # "actuator"+"detector" (the per-point move-and-read path, below) and
+    # "scanner" (the hardware-timed whole-frame path — a single device
+    # implementing HardwareScanMixin, e.g. a real NI DAQ card managing its
+    # own position waveform + detector readback together, one hardware
+    # clock, no per-pixel software round-trip; see
+    # instruments/hardware_scan_mixin.py) are two alternative ways to run
+    # this SAME workflow — bind whichever one you have. All three are
+    # "optional" here (engine.py's _check_instrument_bindings skips an
+    # optional role's binding check entirely) since exactly which pair
+    # is bound isn't known until run time; run() below raises a clear
+    # error if neither alternative ends up bound.
+    "actuator": {"kind": "motor", "dimensionality": "ND", "optional": True},
     # No "dimensionality" here (unlike "actuator" above) — deliberately
     # accepts a 0D, 1D, or 2D detector interchangeably; detector_axes()
     # below auto-detects which, from the bound instrument's own schema.
-    "detector": {"kind": "detector"},
+    "detector": {"kind": "detector", "optional": True},
+    "scanner": {"kind": "generic", "optional": True},
 }
 ACTUATOR_ID = "actuator"
 DETECTOR_ID = "detector"
+SCANNER_ID = "scanner"
+
+# Fast-axis pixel rate for the hardware-timed "scanner" path (Hz) — see
+# HardwareTimedScanCapability.run_scan; ignored entirely when running the
+# ordinary per-point actuator+detector path instead.
+SCAN_FREQUENCY = 5000.0
 
 # Declares this workflow's tier-2 capabilities (WORKFLOW_COMPOSITION.md) —
 # the server auto-wires an optimizer (generic /optimize/start|stop|state
@@ -125,6 +143,90 @@ _MAX_SCAN_ELEMENTS = 50_000_000
 
 
 async def run(session: Session) -> dict:
+    has_scanner = session.has(SCANNER_ID)
+    has_actuator_pair = session.has(ACTUATOR_ID) and session.has(DETECTOR_ID)
+    if not has_scanner and not has_actuator_pair:
+        raise RuntimeError(
+            "Bind either 'scanner' (a single hardware-timed-scanning device, e.g. a "
+            "real NI DAQ card or mock_ni_scanner) or both 'actuator' and 'detector' "
+            "(the ordinary per-point move-and-read path) before running this workflow."
+        )
+    if has_scanner:
+        return await _run_hardware_timed(session)
+    return await _run_per_point(session)
+
+
+async def _run_hardware_timed(session: Session) -> dict:
+    """Whole-frame scan via a single HardwareScanMixin-implementing
+    "scanner" device — see HardwareTimedScanCapability's own docstring
+    for why this is a fundamentally different path from
+    `_run_per_point` below (one shared hardware clock drives both
+    position and detector readback, no per-pixel software round-trip),
+    not just a faster version of the same loop."""
+    scanner = session.get(SCANNER_ID)
+
+    active_axes = [name for name in SCAN_AXES if name in AXIS_RANGES]
+    if not active_axes:
+        raise RuntimeError(
+            f"None of SCAN_AXES {SCAN_AXES} are declared in AXIS_RANGES {list(AXIS_RANGES)} "
+            f"— edit one to match the other."
+        )
+    if len(active_axes) > 2:
+        raise RuntimeError(
+            f"The hardware-timed 'scanner' path supports at most 2 simultaneously-scanned "
+            f"axes (only the fast axis is genuinely hardware-clocked on this class of "
+            f"device — see instruments/hardware_scan_mixin.py), but SCAN_AXES selects "
+            f"{len(active_axes)}: {active_axes}. Narrow SCAN_AXES to 1 or 2 axes, or use "
+            f"the 'actuator'+'detector' per-point path instead for a 3+ axis scan."
+        )
+
+    # active_axes is ["slow", "fast"] (or just ["only"] for 1D) — first
+    # axis varies slowest, matching _run_per_point's own itertools.product
+    # convention below and every result view built on it. build_scan_waveform
+    # (instruments/hardware_scan_mixin.py) uses the OPPOSITE convention for
+    # a 2-axis scan (axes[0]=fast, axes[1]=slow, mirroring the interfuse's
+    # own tile/repeat order) — so call it with active_axes REVERSED, and
+    # reverse its "positions"/"shape" fields back before reporting, so
+    # this template's own output keeps the one "first axis slowest"
+    # convention throughout. Its "data" field needs no such reversal: the
+    # flat array it returns is already laid out slow-axis-outer/
+    # fast-axis-inner — exactly what reshaping to [n_slow, n_fast] (this
+    # function's own "shape", not build_scan_waveform's) expects.
+    waveform_axes = list(reversed(active_axes))
+    ranges = {axis: (AXIS_RANGES[axis][0], AXIS_RANGES[axis][1]) for axis in active_axes}
+    resolution = {axis: int(AXIS_RANGES[axis][2]) for axis in active_axes}
+
+    async def on_progress(chunk: dict) -> None:
+        axis_positions = list(reversed(chunk["positions"]))
+        shape = list(reversed(chunk["shape"]))
+        await session.report_progress({
+            "data": chunk["data"],
+            "shape": shape,
+            "axis_names": active_axes,
+            "axis_positions": [list(p) for p in axis_positions],
+            "actuator_axis_count": len(active_axes),
+            "completed": chunk["completed"],
+            "total": chunk["total"],
+        })
+
+    scan = HardwareTimedScanCapability(scanner)
+    result = await scan.run_scan(waveform_axes, ranges, resolution, SCAN_FREQUENCY, on_progress=on_progress)
+    axis_positions = [list(p) for p in reversed(result["positions"])]
+    shape = list(reversed(result["shape"]))
+
+    return {
+        "scanner": SCANNER_ID,
+        "axis_names": active_axes,
+        "axis_positions": axis_positions,
+        "actuator_axis_count": len(active_axes),
+        "shape": shape,
+        "data": result["data"],  # flat, row-major (last axis varies fastest) — reshape to `shape` to use
+    }
+
+
+async def _run_per_point(session: Session) -> dict:
+    """Per-point actuator-move + detector-read loop — the original
+    omniscan behavior, unchanged; see ScanCapability."""
     actuator = session.get(ACTUATOR_ID)
     detector = session.get(DETECTOR_ID)
 

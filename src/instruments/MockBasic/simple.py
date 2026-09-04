@@ -350,9 +350,24 @@ class _MovingAxisMixin:
 class MockBasicActuator1D(_MovingAxisMixin, AdapterBase):
     """Single-axis position control (e.g. linear stage) — writes its
     current position into the shared `_SimulatedSample` on every step, so
-    a paired `MockBasic*` detector's signal genuinely depends on it."""
+    a paired `MockBasic*` detector's signal genuinely depends on it.
 
-    def __init__(self, name: str = "mock_basic_actuator_1d", sample: str = "default") -> None:
+    `instant=True` skips the background mover thread's gradual approach
+    entirely — `write()` snaps straight to the target (and the shared
+    `_SimulatedSample` is updated synchronously), so a caller's very next
+    `read()` (even with zero wait) already reports the commanded
+    position. For a per-point scan loop (`move_and_settle`,
+    `core/workflow_templates/_common.py`) built on the ordinary
+    real-time-motion behavior, this removes that per-point wait
+    entirely — the option a timing test isolates the "is it the
+    simulated motion, or something else" question needs (see
+    `core/workflow_templates/omniscan.py`'s own timing investigation).
+    Default False preserves the existing realistic-motion demo
+    behavior for everyone else."""
+
+    def __init__(
+        self, name: str = "mock_basic_actuator_1d", sample: str = "default", instant: bool = False,
+    ) -> None:
         super().__init__()
         self._name = name
         self._position = 0.0
@@ -361,6 +376,7 @@ class MockBasicActuator1D(_MovingAxisMixin, AdapterBase):
         self._running = False
         self._thread: threading.Thread | None = None
         self._sample = _SimulatedSample.get(sample, ("position",))
+        self._instant = instant
 
     @property
     def schema(self) -> DeviceSchema:
@@ -398,16 +414,24 @@ class MockBasicActuator1D(_MovingAxisMixin, AdapterBase):
             if not (lo <= target <= hi):
                 raise ValueError(f"position {target} out of range [{lo}, {hi}]")
             self._target = target
+            if self._instant:
+                self._position = target
+                self._sample.update_position({"position": self._position})
 
 
 class MockBasicActuatorND(_MovingAxisMixin, AdapterBase):
     """Multi-axis position control (e.g. XY/XYZ stage) — writes its
     current position into the shared `_SimulatedSample` on every step, so
-    a paired `MockBasic*` detector's signal genuinely depends on it."""
+    a paired `MockBasic*` detector's signal genuinely depends on it.
+
+    `instant=True` — see `MockBasicActuator1D`'s docstring; same
+    bypass-the-mover-thread behavior, all axes at once."""
 
     AXES = ("x", "y", "z")
 
-    def __init__(self, name: str = "mock_basic_actuator_nd", sample: str = "default") -> None:
+    def __init__(
+        self, name: str = "mock_basic_actuator_nd", sample: str = "default", instant: bool = False,
+    ) -> None:
         super().__init__()
         self._name = name
         self._position = {axis: 0.0 for axis in self.AXES}
@@ -416,6 +440,7 @@ class MockBasicActuatorND(_MovingAxisMixin, AdapterBase):
         self._running = False
         self._thread: threading.Thread | None = None
         self._sample = _SimulatedSample.get(sample, self.AXES)
+        self._instant = instant
 
     @property
     def schema(self) -> DeviceSchema:
@@ -460,6 +485,10 @@ class MockBasicActuatorND(_MovingAxisMixin, AdapterBase):
                 if not (lo <= target <= hi):
                     raise ValueError(f"{axis} {target} out of range [{lo}, {hi}]")
                 self._target[axis] = target
+                if self._instant:
+                    self._position[axis] = target
+        if self._instant:
+            self._sample.update_position(self._position)
 
 
 class MockBasicSource(AdapterBase):

@@ -19,7 +19,15 @@ import httpx
 class LabPilotClient:
     def __init__(self, base_url: str = "http://localhost:8000") -> None:
         self.base_url = base_url.rstrip("/")
-        self._client = httpx.Client(base_url=self.base_url, timeout=5.0)
+        # Read gets more room than connect/write: GET .../execution_state
+        # returns a workflow's *entire* last_results every call (e.g.
+        # omniscan's full flat data array, not a delta — see
+        # server.py's get_workflow_execution_state) — a big finished scan
+        # can legitimately take longer than a plain request/response
+        # round-trip to transfer and JSON-parse, well before anything is
+        # actually stuck.
+        timeout = httpx.Timeout(5.0, read=30.0)
+        self._client = httpx.Client(base_url=self.base_url, timeout=timeout)
 
     def get_instrument(self, instrument_id: str) -> dict[str, Any] | None:
         """Fetch one instrument's status by id from the live registry."""
@@ -51,6 +59,15 @@ class LabPilotClient:
             f"/api/dashboard/instruments/{instrument_id}/settings",
             json={"values": values},
         )
+        resp.raise_for_status()
+
+    def call_action(self, instrument_id: str, name: str) -> None:
+        """Invoke one of an instrument's declared `DeviceSchema.actions`
+        (e.g. a microwave source's "cw_on") — a zero-argument adapter
+        method that isn't a settable-parameter write. Raises
+        httpx.HTTPStatusError with status 404 for an undeclared action
+        name, 409 if the instrument isn't connected."""
+        resp = self._client.post(f"/api/dashboard/instruments/{instrument_id}/actions/{name}")
         resp.raise_for_status()
 
     def connect(self, instrument_id: str) -> None:

@@ -82,8 +82,17 @@ class MoveControlComponent(UIComponent):
         schema = ctx.schema
         settable = schema.get("settable", {})
         forced_axis = self.params.get("axis")
-        axes = [forced_axis] if forced_axis else move_axes(schema)
+        axes = [forced_axis] if forced_axis else move_axes(schema, ctx.instrument.kind)
         ctx.axes = axes
+
+        if not axes and forced_axis is None:
+            # A source with no genuine move-able axis (e.g. a microwave
+            # source whose settable cw_*/scan_* keys don't overlap its
+            # readable status fields, by design — see move_axes) — nothing
+            # sensible to show here; settings_tree/actions cover its real
+            # control surface instead.
+            self.mode = "none"
+            return
 
         axis0 = axes[0] if axes else None
         dtype = settable.get(axis0, "float64") if axis0 else "float64"

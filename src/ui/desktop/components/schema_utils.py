@@ -74,7 +74,7 @@ def main_config_names(kind: str, dimensionality: str, schema: dict) -> list[str]
     return names
 
 
-def move_axes(schema: dict) -> list[str]:
+def move_axes(schema: dict, kind: str = "motor") -> list[str]:
     """Axis names an actuator's move-control should expose: prefer
     readable+settable *continuous* axes (positions you can both read back
     and command) — a bool readable+settable key is never a continuous move
@@ -85,10 +85,16 @@ def move_axes(schema: dict) -> list[str]:
     "power" + "enabled" pair from being mistaken for two tabbed axes.
     Falls back to whatever's readable if nothing settable+non-bool exists
     (shouldn't happen for a real actuator, but keeps the window from
-    crashing on a malformed schema)."""
+    crashing on a malformed schema) — EXCEPT for a source (`kind ==
+    "source"`), where that fallback would dump plain status fields (a
+    microwave source's `mode`/`output_on`/`scan_index`, say) in as fake
+    move targets; a source with no genuine overlapping axis just gets no
+    move-control dock at all (see MoveControlComponent.build())."""
     readable = schema.get("readable", {})
     settable = schema.get("settable", {})
     axes = [k for k in readable if k in settable and settable[k] != "bool"]
     if axes:
         return axes
+    if kind == "source":
+        return []
     return [k for k in readable if k not in settable] or list(readable.keys())

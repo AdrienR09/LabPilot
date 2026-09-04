@@ -382,6 +382,33 @@ class DashboardManager:
         self._save_active_config()
         return self.get_instrument_status(instrument_id)
 
+    async def call_instrument_action(self, instrument_id: str, action_name: str) -> InstrumentStatus:
+        """Invoke one of an instrument's declared `DeviceSchema.actions` —
+        a zero-argument adapter method that isn't a settable-parameter
+        write (e.g. a microwave source's `cw_on`/`off`, a pulse
+        sequencer's `start`/`stop`). Requires the instrument to be
+        connected — unlike write_instrument_settings, an action can't be
+        staged for later since it's a state transition, not a value."""
+        if instrument_id not in self.instruments:
+            raise ValueError(f"Instrument {instrument_id} not found")
+
+        inst = self.instruments[instrument_id]
+        schema = inst["schema"]
+        if action_name not in schema.actions:
+            raise KeyError(f"Instrument {instrument_id} declares no action {action_name!r}")
+        if not inst["adapter"].connected:
+            raise ConnectionError("Instrument is not connected")
+
+        method = getattr(inst["adapter"], action_name)
+        await method()
+        self._save_active_config()
+        await self.broadcast_to_websockets({
+            "type": "instrument_status",
+            "instrument_id": instrument_id,
+            "data": self.get_instrument_status(instrument_id).model_dump(),
+        })
+        return self.get_instrument_status(instrument_id)
+
     async def update_instrument_connection(
         self, instrument_id: str, connection_params: dict[str, Any]
     ) -> InstrumentStatus:
@@ -560,6 +587,7 @@ async def get_instrument_schema(instrument_id: str):
             "units": schema.units,
             "limits": {k: list(v) for k, v in schema.limits.items()},
             "tags": schema.tags,
+            "actions": schema.actions,
         },
     }
 
@@ -603,6 +631,25 @@ async def write_instrument_settings(instrument_id: str, request: WriteSettingsRe
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Write failed: {e}")
+
+
+@router.post("/instruments/{instrument_id}/actions/{action_name}")
+async def call_instrument_action(instrument_id: str, action_name: str):
+    """Invoke one of an instrument's declared non-settable actions (see
+    DeviceSchema.actions) — e.g. a microwave source's `cw_on`, a pulse
+    sequencer's `start`. Requires the instrument to be connected."""
+    manager = get_dashboard_manager()
+    try:
+        status = await manager.call_instrument_action(instrument_id, action_name)
+        return {"success": True, "data": status.model_dump()}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ConnectionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Action failed: {e}")
 
 
 @router.get("/instruments/{instrument_id}/ui_prefs")
