@@ -15,7 +15,6 @@ any time; the script itself never needs editing.
 """
 
 from core.session import Session
-from core.workflow_templates._common import move_and_settle
 
 REQUIRED_INSTRUMENTS = {
     "actuator": {"kind": "motor", "dimensionality": "ND"},
@@ -57,9 +56,12 @@ MAX_SETTLE_POLLS = 5000
 
 
 async def run(session: Session) -> dict:
+    # session.get() returns a kind-typed object (core/device/kinds.py) —
+    # `actuator` is a Motor (move_abs()/get_position()), `detector` a
+    # Detector (read_value()) — instead of the raw adapter's generic
+    # write({...})/read() dict calls. See docs/scripting.md.
     actuator = session.get(ACTUATOR_ID)
     detector = session.get(DETECTOR_ID)
-    value_key = next(iter(detector.schema.readable.keys()))
 
     # Pre-allocated (not built via row-append) so the grid is always a
     # well-formed 2D shape at every point during the scan, not just at the
@@ -71,10 +73,9 @@ async def run(session: Session) -> dict:
     try:
         for i, x in enumerate(X_POSITIONS):
             for j, y in enumerate(Y_POSITIONS):
-                await move_and_settle(actuator, {"x": x, "y": y}, SETTLE_TOLERANCE, MAX_SETTLE_POLLS)
+                await actuator.move_abs(x=x, y=y, tolerance=SETTLE_TOLERANCE, max_polls=MAX_SETTLE_POLLS)
 
-                data = await detector.read()
-                image[i][j] = float(data[value_key])
+                image[i][j] = await detector.read_value()
                 completed += 1
                 await session.report_progress({
                     "image": image,

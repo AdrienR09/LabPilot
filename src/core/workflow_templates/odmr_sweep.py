@@ -73,6 +73,14 @@ FIT_SHAPE = "lorentzian"
 
 
 async def run(session: Session) -> dict:
+    # source.write({...}) stays generic dict-based (below) rather than a
+    # typed method: which settable key is "the swept axis" vs. "the power
+    # setpoint" is genuinely instrument-specific business logic (see
+    # sweep_key/power_key detection below) — a generic Source wrapper
+    # (core/device/kinds.py) can't honestly guess that for an arbitrary
+    # microwave source, so this stays hand-written. detector.read_value()
+    # (below) DOES generalize cleanly — a 0D detector's reading is always
+    # "the one scalar value" regardless of manufacturer.
     source = session.get(SOURCE_ID)
     detector = session.get(DETECTOR_ID)
     settable = source.schema.settable
@@ -82,7 +90,6 @@ async def run(session: Session) -> dict:
     # identical enable_key convention on the native UI side).
     sweep_key = next(k for k, dt in settable.items() if dt != "bool" and "power" not in k.lower())
     power_key = next((k for k, dt in settable.items() if "power" in k.lower()), None)
-    value_key = next(iter(detector.schema.readable.keys()))
 
     sweep_values = np.linspace(SWEEP_START, SWEEP_STOP, int(SWEEP_POINTS)).tolist()
     matrix: list[list[float]] = []
@@ -99,8 +106,7 @@ async def run(session: Session) -> dict:
             for i, target in enumerate(sweep_values):
                 await source.write({sweep_key: target})
 
-                data = await detector.read()
-                value = float(data[value_key])
+                value = await detector.read_value()
                 row.append(value)
                 completed = repeat * len(sweep_values) + i + 1
                 if repeat == 0:

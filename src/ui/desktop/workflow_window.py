@@ -57,7 +57,8 @@ from components.base import InstrumentContext
 from components.schema_utils import fetch_schema, pick_1d_series, primary_key
 from components.widgets import dock, StatusLabel
 from components.workflow_result import (
-    Image2DResultView, SpectrumResultView, NDScanResultView, OdmrResultView, _ScanImagePanel, _OptimizerCurvePanel,
+    Image2DResultView, NDScanResultView, OdmrResultView, _ScanImagePanel, _OptimizerCurvePanel,
+    RESULT_VIEW_REGISTRY, OdmrResultViewAdapter,
 )
 from components.axes_control import AxesControlWidget, AxisRangeSettingsDialog, OptimizerSettingsDialog
 from components.odmr_control import OdmrSweepControlWidget, OdmrFitControlWidget, fit_dip, evaluate_dip
@@ -215,13 +216,22 @@ def _result_ui(script_text: Optional[str]) -> dict:
     core/workflow/instrument_roles.py's `read_result_ui`, which this
     mirrors — the desktop app talks to the backend only over HTTP, so it
     re-parses the script text it already fetched rather than importing
-    that backend module directly). {} if the script declares none."""
+    that backend module directly). {} if the script declares none.
+
+    The one exception to "never import a backend module": parsing the
+    value node itself goes through `core.workflow.result_types`'s
+    `parse_result_ui_literal` (imported below, not duplicated a third
+    time) — that module is deliberately pure Python (no Qt/session/
+    hardware dependency), the same property that already lets this
+    process import `core.api_client` directly (see backend_client.py)."""
     if not script_text:
         return {}
     try:
         tree = ast.parse(script_text)
     except SyntaxError:
         return {}
+    from core.workflow.result_types import ResultUIError, parse_result_ui_literal
+
     result: dict = {}
     for stmt in tree.body:
         is_plain = (
@@ -238,7 +248,9 @@ def _result_ui(script_text: Optional[str]) -> dict:
         )
         if is_plain or is_annotated:
             try:
-                result = ast.literal_eval(stmt.value)
+                result = parse_result_ui_literal(stmt.value)
+            except ResultUIError:
+                raise
             except Exception:
                 pass
     return result
@@ -346,6 +358,7 @@ class WorkflowWindow(QMainWindow):
             self._add_instrument(instrument_id)
 
         self.result_view = None
+        self._result_view_adapter: Optional[type] = None
         if result_ui:
             self._add_result_view(result_ui)
             crosshair = result_ui.get("crosshair")
@@ -1209,47 +1222,27 @@ class WorkflowWindow(QMainWindow):
     # ---- live/last result view ----
 
     def _add_result_view(self, result_ui: dict) -> None:
-        kind = result_ui.get("type")
+        """Builds `self.result_view` from `result_ui["type"]` via
+        `RESULT_VIEW_REGISTRY` (components/workflow_result.py) — one
+        adapter class per type, auto-registered there, replacing what used
+        to be a hardcoded if/elif chain here. Adding a 5th result kind
+        means adding one adapter subclass in that module, not editing this
+        method at all."""
         self._result_ui_spec = result_ui
-        if kind == "image2d":
-            self.result_view = Image2DResultView(result_ui.get("value_label", "Value"))
-        elif kind == "spectrum":
-            self.result_view = SpectrumResultView(
-                result_ui.get("x_label", ""), result_ui.get("y_label", "")
-            )
-        elif kind == "odmr":
-            self.result_view = OdmrResultView(
-                result_ui.get("x_label", ""), result_ui.get("y_label", "")
-            )
-        elif kind == "ndscan":
-            # Unlike the other result views, NDScanResultView isn't a
-            # single QWidget to embed in one generic dock — it manages its
-            # own QDockWidget per axis-pair directly on this window,
-            # built eagerly from AXIS_RANGES (see its class docstring),
-            # qudi's own one-dock-per-scan-pane structure rather than one
-            # shared canvas.
-            if not self._omniscan_axis_ranges:
-                self.status_bar.showMessage(
-                    "This workflow declares an ndscan result but no AXIS_RANGES — nothing to show"
-                )
-                return
-            # If this workflow has a crosshair, build+place the Optimizer
-            # dock now, before any scan panel exists, so it can split
-            # against the very first one while that one's still untabbed
-            # (see _add_optimizer_dock's docstring for why this can't
-            # happen later).
-            crosshair = result_ui.get("crosshair")
-            extra_dock = self._build_optimizer_panel(crosshair) if crosshair else None
-            self.result_view = NDScanResultView(
-                self, self._omniscan_axis_ranges, result_ui.get("value_label", "Value"),
-                hold_positions=self._omniscan_hold_positions,
-                extra_dock_below=extra_dock,
-                on_position_changed=lambda axis, value: (
-                    self.axes_control.set_target(axis, value) if self.axes_control is not None else None
-                ),
-            )
+        adapter_cls = RESULT_VIEW_REGISTRY.get(result_ui.get("type"))
+        if adapter_cls is None:
             return
-        else:
+        view = adapter_cls.build(self, result_ui)
+        if view is None:
+            return
+        self.result_view = view
+        self._result_view_adapter = adapter_cls
+        if adapter_cls.manages_own_docks:
+            # NDScanResultView isn't a single QWidget to embed in one
+            # generic dock — it manages its own QDockWidget per axis-pair
+            # directly on this window, built eagerly from AXIS_RANGES (see
+            # its class docstring), qudi's own one-dock-per-scan-pane
+            # structure rather than one shared canvas.
             return
         d = dock("Result", self)
         d.setWidget(self.result_view)
@@ -1295,73 +1288,16 @@ class WorkflowWindow(QMainWindow):
         # the last completed run's full result, so the view doesn't go
         # blank the moment the poller's live-progress entry stops updating.
         source = state.get("progress") if running else (state.get("last_results") or {})
-        if source:
-            x_key = self._result_ui_spec.get("x_key")
-            if isinstance(self.result_view, Image2DResultView):
-                # image2d's own RESULT_UI convention: "value_key" names the
-                # pixel-data array, "y_key" the y-axis coordinate array.
-                value_key = self._result_ui_spec.get("value_key")
-                y_key = self._result_ui_spec.get("y_key")
-                self.result_view.update_data(source.get(value_key), source.get(x_key), source.get(y_key))
-            elif isinstance(self.result_view, SpectrumResultView):
-                # spectrum's own RESULT_UI convention: "y_key" names the
-                # value/intensity array (the plot's y-axis) — every
-                # template's spectrum-type RESULT_UI (grating_spectrometer,
-                # generic_1d_scan, odmr_sweep, ...) declares it this way,
-                # not "value_key" (that's image2d's key name).
-                y_key = self._result_ui_spec.get("y_key")
-                self.result_view.update_data(source.get(x_key), source.get(y_key))
-                # Optional fit overlay (see odmr_sweep.py) — only populated
-                # in last_results once a run's fit has actually run, so
-                # this clears the overlay while a run is still in progress.
-                fit_x_key = self._result_ui_spec.get("fit_x_key")
-                fit_y_key = self._result_ui_spec.get("fit_y_key")
-                fit_center_key = self._result_ui_spec.get("fit_center_key")
-                if fit_x_key and fit_y_key:
-                    self.result_view.set_fit(
-                        source.get(fit_x_key), source.get(fit_y_key),
-                        source.get(fit_center_key) if fit_center_key else None,
-                    )
-            elif isinstance(self.result_view, OdmrResultView):
-                # odmr's own RESULT_UI convention: same x_key/y_key/fit_*
-                # keys as "spectrum", plus matrix_key/repeat_key for the
-                # accumulation image below the spectrum (see odmr_sweep.py).
-                y_key = self._result_ui_spec.get("y_key")
-                matrix_key = self._result_ui_spec.get("matrix_key")
-                repeat_key = self._result_ui_spec.get("repeat_key")
-                x_values = source.get(x_key)
-                y_values = source.get(y_key)
-                self.result_view.update_data(
-                    x_values, y_values,
-                    source.get(matrix_key) if matrix_key else None,
-                    source.get(repeat_key) if repeat_key else None,
-                )
+        if source and self._result_view_adapter is not None:
+            self._result_view_adapter.update(self.result_view, self._result_ui_spec, source)
+            if self._result_view_adapter is OdmrResultViewAdapter:
                 # Cached for the Fit dock's on-demand client-side re-fit
                 # (see _add_odmr_sweep_control) — always the same data the
-                # view is currently showing.
-                self._last_odmr_x = x_values
-                self._last_odmr_y = y_values
-                fit_x_key = self._result_ui_spec.get("fit_x_key")
-                fit_y_key = self._result_ui_spec.get("fit_y_key")
-                fit_center_key = self._result_ui_spec.get("fit_center_key")
-                if fit_x_key and fit_y_key:
-                    self.result_view.set_fit(
-                        source.get(fit_x_key), source.get(fit_y_key),
-                        source.get(fit_center_key) if fit_center_key else None,
-                    )
-            elif isinstance(self.result_view, NDScanResultView):
-                # ndscan's own RESULT_UI convention (see omniscan.py): each
-                # of these names a key in `source`, not the value itself.
-                value_key = self._result_ui_spec.get("value_key")
-                shape_key = self._result_ui_spec.get("shape_key")
-                axis_names_key = self._result_ui_spec.get("axis_names_key")
-                axis_positions_key = self._result_ui_spec.get("axis_positions_key")
-                actuator_axis_count_key = self._result_ui_spec.get("actuator_axis_count_key")
-                self.result_view.update_data(
-                    source.get(value_key), source.get(shape_key),
-                    source.get(axis_names_key), source.get(axis_positions_key),
-                    source.get(actuator_axis_count_key) if actuator_axis_count_key else None,
-                )
+                # view is currently showing. The only window-owned side
+                # effect that isn't purely "update this widget," so it
+                # stays here rather than inside the adapter.
+                self._last_odmr_x = source.get(self._result_ui_spec.get("x_key"))
+                self._last_odmr_y = source.get(self._result_ui_spec.get("y_key"))
 
         # After update_data() — an NDScanResultView's panels (and their
         # crosshairs) are only built lazily on the first frame, so toggling

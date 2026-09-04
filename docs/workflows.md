@@ -69,6 +69,12 @@ a binding is made or changed. `REQUIRED_INSTRUMENTS` is read with
 unbound role fails fast with a clear error naming it, rather than a
 generic `KeyError` deep inside the script.
 
+`session.get(role_name)` returns a kind-typed object (`Motor`/`Detector`/
+`Source`/`Scanner`) with the ergonomic method set for that role's kind
+(`move_abs()`, `read_value()`, ...) rather than just a generic
+`read()`/`write()` dict interface — see [Scripting](scripting.md) for the
+full method reference.
+
 ## Tunable parameters
 
 Any top-level **UPPERCASE** constant a script declares — other than
@@ -174,6 +180,14 @@ payload (and the run's final return value) must contain — the UI reads
 through those names, not fixed ones, so different templates can call
 their result array whatever makes sense (`"image"`, `"data"`,
 `"live_image"`, ...).
+
+Each of these four shapes also has a typed dataclass alternative
+(`core.workflow.result_types.ImageResult`/`SpectrumResult`/`OdmrResult`/
+`NDScanResult`) usable in place of the raw dict — see
+[Scripting → RESULT_UI](scripting.md#result_ui--typed-alternative-to-the-dict).
+The raw dict form above is still fully supported; the dataclass form's only
+difference is that a typo'd field name or missing required one raises a
+clear error at bind time instead of silently rendering a blank panel.
 
 Each image panel in the scanner view has its own colorbar: a colormap
 picker, a draggable histogram, and numeric min/max fields (pyMoDAQ-style)

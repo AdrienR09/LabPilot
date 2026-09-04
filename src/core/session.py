@@ -20,6 +20,7 @@ from core.fsm import ScanState, State
 from core.device.protocols import Readable
 from core.plans.base import ScanPlan
 from core.plans.scan import scan as scan_generator
+from core.device.kinds import wrap as _wrap_instrument
 
 __all__ = ["Session"]
 
@@ -236,11 +237,20 @@ class Session:
         literal registered device but a role with an active alias (see
         `register_alias`), by resolving through that alias instead.
 
+        Returns a kind-typed wrapper (`instruments.kinds.Motor`/`Detector`/
+        `Source`/`Scanner`/`GenericInstrument`, chosen from the device's own
+        `schema.kind`) rather than the raw adapter — see docs/scripting.md.
+        The wrapper still exposes `.read()`/`.write()`/`.schema`/`.stage()`/
+        `.unstage()` exactly as the raw adapter did (plus `__getattr__`
+        passthrough for anything else), so this is purely additive: every
+        existing template/capability calling only that surface keeps
+        working unmodified. Use `get_raw()` to bypass the wrapper entirely.
+
         Args:
             name: Device name (from DeviceSchema.name) or an aliased role.
 
         Returns:
-            Device instance.
+            Kind-typed wrapper around the device instance.
 
         Raises:
             KeyError: If device name not found, with helpful message listing
@@ -248,7 +258,15 @@ class Session:
 
         Example:
             >>> motor = session.get("thorlabs_mdt693b")
+            >>> await motor.move_abs(5.0)
         """
+        return _wrap_instrument(self.get_raw(name))
+
+    def get_raw(self, name: str) -> Readable:
+        """Like `get()`, but returns the literal registered adapter,
+        unwrapped — an escape hatch for the rare caller that needs the
+        adapter's own identity or an attribute the kind wrapper doesn't
+        forward some other way."""
         if name not in self.devices and name in self._aliases:
             name = self._aliases[name]
         if name not in self.devices:

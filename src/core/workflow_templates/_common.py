@@ -1,17 +1,24 @@
 """Shared helpers for role-based workflow templates (core/workflow_templates/).
 
 Every template references its instruments by role (`session.get(ROLE)`) and
-returns a plain dict — the settle-wait and spectrum-key-detection logic
-below was previously copy-pasted near-identically into several templates;
-extracted here so a new template doesn't need to re-derive it, and a fix
-(e.g. a better settle heuristic) only has to land in one place.
+returns a plain dict — the spectrum-key-detection logic below was previously
+copy-pasted near-identically into several templates; extracted here so a new
+template doesn't need to re-derive it, and a fix only has to land in one
+place.
+
+`move_and_settle`/`move_and_settle_by_moving_flag` themselves now live in
+`core/device/motion.py` (re-exported here unchanged) — `instruments/kinds.py`'s
+`Motor.move_abs()`/`.move_rel()` need the exact same settle-polling logic,
+and `instruments/` must not import from `core/workflow_templates/` (a
+low-level driver-wrapping package depending on user-editable script
+templates would be the wrong dependency direction).
 """
 
 from __future__ import annotations
 
-import asyncio
-
 import numpy as np
+
+from core.device.motion import move_and_settle, move_and_settle_by_moving_flag
 
 __all__ = [
     "move_and_settle", "move_and_settle_by_moving_flag", "integration_time_key", "spectrum_key",
@@ -19,47 +26,6 @@ __all__ = [
 ]
 
 _AXIS_KEY_HINTS = ("wavelength", "wavelengths", "time", "times", "frequency", "frequencies")
-
-
-async def move_and_settle(actuator, targets: dict[str, float], tolerance: float = 0.02,
-                           max_polls: int = 5000) -> dict:
-    """Write `targets` (one or more axis: value pairs) to `actuator`, then
-    poll `read()` until every target axis is within `tolerance` of its
-    commanded value — covers both a single generic axis (e.g. a grating
-    position) and several at once (e.g. an XY scanner's x and y). For an
-    actuator that reports a boolean in-motion flag instead of a
-    tolerance-comparable position, see `move_and_settle_by_moving_flag`.
-
-    Raises RuntimeError if `actuator` never settles within `max_polls` —
-    fails loudly rather than hanging the workflow forever on
-    misconfigured hardware or an out-of-range target.
-    """
-    await actuator.write(targets)
-    for _ in range(max_polls):
-        position = await actuator.read()
-        if all(abs(position[axis] - value) <= tolerance for axis, value in targets.items()):
-            return position
-        await asyncio.sleep(0.01)  # real, small delay — some actuators simulate
-        # (or really do have) movement coupled to wall-clock time rather
-        # than to how often they get read, so a no-op yield here would
-        # spin through max_polls before any real progress happens.
-    raise RuntimeError(f"Actuator did not reach {targets} after {max_polls} polls")
-
-
-async def move_and_settle_by_moving_flag(actuator, targets: dict[str, float],
-                                          moving_key: str = "moving",
-                                          max_polls: int = 5000) -> dict:
-    """Write `targets`, then poll `read()` until `moving_key` reads False —
-    for actuators that report a boolean in-motion flag rather than (or
-    instead of relying on) a tolerance-comparable position readback.
-    """
-    await actuator.write(targets)
-    for _ in range(max_polls):
-        state = await actuator.read()
-        if not state.get(moving_key, False):
-            return state
-        await asyncio.sleep(0.01)
-    raise RuntimeError(f"Actuator did not settle at {targets} after {max_polls} polls")
 
 
 def integration_time_key(detector) -> str | None:

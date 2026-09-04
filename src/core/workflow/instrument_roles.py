@@ -26,6 +26,8 @@ import ast
 from pathlib import Path
 from typing import Optional
 
+from core.workflow.result_types import ResultUIError, parse_result_ui_literal
+
 __all__ = [
     "read_required_instruments",
     "read_required_instruments_from_file",
@@ -90,7 +92,16 @@ def read_result_ui(script_text: str) -> dict:
     script's `RESULT_UI` constant, or {} if it has none. Describes how
     `workflow_window.py` (the native desktop window) should render this
     workflow's live/last result — same never-execute-the-script safety
-    property as `read_required_instruments` above."""
+    property as `read_required_instruments` above.
+
+    `RESULT_UI` may be a plain dict literal (the historical form, read
+    exactly as before) or a call to one of `core.workflow.result_types`'s
+    typed dataclasses (`ImageResult(...)` etc.) — see
+    `parse_result_ui_literal`. A malformed dataclass call (`ResultUIError`)
+    is deliberately NOT swallowed by the `except Exception: pass` below —
+    that's meant to tolerate a RESULT_UI that isn't a static literal at all
+    (rare, treated as "no RESULT_UI", same as before dataclass support
+    existed), not to hide a genuine authoring mistake."""
     try:
         tree = ast.parse(script_text)
     except SyntaxError:
@@ -112,7 +123,9 @@ def read_result_ui(script_text: str) -> dict:
         )
         if is_plain or is_annotated:
             try:
-                result = ast.literal_eval(stmt.value)
+                result = parse_result_ui_literal(stmt.value)
+            except ResultUIError:
+                raise
             except Exception:
                 pass
     return result

@@ -37,7 +37,11 @@ from components.widgets import dock
 
 pg.setConfigOption("imageAxisOrder", "row-major")  # match numpy's (row, col) convention
 
-__all__ = ["Image2DResultView", "SpectrumResultView", "NDScanResultView", "OdmrResultView"]
+__all__ = [
+    "Image2DResultView", "SpectrumResultView", "NDScanResultView", "OdmrResultView",
+    "RESULT_VIEW_REGISTRY", "ResultViewAdapter",
+    "Image2DResultViewAdapter", "SpectrumResultViewAdapter", "OdmrResultViewAdapter", "NDScanResultViewAdapter",
+]
 
 
 def _image_rect(x_values: list[float], y_values: list[float]) -> Optional[QRectF]:
@@ -1722,3 +1726,158 @@ class NDScanResultView:
             center = (lo + hi) / 2
             self._selection[name] = (center - half, center + half)
         self._submit_projection_request()
+
+
+# ---- RESULT_UI["type"] -> result-view dispatch registry ----
+#
+# Generalizes the same registry idea `components/base.py`'s `UIComponent`/
+# `ComponentMeta`/`COMPONENT_REGISTRY` already uses for per-instrument
+# windows (keyed there by `[kind."dimensionality"]` in ui_blocks.toml) to
+# workflow result views instead — keyed here by `RESULT_UI["type"]`.
+# workflow_window.py's `_add_result_view`/`_on_execution_state` used to be
+# two separately hand-maintained if/elif chains over the same 4 type
+# strings; both now do one registry lookup instead. Deliberately a
+# *separate* registry from `COMPONENT_REGISTRY` (not folding these view
+# classes into `UIComponent` itself) — per this module's own docstring,
+# a workflow result view has no per-instrument `InstrumentContext` to hang
+# off of, a real structural difference from a `UIComponent`, not just a
+# naming one.
+
+RESULT_VIEW_REGISTRY: dict[str, type["ResultViewAdapter"]] = {}
+
+
+class ResultViewMeta(type):
+    def __new__(mcs, name, bases, namespace, **kwargs):
+        cls = super().__new__(mcs, name, bases, namespace, **kwargs)
+        result_type = namespace.get("result_type")
+        if result_type:
+            RESULT_VIEW_REGISTRY[result_type] = cls
+        return cls
+
+
+class ResultViewAdapter(metaclass=ResultViewMeta):
+    """One subclass per `RESULT_UI["type"]` string, auto-registered into
+    `RESULT_VIEW_REGISTRY` via `ResultViewMeta` the moment it's defined
+    (same auto-registration convention `ComponentMeta` already uses) —
+    adding a 5th result kind means adding one adapter subclass here, not
+    editing workflow_window.py's dispatch at all."""
+
+    #: The `RESULT_UI["type"]` string this adapter handles — must be set
+    #: on every concrete subclass (an empty string never registers).
+    result_type: str = ""
+
+    #: True only for a view that manages its own QDockWidget(s) directly
+    #: on the window (currently just NDScanResultView) — workflow_window.py
+    #: skips wrapping the returned view in its own generic "Result" dock
+    #: when this is set.
+    manages_own_docks: bool = False
+
+    @staticmethod
+    def build(window: Any, result_ui: dict) -> Any:
+        """Constructs and returns the view widget (or None to build
+        nothing — e.g. NDScanResultViewAdapter when the workflow declares
+        no AXIS_RANGES). `window` is the owning WorkflowWindow, needed by
+        NDScanResultViewAdapter to attach docks and read
+        omniscan-specific window state; every other adapter ignores it."""
+        raise NotImplementedError
+
+    @staticmethod
+    def update(view: Any, result_ui: dict, source: dict) -> None:
+        """Applies one `report_progress()`/`last_results` snapshot
+        (`source`) to `view`, using `result_ui`'s `*_key` names (or a
+        dataclass-derived equivalent — see core/workflow/result_types.py)
+        to pull the right fields out of it."""
+        raise NotImplementedError
+
+
+class Image2DResultViewAdapter(ResultViewAdapter):
+    result_type = "image2d"
+
+    @staticmethod
+    def build(window: Any, result_ui: dict) -> Any:
+        return Image2DResultView(result_ui.get("value_label", "Value"))
+
+    @staticmethod
+    def update(view: Any, result_ui: dict, source: dict) -> None:
+        view.update_data(
+            source.get(result_ui.get("value_key")),
+            source.get(result_ui.get("x_key")),
+            source.get(result_ui.get("y_key")),
+        )
+
+
+class SpectrumResultViewAdapter(ResultViewAdapter):
+    result_type = "spectrum"
+
+    @staticmethod
+    def build(window: Any, result_ui: dict) -> Any:
+        return SpectrumResultView(result_ui.get("x_label", ""), result_ui.get("y_label", ""))
+
+    @staticmethod
+    def update(view: Any, result_ui: dict, source: dict) -> None:
+        view.update_data(source.get(result_ui.get("x_key")), source.get(result_ui.get("y_key")))
+        fit_x_key = result_ui.get("fit_x_key")
+        fit_y_key = result_ui.get("fit_y_key")
+        fit_center_key = result_ui.get("fit_center_key")
+        if fit_x_key and fit_y_key:
+            view.set_fit(
+                source.get(fit_x_key), source.get(fit_y_key),
+                source.get(fit_center_key) if fit_center_key else None,
+            )
+
+
+class OdmrResultViewAdapter(ResultViewAdapter):
+    result_type = "odmr"
+
+    @staticmethod
+    def build(window: Any, result_ui: dict) -> Any:
+        return OdmrResultView(result_ui.get("x_label", ""), result_ui.get("y_label", ""))
+
+    @staticmethod
+    def update(view: Any, result_ui: dict, source: dict) -> None:
+        matrix_key = result_ui.get("matrix_key")
+        repeat_key = result_ui.get("repeat_key")
+        view.update_data(
+            source.get(result_ui.get("x_key")), source.get(result_ui.get("y_key")),
+            source.get(matrix_key) if matrix_key else None,
+            source.get(repeat_key) if repeat_key else None,
+        )
+        fit_x_key = result_ui.get("fit_x_key")
+        fit_y_key = result_ui.get("fit_y_key")
+        fit_center_key = result_ui.get("fit_center_key")
+        if fit_x_key and fit_y_key:
+            view.set_fit(
+                source.get(fit_x_key), source.get(fit_y_key),
+                source.get(fit_center_key) if fit_center_key else None,
+            )
+
+
+class NDScanResultViewAdapter(ResultViewAdapter):
+    result_type = "ndscan"
+    manages_own_docks = True
+
+    @staticmethod
+    def build(window: Any, result_ui: dict) -> Any:
+        if not window._omniscan_axis_ranges:
+            window.status_bar.showMessage(
+                "This workflow declares an ndscan result but no AXIS_RANGES — nothing to show"
+            )
+            return None
+        crosshair = result_ui.get("crosshair")
+        extra_dock = window._build_optimizer_panel(crosshair) if crosshair else None
+        return NDScanResultView(
+            window, window._omniscan_axis_ranges, result_ui.get("value_label", "Value"),
+            hold_positions=window._omniscan_hold_positions, extra_dock_below=extra_dock,
+            on_position_changed=lambda axis, value: (
+                window.axes_control.set_target(axis, value) if window.axes_control is not None else None
+            ),
+        )
+
+    @staticmethod
+    def update(view: Any, result_ui: dict, source: dict) -> None:
+        actuator_axis_count_key = result_ui.get("actuator_axis_count_key")
+        view.update_data(
+            source.get(result_ui.get("value_key")), source.get(result_ui.get("shape_key")),
+            source.get(result_ui.get("axis_names_key")), source.get(result_ui.get("axis_positions_key")),
+            source.get(actuator_axis_count_key) if actuator_axis_count_key else None,
+        )
