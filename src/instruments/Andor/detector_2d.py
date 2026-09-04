@@ -23,6 +23,7 @@ except ImportError:
 
 if Andor is not None:
     from instruments._base import AdapterBase, adapter_registry
+    from instruments._pylablib_camera import PylablibCameraControls
     from core.device.protocols import Triggerable
     from core.device.schema import DeviceSchema
 
@@ -71,8 +72,13 @@ if Andor is not None:
                     "exposure": "float64",  # Exposure time (s)
                     "temperature": "float64",  # Target temperature (°C)
                     "em_gain": "int32",  # EM gain (0-1000, EMCCD only)
-                    "readout_rate": "int32",  # Readout rate index
                     "roi": "tuple",  # Region of interest (x0, x1, y0, y1)
+                    # No "readout_rate": pylablib reaches it only through
+                    # set_amp_mode(...), whose channel/amp/hsspeed relationship
+                    # isn't confirmed (see the write()-dispatch note below).
+                    # Declaring it settable rendered a GUI control whose every
+                    # write raised NotImplementedError; re-add it here together
+                    # with a set_readout_rate() once the mapping is verified.
                 },
                 units={
                     "frame": "counts",
@@ -190,9 +196,10 @@ if Andor is not None:
         # directly against the installed pylablib.devices.Andor.AndorSDK2Camera
         # class. "readout_rate" has no verified equivalent (pylablib only
         # exposes the more complex set_amp_mode(...) here, whose exact
-        # channel/amp/hsspeed relationship isn't confirmed) — left unimplemented
-        # rather than guessed; validate_write_dispatch (generic_params.py) will
-        # keep flagging it until someone confirms the real mapping.
+        # channel/amp/hsspeed relationship isn't confirmed), so it is absent
+        # from schema.settable above rather than guessed at here — the schema
+        # and the setters below now agree, which is what
+        # validate_write_dispatch (generic_params.py) enforces in CI.
         async def set_exposure(self, value: float) -> None:
             if self._camera is None:
                 raise RuntimeError("Not connected")
@@ -214,7 +221,7 @@ if Andor is not None:
             x0, x1, y0, y1 = value
             await self._to_thread(self._camera.set_roi, x0, x1, y0, y1)
 
-    class AndorSDK3Adapter(AdapterBase, Triggerable):
+    class AndorSDK3Adapter(PylablibCameraControls, AdapterBase, Triggerable):
         """Andor SDK3 camera adapter (Zyla, Neo sCMOS).
 
         High-speed sCMOS cameras with:

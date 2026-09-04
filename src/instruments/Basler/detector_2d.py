@@ -22,10 +22,11 @@ except ImportError:
 
 if Basler is not None:
     from instruments._base import AdapterBase, adapter_registry
+    from instruments._pylablib_camera import PylablibCameraControls
     from core.device.protocols import Triggerable
     from core.device.schema import DeviceSchema
 
-    class BaslerAdapter(AdapterBase, Triggerable):
+    class BaslerAdapter(PylablibCameraControls, AdapterBase, Triggerable):
         """Basler Pylon camera adapter."""
 
         def __init__(self, camera_index: int = 0, name: str = "basler") -> None:

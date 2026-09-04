@@ -17,7 +17,7 @@ import numpy as np
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from instruments import adapter_registry, INSTRUMENT_CATALOG
+from instruments import adapter_registry, available_catalog, INSTRUMENT_CATALOG
 from instruments.factory import create_adapter, UnknownAdapterError
 from core.config import DeviceConfig
 from core.config.instrument_sets import InstrumentSetPersistence, InstrumentSetError
@@ -691,7 +691,15 @@ async def write_instrument_ui_prefs(instrument_id: str, request: UIPrefsRequest)
 
 @router.get("/catalog")
 async def get_catalog():
-    """List the full instrument catalog (manufacturer/model/type), for the device-creation UI."""
+    """List the instrument catalog (manufacturer/model/type), for the
+    device-creation UI.
+
+    Serves `available_catalog()` rather than the raw `INSTRUMENT_CATALOG`: the
+    catalogue is a static table, but whether a driver imports depends on the
+    vendor SDKs installed here. An entry whose adapter never registered — a
+    broken vendor C extension, a missing runtime — would otherwise be offered
+    in the Devices tab and then fail with `UnknownAdapterError` on create.
+    """
     catalog = [
         {
             "adapter_key": m.adapter_key,
@@ -703,7 +711,7 @@ async def get_catalog():
             "connection_types": m.connection_types,
             "tags": m.tags,
         }
-        for m in INSTRUMENT_CATALOG
+        for m in available_catalog()
     ]
     return {"success": True, "data": catalog}
 

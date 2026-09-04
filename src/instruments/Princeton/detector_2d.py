@@ -21,10 +21,11 @@ except ImportError:
 
 if PrincetonInstruments is not None:
     from instruments._base import AdapterBase, adapter_registry
+    from instruments._pylablib_camera import PylablibCameraControls
     from core.device.protocols import Triggerable
     from core.device.schema import DeviceSchema
 
-    class PicamAdapter(AdapterBase, Triggerable):
+    class PicamAdapter(PylablibCameraControls, AdapterBase, Triggerable):
         """Princeton Instruments Picam adapter."""
 
         def __init__(self, camera_index: int = 0, name: str = "princeton_picam") -> None:

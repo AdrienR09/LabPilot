@@ -23,10 +23,11 @@ except ImportError:
 
 if DCAM is not None:
     from instruments._base import AdapterBase, adapter_registry
+    from instruments._pylablib_camera import PylablibCameraControls
     from core.device.protocols import Triggerable
     from core.device.schema import DeviceSchema
 
-    class DCAMAdapter(AdapterBase, Triggerable):
+    class DCAMAdapter(PylablibCameraControls, AdapterBase, Triggerable):
         """Hamamatsu DCAM camera adapter (Orca, ImagEM).
 
         High-speed scientific cameras with:
@@ -52,13 +53,16 @@ if DCAM is not None:
                 name=self._name,
                 kind="detector",
                 readable={"frame": "ndarray2d"},
+                # No "framerate": DCAM derives the frame period from exposure
+                # and readout rather than accepting a setpoint — pylablib
+                # exposes get_frame_period() but no setter, so declaring it
+                # settable would render a GUI control that cannot work.
                 settable={
                     "exposure": "float64",
-                    "framerate": "float64",
                     "roi": "tuple",
                 },
-                units={"frame": "counts", "exposure": "s", "framerate": "Hz"},
-                limits={"exposure": (0.00001, 10.0), "framerate": (1.0, 100.0)},
+                units={"frame": "counts", "exposure": "s"},
+                limits={"exposure": (0.00001, 10.0)},
                 trigger_modes=["software", "hardware", "free_run"],
                 tags=["Hamamatsu", "camera", "DCAM", "Orca", "ImagEM"],
             )

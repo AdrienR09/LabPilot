@@ -22,10 +22,11 @@ except ImportError:
 
 if Photometrics is not None:
     from instruments._base import AdapterBase, adapter_registry
+    from instruments._pylablib_camera import PylablibCameraControls
     from core.device.protocols import Triggerable
     from core.device.schema import DeviceSchema
 
-    class PVCAMAdapter(AdapterBase, Triggerable):
+    class PVCAMAdapter(PylablibCameraControls, AdapterBase, Triggerable):
         """Photometrics PVCAM adapter."""
 
         def __init__(self, camera_index: int = 0, name: str = "photometrics_pvcam") -> None:
