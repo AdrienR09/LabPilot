@@ -27,35 +27,16 @@ export interface Workflow {
   description?: string;
 }
 
-export interface Message {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: number;
-  tool_calls?: number;
-}
-
-export interface Conversation {
-  id: string;
-  name?: string;
-  messages: Message[];
-  created_at: number;
-}
-
 export interface UserPreferences {
   theme: 'light' | 'dark';
   units: 'metric' | 'imperial';
   decimal_places: number;
   auto_save: boolean;
-  ai_provider: string;
-  ai_model: string;
-  enable_tools: boolean;
-  max_context_messages: number;
 }
 
 export interface UIState {
   sidebarOpen: boolean;
-  activeTab: 'devices' | 'workflows' | 'ai' | 'data';
+  activeTab: 'devices' | 'workflows' | 'data';
   theme: 'light' | 'dark';
   loading: boolean;
   notifications: Notification[];

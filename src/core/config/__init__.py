@@ -4,7 +4,6 @@ Handles saving and loading of session state including:
 - Connected devices and their configurations
 - User preferences and settings
 - Workflow definitions and history
-- AI conversation history
 - Recent scan data and results
 
 Uses JSON for human-readable configs with optional encryption
@@ -22,7 +21,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core.ai.ai_session import AIConversation
 from core.session import Session
 from core.workflow.store import WorkflowSummary
 
@@ -65,13 +63,6 @@ class UserPreferences:
     decimal_places: int = 3
     auto_save: bool = True
 
-    # AI preferences
-    ai_provider: str = "ollama"  # "ollama", "openai", "anthropic"
-    ai_model: str = "llama3.1"
-    ai_base_url: str = "http://localhost:11434"
-    enable_tools: bool = True
-    max_context_messages: int = 20
-
     # Workflow preferences
     auto_backup_workflows: bool = True
     default_analysis_timeout: float = 30.0
@@ -99,7 +90,6 @@ class SessionConfig:
     # State information
     active_workflow_id: str | None = None
     recent_scans: list[str] = None  # Scan UIDs
-    ai_conversation_ids: list[str] = None
 
     # Cached data
     workflow_summaries: list[dict[str, Any]] = None
@@ -111,8 +101,6 @@ class SessionConfig:
             self.preferences = UserPreferences()
         if self.recent_scans is None:
             self.recent_scans = []
-        if self.ai_conversation_ids is None:
-            self.ai_conversation_ids = []
         if self.workflow_summaries is None:
             self.workflow_summaries = []
         if self.session_id is None:
@@ -148,10 +136,7 @@ class ConfigPersistence:
         │       ├── session_20240325_143022.json
         │       └── ...
         ├── data/                     # Scan data storage
-        ├── workflows/                # Workflow storage (managed by WorkflowStore)
-        └── ai/                       # AI conversation history
-            ├── conversations/
-            └── context_cache/
+        └── workflows/                # Workflow storage (managed by WorkflowStore)
     """
 
     def __init__(self, config_dir: Path | None = None):
@@ -167,8 +152,6 @@ class ConfigPersistence:
         self.session_config_path = self.config_dir / "config" / "session.json"
         self.devices_dir = self.config_dir / "config" / "devices"
         self.backups_dir = self.config_dir / "config" / "backups"
-        self.ai_dir = self.config_dir / "ai"
-        self.conversations_dir = self.ai_dir / "conversations"
 
         # Create directory structure
         self._init_directories()
@@ -181,8 +164,6 @@ class ConfigPersistence:
             self.backups_dir,
             self.config_dir / "data",
             self.config_dir / "workflows",
-            self.ai_dir,
-            self.conversations_dir,
         ]
 
         for directory in dirs_to_create:
@@ -304,89 +285,6 @@ class ConfigPersistence:
 
         except Exception as e:
             raise ConfigError(f"Failed to load device config '{device_name}': {e}")
-
-    def save_conversation(self, conversation: AIConversation) -> Path:
-        """Save AI conversation history.
-
-        Args:
-            conversation: AI conversation to save.
-
-        Returns:
-            Path to saved conversation file.
-        """
-        try:
-            conversation_file = self.conversations_dir / f"{conversation.id}.json"
-
-            # Convert conversation to JSON-serializable format
-            conversation_data = {
-                "id": conversation.id,
-                "created_at": conversation.created_at,
-                "messages": [
-                    {
-                        "role": msg.role,
-                        "content": msg.content,
-                        "timestamp": msg.timestamp,
-                        "tool_calls": msg.tool_calls,
-                        "tool_results": msg.tool_results,
-                    }
-                    for msg in conversation.messages
-                ]
-            }
-
-            with open(conversation_file, 'w') as f:
-                json.dump(conversation_data, f, indent=2, default=self._json_serializer)
-
-            return conversation_file
-
-        except Exception as e:
-            raise ConfigError(f"Failed to save conversation '{conversation.id}': {e}")
-
-    def load_conversation(self, conversation_id: str) -> AIConversation | None:
-        """Load AI conversation history.
-
-        Args:
-            conversation_id: ID of conversation to load.
-
-        Returns:
-            AIConversation instance or None if not found.
-        """
-        conversation_file = self.conversations_dir / f"{conversation_id}.json"
-
-        if not conversation_file.exists():
-            return None
-
-        try:
-            with open(conversation_file) as f:
-                conversation_data = json.load(f)
-
-            # Reconstruct conversation
-            from core.ai.provider import AIMessage
-            conversation = AIConversation(conversation_data["id"])
-            conversation.created_at = conversation_data["created_at"]
-
-            for msg_data in conversation_data["messages"]:
-                message = AIMessage(
-                    role=msg_data["role"],
-                    content=msg_data["content"],
-                    timestamp=msg_data.get("timestamp", time.time()),
-                    tool_calls=msg_data.get("tool_calls"),
-                    tool_results=msg_data.get("tool_results"),
-                )
-                conversation.messages.append(message)
-
-            return conversation
-
-        except Exception as e:
-            raise ConfigError(f"Failed to load conversation '{conversation_id}': {e}")
-
-    def list_conversations(self) -> list[str]:
-        """List all saved conversation IDs.
-
-        Returns:
-            List of conversation IDs.
-        """
-        conversation_files = self.conversations_dir.glob("*.json")
-        return [f.stem for f in conversation_files]
 
     def from_session(self, session: Session) -> SessionConfig:
         """Create SessionConfig from active Session instance.

@@ -5,7 +5,6 @@ import {
   Device,
   DeviceConnectionRequest,
   Workflow,
-  Conversation,
   LabPilotEvent,
   WebSocketMessage,
 } from '@/types';
@@ -101,7 +100,7 @@ export const createWorkflow = (name: string, description?: string): Promise<Work
   client.post<Workflow>('/workflows', { name, description });
 
 export const executeWorkflow = (id: string, version?: number): Promise<{ execution_id: string }> =>
-  client.post<{ execution_id: string }>('/workflows/execute', { workflow_id: id, version });
+  client.post<{ execution_id: string }>(`/workflows/${id}/execute`, { version });
 
 export interface WorkflowScript {
   path: string;
@@ -189,21 +188,6 @@ export const setWorkflowBinding = (
     `/workflows/${id}/bindings/${role}`,
     { instrument_id: instrumentId }
   );
-
-// AI Chat
-export const sendMessage = (
-  message: string,
-  conversationId?: string,
-  useTools: boolean = true
-): Promise<{ response: string; conversation_id: string }> =>
-  client.post<{ response: string; conversation_id: string }>('/ai/chat', {
-    message,
-    conversation_id: conversationId,
-    use_tools: useTools,
-  });
-
-export const getConversations = (): Promise<Conversation[]> =>
-  client.get<Conversation[]>('/ai/conversations');
 
 // Configuration
 export const getConfig = (): Promise<any> =>
@@ -320,21 +304,6 @@ export const getDashboardState = (): Promise<DashboardState> =>
 export const getDashboardInstruments = (): Promise<DashboardInstrument[]> =>
   client.get<DashboardInstrument[]>('/dashboard/instruments');
 
-export const getDashboardWorkflows = (): Promise<DashboardWorkflow[]> =>
-  client.get<DashboardWorkflow[]>('/dashboard/workflows');
-
-export const executeDashboardWorkflow = (
-  workflowId: string,
-  config?: any
-): Promise<{ message: string; data: string }> =>
-  client.post<{ message: string; data: string }>(
-    `/dashboard/workflows/${workflowId}/execute`,
-    { workflow_id: workflowId, config }
-  );
-
-export const stopDashboardWorkflow = (workflowId: string): Promise<{ message: string }> =>
-  client.post<{ message: string }>(`/dashboard/workflows/${workflowId}/stop`, {});
-
 export const getCatalog = (): Promise<CatalogEntry[]> =>
   client.get<CatalogEntry[]>('/dashboard/catalog');
 
@@ -403,15 +372,10 @@ export const api = {
   getWorkflows,
   createWorkflow,
   executeWorkflow,
-  sendMessage,
-  getConversations,
   getConfig,
   updateConfig,
   getDashboardState,
   getDashboardInstruments,
-  getDashboardWorkflows,
-  executeDashboardWorkflow,
-  stopDashboardWorkflow,
   getCatalog,
   createInstrument,
   connectInstrument,

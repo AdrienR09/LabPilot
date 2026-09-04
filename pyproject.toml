@@ -35,8 +35,6 @@ dependencies = [
     "fastapi >= 0.104.0",
     "uvicorn[standard] >= 0.24.0",
     "httpx >= 0.25.0",
-    "RestrictedPython >= 7.0",  # Code sandbox for AnalyseNode
-    "chromadb >= 0.5",  # RAG vector store for AI context
 ]
 
 [project.optional-dependencies]

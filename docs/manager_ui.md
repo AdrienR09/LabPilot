@@ -57,10 +57,9 @@ Two earlier iterations of this UI are documented for context, not
 because they're still present:
 
 - An **AI Assistant** tab (chat backed by a local Ollama model, workflow
-  generation, a Qt-window-spawning DSL) existed and was removed. The
-  underlying `core/ai/` module and DSL code are still in the tree
-  (unwired) — see git history on the `main` branch for the last commit
-  where it was active, if you need to bring it back.
+  generation, a Qt-window-spawning DSL) existed and was removed, along with
+  the `core/ai/` module and the DSL that backed it — see git history if you
+  need to bring any of it back.
 - A **Notebook** tab embedded a full Jupyter server (file browser +
   notebook UI) in an iframe. It was replaced by the native Console
   toolbar button above — lighter (no Jupyter server process), and

@@ -40,13 +40,6 @@ class EventKind(Enum):
     WORKFLOW_PROGRESS = auto()  # Incremental result reported mid-execution (see Session.report_progress)
     WORKFLOW_NODE_ERROR = auto()  # Individual node failed
 
-    # AI system events
-    AI_INITIALIZED = auto()  # AI system initialized with provider
-    AI_SHUTDOWN = auto()  # AI system shutdown
-    AI_MESSAGE_RECEIVED = auto()  # AI response received from provider
-    AI_TOOL_CALLED = auto()  # AI tool execution requested
-    AI_TOOL_COMPLETED = auto()  # AI tool execution completed
-
 
 @dataclass(frozen=True)
 class Event:

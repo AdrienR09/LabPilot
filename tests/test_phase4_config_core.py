@@ -25,8 +25,6 @@ from core.config import (
     ConfigError,
 )
 from core.session import Session
-from core.ai.ai_session import AIConversation
-from core.ai.provider import AIMessage
 
 async def test_user_preferences():
     """Test UserPreferences dataclass."""
@@ -36,27 +34,22 @@ async def test_user_preferences():
         # Default preferences
         prefs = UserPreferences()
         assert prefs.theme == "dark"
-        assert prefs.ai_provider == "ollama"
         assert prefs.decimal_places == 3
         print("   ✅ Default preferences created")
 
         # Custom preferences
         custom_prefs = UserPreferences(
             theme="light",
-            ai_provider="openai",
-            ai_model="gpt-4",
             decimal_places=2,
             auto_save=False
         )
         assert custom_prefs.theme == "light"
-        assert custom_prefs.ai_model == "gpt-4"
         assert custom_prefs.auto_save == False
         print("   ✅ Custom preferences work")
 
         # JSON serialization
         prefs_dict = {
             "theme": prefs.theme,
-            "ai_provider": prefs.ai_provider,
             "decimal_places": prefs.decimal_places,
             "auto_save": prefs.auto_save
         }
@@ -175,7 +168,6 @@ async def test_config_persistence():
             # Verify directory structure created
             assert persistence.config_dir.exists()
             assert persistence.devices_dir.exists()
-            assert persistence.conversations_dir.exists()
             assert persistence.backups_dir.exists()
             print("   ✅ Directory structure created")
 
@@ -213,59 +205,6 @@ async def test_config_persistence():
 
         except Exception as e:
             print(f"   ❌ ConfigPersistence test failed: {e}")
-            return False
-
-    return True
-
-
-async def test_conversation_persistence():
-    """Test AI conversation persistence."""
-    print("5. Testing AI conversation persistence...")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        config_dir = Path(tmpdir) / "conversation_test"
-        persistence = ConfigPersistence(config_dir)
-
-        try:
-            # Create conversation with messages
-            conversation = AIConversation("test_chat")
-            conversation.add_message(AIMessage(
-                role="user",
-                content="How do I connect to the laser?"
-            ))
-            conversation.add_message(AIMessage(
-                role="assistant",
-                content="To connect to the laser, use the connect_device tool with the appropriate parameters."
-            ))
-            conversation.add_message(AIMessage(
-                role="user",
-                content="Thanks! Can you create a workflow for power measurement?"
-            ))
-
-            assert len(conversation.messages) == 3
-            print("   ✅ Conversation with messages created")
-
-            # Save conversation
-            conv_path = persistence.save_conversation(conversation)
-            assert conv_path.exists()
-            print("   ✅ Conversation saved to disk")
-
-            # Load conversation
-            loaded_conv = persistence.load_conversation("test_chat")
-            assert loaded_conv is not None
-            assert loaded_conv.id == "test_chat"
-            assert len(loaded_conv.messages) == 3
-            assert loaded_conv.messages[0].content == "How do I connect to the laser?"
-            assert loaded_conv.messages[1].role == "assistant"
-            print("   ✅ Conversation loaded and verified")
-
-            # Test conversation listing
-            conv_ids = persistence.list_conversations()
-            assert "test_chat" in conv_ids
-            print("   ✅ Conversation listing works")
-
-        except Exception as e:
-            print(f"   ❌ Conversation persistence test failed: {e}")
             return False
 
     return True

@@ -4,12 +4,9 @@ Provides CLI entry points for launching LabPilot applications and managing the s
 """
 
 import argparse
-import asyncio
 import json
 import sys
 from pathlib import Path
-
-import httpx
 
 
 def main():
@@ -23,7 +20,6 @@ Examples:
   labpilot start                     Start LabPilot server on default port 8000
   labpilot start --port 8765         Start server on port 8765
   labpilot start --load session.json Load specific session configuration
-  labpilot check-ollama              Check Ollama AI service health
   labpilot list-adapters             List all available instrument adapters
   labpilot list-adapters --tags camera   Filter adapters by tags
   labpilot -manager                  Launch Qt instrument manager GUI (legacy)
@@ -71,17 +67,10 @@ Examples:
         help="Logging level (default: info)",
     )
 
-    # Health check commands
-    health_parser = subparsers.add_parser("check-ollama", help="Check Ollama AI service health")
-    health_parser.add_argument(
-        "--base-url",
-        type=str,
-        default="http://localhost:11434",
-        help="Ollama base URL (default: http://localhost:11434)",
+    # List adapters
+    adapters_parser = subparsers.add_parser(
+        "list-adapters", help="List all registered instrument adapters"
     )
-
-    # Adapter management commands
-    adapters_parser = subparsers.add_parser("list-adapters", help="List available instrument adapters")
     adapters_parser.add_argument(
         "--tags",
         type=str,
@@ -107,8 +96,6 @@ Examples:
     # Handle subcommands
     if args.command == "start":
         _start_server(args)
-    elif args.command == "check-ollama":
-        asyncio.run(_check_ollama(args))
     elif args.command == "list-adapters":
         _list_adapters(args)
     else:
@@ -170,116 +157,68 @@ def _start_server(args):
         sys.exit(1)
 
 
-async def _check_ollama(args):
-    """Check Ollama AI service health."""
-    print(f"🔍 Checking Ollama health at {args.base_url}...")
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            # Check if Ollama is running
-            response = await client.get(f"{args.base_url}/api/tags")
-
-            if response.status_code == 200:
-                models = response.json().get("models", [])
-                print(f"✅ Ollama is running ({len(models)} models available)")
-
-                # Check for recommended models
-                model_names = [m.get("name", "") for m in models]
-                recommended = ["mistral", "llama3.1", "qwen2.5-coder"]
-                available_recommended = [name for name in recommended if any(name in m for m in model_names)]
-
-                if available_recommended:
-                    print(f"   📦 Recommended models: {', '.join(available_recommended)}")
-                else:
-                    print("   ⚠️  No recommended models found")
-                    print("   💡 Install with: ollama pull mistral")
-
-                # List all models
-                if models:
-                    print("   📋 Available models:")
-                    for model in models:
-                        name = model.get("name", "unknown")
-                        size = model.get("size", 0)
-                        size_gb = round(size / (1024**3), 2) if size else 0
-                        print(f"      • {name} ({size_gb} GB)")
-
-            else:
-                print(f"❌ Ollama API returned status {response.status_code}")
-                sys.exit(1)
-
-    except httpx.ConnectError:
-        print(f"❌ Cannot connect to Ollama at {args.base_url}")
-        print("   💡 Make sure Ollama is running: ollama serve")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ Health check failed: {e}")
-        sys.exit(1)
-
-
 def _list_adapters(args):
-    """List available instrument adapters."""
+    """List instrument adapters that actually registered on this machine."""
     try:
-        from instruments import AdapterRegistry
-
-        print("🔍 Discovering instrument adapters...")
-        registry = AdapterRegistry()
-
-        # Get all adapters
-        all_adapters = registry.list_adapters()
-
-        # Filter by tags if specified
-        adapters = all_adapters
-        if args.tags:
-            adapters = []
-            for adapter in all_adapters:
-                adapter_tags = [tag.lower() for tag in adapter.get("tags", [])]
-                if any(tag.lower() in adapter_tags for tag in args.tags):
-                    adapters.append(adapter)
-
-        if not adapters:
-            if args.tags:
-                print(f"❌ No adapters found with tags: {', '.join(args.tags)}")
-            else:
-                print("❌ No adapters found")
-            return
-
-        # Output in requested format
-        if args.format == "json":
-            print(json.dumps(adapters, indent=2))
-        elif args.format == "simple":
-            for adapter in adapters:
-                print(f"{adapter['name']} ({adapter['type']})")
-        else:  # table format
-            _print_adapters_table(adapters, args.tags)
-
+        from instruments import available_catalog
     except ImportError as e:
         print(f"❌ Core components not available: {e}", file=sys.stderr)
         sys.exit(1)
-    except Exception as e:
-        print(f"❌ Failed to list adapters: {e}", file=sys.stderr)
-        sys.exit(1)
+
+    # available_catalog() rather than INSTRUMENT_CATALOG: only entries whose
+    # adapter really registered here, so this lists what can be connected
+    # rather than what the static table mentions.
+    entries = available_catalog()
+
+    if args.tags:
+        wanted = {tag.lower() for tag in args.tags}
+        entries = [
+            m for m in entries if wanted & {tag.lower() for tag in m.tags}
+        ]
+
+    if not entries:
+        if args.tags:
+            print(f"❌ No adapters found with tags: {', '.join(args.tags)}")
+        else:
+            print("❌ No adapters found")
+        return
+
+    entries = sorted(entries, key=lambda m: m.adapter_key)
+
+    if args.format == "json":
+        print(json.dumps([
+            {
+                "adapter_key": m.adapter_key,
+                "manufacturer": m.manufacturer,
+                "model": m.model,
+                "display_name": m.display_name,
+                "instrument_type": m.instrument_type.value,
+                "backend": m.backend.value,
+                "tags": list(m.tags),
+            }
+            for m in entries
+        ], indent=2))
+    elif args.format == "simple":
+        for m in entries:
+            print(f"{m.adapter_key} ({m.instrument_type.value})")
+    else:
+        _print_adapters_table(entries, args.tags)
 
 
-def _print_adapters_table(adapters, filter_tags=None):
-    """Print adapters in table format."""
-    print(f"📦 Found {len(adapters)} adapters" + (f" (filtered by: {', '.join(filter_tags)})" if filter_tags else ""))
+def _print_adapters_table(entries, filter_tags=None):
+    """Print catalog entries in table format."""
+    suffix = f" (filtered by: {', '.join(filter_tags)})" if filter_tags else ""
+    print(f"📦 Found {len(entries)} adapters{suffix}")
     print()
 
-    # Calculate column widths
-    name_width = max(len(adapter["name"]) for adapter in adapters) + 2
-    type_width = max(len(adapter["type"]) for adapter in adapters) + 2
+    key_width = max(len(m.adapter_key) for m in entries) + 2
+    type_width = max(len(m.instrument_type.value) for m in entries) + 2
 
-    # Print header
-    print(f"{'Name':<{name_width}} {'Type':<{type_width}} Tags")
-    print("-" * (name_width + type_width + 20))
+    print(f"{'Adapter key':<{key_width}} {'Type':<{type_width}} Tags")
+    print("-" * (key_width + type_width + 20))
 
-    # Print adapters
-    for adapter in sorted(adapters, key=lambda x: x["name"]):
-        name = adapter["name"]
-        adapter_type = adapter["type"]
-        tags = ", ".join(adapter.get("tags", []))
-
-        print(f"{name:<{name_width}} {adapter_type:<{type_width}} {tags}")
+    for m in entries:
+        print(f"{m.adapter_key:<{key_width}} {m.instrument_type.value:<{type_width}} {', '.join(m.tags)}")
 
 
 if __name__ == "__main__":

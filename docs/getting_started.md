@@ -39,7 +39,6 @@ labpilot start --port 8765           # a different port
 labpilot start --config-dir <path>   # a different config directory (default: ~/.labpilot)
 labpilot list-adapters                # see what's connectable
 labpilot list-adapters --tags camera  # filter by DeviceSchema tag
-labpilot check-ollama                 # check whether a local Ollama service is reachable
 ```
 
 ## Your first workflow

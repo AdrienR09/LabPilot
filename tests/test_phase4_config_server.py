@@ -30,8 +30,6 @@ from core.config import (
 )
 from core.server import LabPilotServer, create_app
 from core.session import Session
-from core.ai.ai_session import AIConversation
-from core.ai.provider import AIMessage
 
 async def test_config_persistence():
     """Test configuration persistence functionality."""
@@ -49,8 +47,6 @@ async def test_config_persistence():
             # Create test configuration
             test_prefs = UserPreferences(
                 theme="dark",
-                ai_provider="ollama",
-                ai_model="llama3.1",
                 decimal_places=2
             )
 
@@ -91,25 +87,6 @@ async def test_config_persistence():
             assert loaded_device.adapter_type == "thorlabs_pm100"
             assert loaded_device.connection_params["port"] == "/dev/ttyUSB0"
             print("   ✅ Device configuration persistence works")
-
-            # Test AI conversation persistence
-            conversation = AIConversation("test_conversation")
-            conversation.add_message(AIMessage(
-                role="user",
-                content="Hello, can you help me with the laser?"
-            ))
-            conversation.add_message(AIMessage(
-                role="assistant",
-                content="Of course! I can help you control the laser device."
-            ))
-
-            conv_path = persistence.save_conversation(conversation)
-            loaded_conversation = persistence.load_conversation("test_conversation")
-
-            assert loaded_conversation.id == "test_conversation"
-            assert len(loaded_conversation.messages) == 2
-            assert loaded_conversation.messages[0].content == "Hello, can you help me with the laser?"
-            print("   ✅ AI conversation persistence works")
 
             # Test configuration summary
             summary = persistence.get_config_summary()
