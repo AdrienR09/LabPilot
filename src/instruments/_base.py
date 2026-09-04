@@ -13,6 +13,7 @@ This enables:
 
 from __future__ import annotations
 
+import asyncio
 import functools
 from abc import abstractmethod
 from typing import Any
@@ -78,6 +79,21 @@ class AdapterBase(Readable):
     def __init__(self) -> None:
         """Initialize adapter in disconnected state."""
         self._connected = False
+        # Serialises every hardware call on this device. anyio's thread pool
+        # is process-global (40 workers by default) and imposes no per-device
+        # ordering, so two concurrent read()s on one VISA session — a poller
+        # and a workflow, say — could interleave a write and a read on the
+        # same connection. One lock per adapter instance makes each device's
+        # traffic sequential while leaving different devices fully parallel.
+        # Created lazily: adapters are constructed outside the event loop
+        # (adapter_registry introspection, the catalogue), where asyncio.Lock()
+        # has no loop to bind to.
+        self._io_lock: asyncio.Lock | None = None
+
+    def _lock(self) -> asyncio.Lock:
+        if self._io_lock is None:
+            self._io_lock = asyncio.Lock()
+        return self._io_lock
 
     @property
     @abstractmethod
@@ -220,12 +236,14 @@ class AdapterBase(Readable):
 
     # --- Utility ---
 
-    @staticmethod
-    async def _to_thread(func, *args, **kwargs) -> Any:
-        """Run synchronous function in thread pool.
+    async def _to_thread(self, func, *args, **kwargs) -> Any:
+        """Run synchronous function in thread pool, serialised per device.
 
         Uses anyio.to_thread.run_sync() which integrates with anyio's cancellation
         system. Cancelled tasks will attempt to interrupt the thread.
+
+        An instance method rather than a staticmethod so it can take this
+        adapter's own I/O lock — see __init__.
 
         Args:
             func: Synchronous callable to run in thread.
@@ -245,7 +263,8 @@ class AdapterBase(Readable):
         # they reach the intended function instead.
         if kwargs:
             func = functools.partial(func, **kwargs)
-        return await anyio.to_thread.run_sync(func, *args)
+        async with self._lock():
+            return await anyio.to_thread.run_sync(func, *args)
 
     @property
     def connected(self) -> bool:

@@ -26,6 +26,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from core.config import DeviceConfig
+from core.config.paths import config_dir as _config_dir
 
 __all__ = ["InstrumentSetError", "InstrumentSetPersistence"]
 
@@ -42,7 +43,7 @@ class InstrumentSetPersistence:
     DEFAULT_NAME = "default"
 
     def __init__(self, config_dir: Path | None = None) -> None:
-        base = config_dir or (Path.home() / ".labpilot" / "config")
+        base = config_dir or _config_dir()
         self.dir = Path(base) / "instruments"
         self.dir.mkdir(parents=True, exist_ok=True)
         # Reserved for the equivalent workflow-config system.

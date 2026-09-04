@@ -21,6 +21,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.config.paths import labpilot_home
 from core.session import Session
 from core.workflow.store import WorkflowSummary
 
@@ -146,7 +147,7 @@ class ConfigPersistence:
             config_dir: Configuration directory. Defaults to ~/.labpilot
         """
         if config_dir is None:
-            config_dir = Path.home() / ".labpilot"
+            config_dir = labpilot_home()
 
         self.config_dir = Path(config_dir)
         self.session_config_path = self.config_dir / "config" / "session.json"

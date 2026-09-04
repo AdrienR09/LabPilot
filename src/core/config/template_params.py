@@ -29,6 +29,8 @@ import json
 import re
 from pathlib import Path
 
+from core.config.paths import config_dir as _config_dir
+
 __all__ = ["TemplateParamPersistence"]
 
 _UNSAFE_CHARS_RE = re.compile(r"[^A-Za-z0-9_-]")
@@ -38,7 +40,7 @@ class TemplateParamPersistence:
     """Save/load a workflow template's last-known parameter values."""
 
     def __init__(self, config_dir: Path | None = None) -> None:
-        base = config_dir or (Path.home() / ".labpilot" / "config")
+        base = config_dir or _config_dir()
         self.dir = Path(base) / "workflow_template_params"
         self.dir.mkdir(parents=True, exist_ok=True)
 

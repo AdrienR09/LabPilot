@@ -35,6 +35,17 @@ _progress_context_var: contextvars.ContextVar[tuple[str, str, dict] | None] = co
     "labpilot_progress_context", default=None
 )
 
+# Role -> real device name, per running workflow. Also a ContextVar, and for
+# exactly the same reason as the progress context above: WorkflowEngine applies
+# a workflow's bindings immediately before running it and clears them after, so
+# on a plain instance attribute two workflows running concurrently share one
+# namespace. Both templates using the role "detector" meant the second to start
+# silently rebound the first, and whichever finished first unbound the other
+# mid-run.
+_aliases_var: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "labpilot_role_aliases", default=None
+)
+
 
 class Session:
     """Top-level runtime object managing devices, events, and scan execution.
@@ -53,13 +64,9 @@ class Session:
         self.state = ScanState.idle()
         self.devices: dict[str, Readable] = {}
         self._current_run_uid: str | None = None
-        # Role name -> real registered device name (e.g. "xy_actuator" ->
-        # "scanner_2d_1"), applied by WorkflowEngine immediately before
-        # running a workflow whose script was written against role names
-        # (see core/workflow/instrument_roles.py) rather than literal
-        # instrument ids, and cleared again right after — scoped to one
-        # execution, never left registered between runs.
-        self._aliases: dict[str, str] = {}
+        # Role aliases are NOT stored here — see _aliases_var above: they are
+        # per-execution state, and two concurrently running workflows would
+        # otherwise clobber each other's role bindings.
         # Live-progress context (which workflow/execution report_progress()
         # calls belong to) is NOT stored here — see _progress_context_var
         # above: it needs to be per-asyncio-task, and a plain instance
@@ -144,11 +151,18 @@ class Session:
         written against a role name like "xy_actuator" rather than a
         literal instrument id) against whichever real instrument is
         currently bound to that role. See
-        core/workflow/instrument_roles.py."""
-        self._aliases[role] = real_name
+        core/workflow/instrument_roles.py.
+
+        Scoped to the calling asyncio task, so concurrent workflows each see
+        only their own bindings."""
+        aliases = _aliases_var.get()
+        if aliases is None:
+            aliases = {}
+            _aliases_var.set(aliases)
+        aliases[role] = real_name
 
     def clear_aliases(self) -> None:
-        self._aliases.clear()
+        _aliases_var.set(None)
 
     def set_progress_context(self, workflow_id: str, execution_id: str, sink: dict[str, dict]) -> None:
         """Called by WorkflowEngine right before running a script (inside
@@ -230,7 +244,7 @@ class Session:
         `REQUIRED_INSTRUMENTS`'s `"optional": True`,
         core/workflow/instrument_roles.py) is actually bound before
         calling `get()` on it, without relying on a try/except KeyError."""
-        return name in self.devices or name in self._aliases
+        return name in self.devices or name in (_aliases_var.get() or {})
 
     def get(self, name: str) -> Readable:
         """Retrieve device from registry by name — or, if `name` isn't a
@@ -267,8 +281,9 @@ class Session:
         unwrapped — an escape hatch for the rare caller that needs the
         adapter's own identity or an attribute the kind wrapper doesn't
         forward some other way."""
-        if name not in self.devices and name in self._aliases:
-            name = self._aliases[name]
+        aliases = _aliases_var.get() or {}
+        if name not in self.devices and name in aliases:
+            name = aliases[name]
         if name not in self.devices:
             available = ", ".join(self.devices.keys())
             raise KeyError(

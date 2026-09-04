@@ -452,35 +452,59 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         request: DeviceConnectionRequest,
         server: LabPilotServer = Depends(get_server)
     ):
-        """Connect a new device."""
+        """Create and connect a device by adapter key.
+
+        Delegates to the DashboardManager rather than touching
+        `session.devices` directly: the manager owns instrument instances and
+        their connection parameters, and mirrors connected ones into the
+        Session. Writing to the mirror here instead would leave the two
+        registries disagreeing.
+
+        (This previously returned success unconditionally without creating or
+        connecting anything.)
+        """
+        manager = get_dashboard_manager()
         try:
-            # This would use the adapter registry to create and connect device
-            # For now, return mock success
-            return ApiResponse(
-                success=True,
-                data={"message": f"Device '{request.name}' connected successfully"}
+            manager.create_instrument(
+                request.adapter_type, request.name, request.name, request.connection_params
             )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except TypeError as e:
+            raise HTTPException(
+                status_code=422, detail=f"Invalid connection parameters: {e}"
+            ) from e
+
+        try:
+            status = await manager.connect_instrument(request.name)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
         except Exception as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=502, detail=f"Connection failed: {e}") from e
+
+        return ApiResponse(success=True, data=status.model_dump())
 
     @app.delete("/api/devices/{device_name}", response_model=ApiResponse)
     async def disconnect_device(
         device_name: str,
         server: LabPilotServer = Depends(get_server)
     ):
-        """Disconnect a device."""
-        if device_name not in server.session.devices:
-            raise HTTPException(status_code=404, detail=f"Device '{device_name}' not found")
+        """Disconnect a device.
 
+        Goes through the DashboardManager for the same reason as connect
+        above — deleting straight out of `session.devices` disconnected the
+        instrument as far as workflows were concerned while leaving the
+        manager (and so the Devices tab) still showing it connected.
+        """
+        manager = get_dashboard_manager()
         try:
-            # Remove device from session
-            del server.session.devices[device_name]
-            return ApiResponse(
-                success=True,
-                data={"message": f"Device '{device_name}' disconnected"}
-            )
+            status = await manager.disconnect_instrument(device_name)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
         except Exception as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=502, detail=f"Disconnect failed: {e}") from e
+
+        return ApiResponse(success=True, data=status.model_dump())
 
     def _loaded_script_paths(server: LabPilotServer) -> list[str]:
         """Script paths in the currently active workflow-set — the

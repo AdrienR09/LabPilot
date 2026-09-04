@@ -28,25 +28,31 @@ already-open window.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from core.config.paths import config_dir as _config_dir
+
 __all__ = [
-    "get_instrument_ui_prefs",
-    "set_instrument_ui_prefs",
     "PrefSpec",
     "get_display_pref_schema",
+    "get_instrument_ui_prefs",
+    "set_instrument_ui_prefs",
 ]
 
-_PATH = Path.home() / ".labpilot" / "config" / "instrument_ui_prefs.json"
+def _path() -> Path:
+    """Resolved per call, not cached at import, so LABPILOT_HOME is honoured
+    even when this module is imported before it is set (see config/paths.py)."""
+    return _config_dir() / "instrument_ui_prefs.json"
 
 
 def _load_all() -> dict[str, dict[str, Any]]:
-    if not _PATH.exists():
+    path = _path()
+    if not path.exists():
         return {}
     try:
-        return json.loads(_PATH.read_text())
+        return json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return {}
 
@@ -59,8 +65,9 @@ def get_instrument_ui_prefs(instrument_id: str) -> dict[str, Any]:
 def set_instrument_ui_prefs(instrument_id: str, prefs: dict[str, Any]) -> None:
     all_prefs = _load_all()
     all_prefs[instrument_id] = prefs
-    _PATH.parent.mkdir(parents=True, exist_ok=True)
-    _PATH.write_text(json.dumps(all_prefs, indent=2))
+    path = _path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(all_prefs, indent=2))
 
 
 @dataclass(frozen=True)

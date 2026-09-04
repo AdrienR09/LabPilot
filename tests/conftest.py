@@ -2,7 +2,21 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+
 import pytest
+
+# Redirect all persistent LabPilot state into a throwaway directory for the
+# whole test session, before any test module imports the config layer.
+#
+# Without this the suite writes into the developer's real ~/.labpilot: anything
+# that exercises the dashboard manager persists the instruments it creates into
+# the active instrument set, which is then loaded back by the next real server
+# start. A test that connected a device left that device in the user's lab
+# configuration permanently.
+_TMP_HOME = tempfile.mkdtemp(prefix="labpilot-test-home-")
+os.environ["LABPILOT_HOME"] = _TMP_HOME
 
 
 @pytest.fixture

@@ -32,6 +32,8 @@ import re
 import time
 from pathlib import Path
 
+from core.config.paths import config_dir as _config_dir
+
 __all__ = ["WorkflowSetError", "WorkflowSetPersistence"]
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -47,7 +49,7 @@ class WorkflowSetPersistence:
     DEFAULT_NAME = "default"
 
     def __init__(self, config_dir: Path | None = None) -> None:
-        base = config_dir or (Path.home() / ".labpilot" / "config")
+        base = config_dir or _config_dir()
         self.dir = Path(base) / "workflows"
         self.dir.mkdir(parents=True, exist_ok=True)
         self._active_marker = self.dir / ".active"

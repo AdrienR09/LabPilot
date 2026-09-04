@@ -69,9 +69,17 @@ class CreateInstrumentRequest(BaseModel):
 
 
 class WriteSettingsRequest(BaseModel):
-    """Request to set one or more of an instrument's settable parameters."""
+    """Request to set one or more of an instrument's settable parameters.
+
+    `persist` distinguishes a configuration change (the Settings UI: remember
+    this and restore it on the next connect) from an ordinary runtime write
+    (a console loop or a jog control moving a stage). Defaults to True to keep
+    the historical behaviour for existing callers; LabPilotClient.write()
+    defaults to False, which is the right default for scripted motion.
+    """
 
     values: dict[str, Any]
+    persist: bool = True
 
 
 class UIPrefsRequest(BaseModel):
@@ -361,25 +369,34 @@ class DashboardManager:
             })
         return self.get_instrument_status(instrument_id)
 
-    async def write_instrument_settings(self, instrument_id: str, values: dict[str, Any]) -> InstrumentStatus:
+    async def write_instrument_settings(
+        self, instrument_id: str, values: dict[str, Any], *, persist: bool = True
+    ) -> InstrumentStatus:
         """Set one or more of an instrument's settable parameters.
 
-        Always remembers the values as custom_settings (persisted, and
-        replayed automatically the next time this instrument connects — see
-        connect_instrument), so settings are editable regardless of
-        connection state. If it's connected right now, also applies them
-        immediately.
+        With `persist` (the default, used by the Settings UI) the values are
+        also remembered as custom_settings and written to the active
+        instrument-set config, so they are restored the next time this
+        instrument connects.
+
+        `persist=False` is for ordinary runtime writes — a console loop
+        stepping a stage, a workflow moving an actuator. Those used to take
+        the same path, so every point of a scan rewrote the instrument-set
+        JSON to disk and left the last scan position saved as that
+        instrument's startup setting, replayed on the next connect.
         """
         if instrument_id not in self.instruments:
             raise ValueError(f"Instrument {instrument_id} not found")
 
         inst = self.instruments[instrument_id]
-        inst.setdefault("custom_settings", {}).update(values)
+        if persist:
+            inst.setdefault("custom_settings", {}).update(values)
 
         if inst["adapter"].connected:
             await inst["adapter"].write(values)
 
-        self._save_active_config()
+        if persist:
+            self._save_active_config()
         return self.get_instrument_status(instrument_id)
 
     async def call_instrument_action(self, instrument_id: str, action_name: str) -> InstrumentStatus:
@@ -622,7 +639,9 @@ async def write_instrument_settings(instrument_id: str, request: WriteSettingsRe
         raise HTTPException(status_code=404, detail=f"Instrument {instrument_id} not found")
     was_connected = manager.instruments[instrument_id]["adapter"].connected
     try:
-        await manager.write_instrument_settings(instrument_id, request.values)
+        await manager.write_instrument_settings(
+            instrument_id, request.values, persist=request.persist
+        )
         message = "Settings applied" if was_connected else "Settings saved — will apply when connected"
         return {"success": True, "data": {"message": message}}
     except NotImplementedError as e:

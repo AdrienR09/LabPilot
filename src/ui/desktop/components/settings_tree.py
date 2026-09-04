@@ -97,7 +97,9 @@ class SettingsTreeComponent(UIComponent):
                 if change_type != "value":
                     continue
                 try:
-                    ctx.client.write(ctx.instrument.id, {changed_param.name(): value})
+                    ctx.client.write(
+                        ctx.instrument.id, {changed_param.name(): value}, persist=True
+                    )
                 except Exception as e:
                     print(f"[InstrumentWindow] Failed to write {changed_param.name()}: {e}")
 

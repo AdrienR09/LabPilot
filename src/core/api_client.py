@@ -54,10 +54,21 @@ class LabPilotClient:
         resp.raise_for_status()
         return resp.json()["data"]
 
-    def write(self, instrument_id: str, values: dict[str, Any]) -> None:
+    def write(
+        self, instrument_id: str, values: dict[str, Any], *, persist: bool = False
+    ) -> None:
+        """Set one or more settable values.
+
+        `persist=False` (the default) is an ordinary runtime write — moving a
+        stage, stepping a source. Pass `persist=True` only for a genuine
+        configuration change that should be saved and re-applied on the next
+        connect, as the Settings dock does. Every write used to persist, so a
+        scan driven from the console rewrote the instrument-set config on each
+        point and left its final position saved as that instrument's startup
+        value."""
         resp = self._client.post(
             f"/api/dashboard/instruments/{instrument_id}/settings",
-            json={"values": values},
+            json={"values": values, "persist": persist},
         )
         resp.raise_for_status()
 

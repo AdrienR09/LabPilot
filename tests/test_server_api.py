@@ -131,36 +131,38 @@ class TestDeviceEndpoints:
         assert failing["connected"] == False
         assert "Device error" in failing["error"]
 
-    def test_connect_device(self, client, mock_server):
-        """Test connecting a new device."""
-        request_data = {
+    def test_connect_device_rejects_unknown_adapter(self, client, mock_server):
+        """An adapter key that isn't registered must fail, not report success.
+
+        This route used to return `{"success": true}` unconditionally without
+        creating or connecting anything, so a typo'd adapter type looked like
+        a working connection.
+        """
+        response = client.post("/api/devices/connect", json={
             "name": "new_device",
-            "adapter_type": "TestAdapter",
-            "connection_params": {"port": "COM1"}
-        }
+            "adapter_type": "NoSuchAdapter",
+            "connection_params": {"port": "COM1"},
+        })
 
-        response = client.post("/api/devices/connect", json=request_data)
+        assert response.status_code == 400
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success"] == True
-        assert "connected successfully" in data["data"]["message"]
+    def test_connect_and_disconnect_device_roundtrip(self, client, mock_server):
+        """A real registered adapter connects, and disconnecting it again
+        goes through the same registry rather than the Session mirror."""
+        response = client.post("/api/devices/connect", json={
+            "name": "roundtrip_detector",
+            "adapter_type": "mock_basic_detector_0d",
+            "connection_params": {},
+        })
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["connected"] is True
 
-    def test_disconnect_device_success(self, client, mock_server):
-        """Test disconnecting existing device."""
-        mock_server.session.devices = {"test_device": Mock()}
-
-        response = client.delete("/api/devices/test_device")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success"] == True
-        assert "disconnected" in data["data"]["message"]
+        response = client.delete("/api/devices/roundtrip_detector")
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["connected"] is False
 
     def test_disconnect_device_not_found(self, client, mock_server):
         """Test disconnecting nonexistent device."""
-        mock_server.session.devices = {}
-
         response = client.delete("/api/devices/nonexistent")
 
         assert response.status_code == 404

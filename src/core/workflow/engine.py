@@ -157,7 +157,12 @@ class WorkflowEngine:
         except asyncio.CancelledError:
             pass
 
-        del self._running_workflows[workflow_id]
+        # discard, not del: awaiting the cancelled task runs its own finally
+        # block, which already removes this entry. A plain `del` therefore
+        # raised KeyError on every *successful* stop, which server.py turned
+        # into an HTTP 400 — so the Stop button always reported failure even
+        # though the workflow had stopped correctly.
+        self._running_workflows.pop(workflow_id, None)
 
         # Emit stop event
         await self.session.bus.emit(
@@ -248,10 +253,11 @@ class WorkflowEngine:
         self.session.set_progress_context(workflow_id, execution_id, self._live_progress)
 
         try:
-            # Initialize execution context
-            if workflow_id not in self._execution_results:
-                self._execution_results[workflow_id] = {}
-
+            # Start this run's results empty rather than accumulating into the
+            # previous run's dict. The script path .update()s into it, so a key
+            # a previous run produced but this one doesn't used to survive into
+            # this run's WORKFLOW_COMPLETED payload and its persisted results.
+            self._execution_results[workflow_id] = {}
             node_results = self._execution_results[workflow_id]
 
             script_path = graph.metadata.get("script_path")
