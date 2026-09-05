@@ -20,18 +20,30 @@ def primary_key(schema: dict) -> Optional[str]:
 
 
 def pick_1d_series(schema: dict) -> tuple:
-    """(value_key, axis_key) for a 1D detector's plot. Some real spectrometer
-    schemas expose both an axis array (wavelengths, time, ...) and a value
-    array (intensities, ...) as separate readable keys — plotting the axis
-    key against a bare sample index (what picking "the first readable key"
-    would do) is a meaningless straight ramp. When both are present, plot
-    the non-axis key against the axis key instead of against sample index."""
+    """(value_key, axis_key) for a 1D detector's plot.
+
+    Some real spectrometer schemas expose both an axis array (wavelengths,
+    time, ...) and a value array (intensities, ...) as separate readable
+    keys — plotting the axis key against a bare sample index (what picking
+    "the first readable key" would do) is a meaningless straight ramp.
+
+    Which is which comes from the device's own declaration when it has
+    one: a parameter with `role="axis"`. `_AXIS_KEY_HINTS` is the fallback
+    for adapters that declare no roles, and is why an IR spectrometer
+    reporting `wavenumbers`/`transmittance` — neither of which is in the
+    hint list — used to plot its wavenumber axis as the measurement."""
     readable = schema.get("readable", {})
     array_keys = [k for k, dtype in readable.items() if dtype == "ndarray1d"]
     if not array_keys:
         keys = list(readable.keys())
         return (keys[0] if keys else None, None)
-    axis_key = next((k for k in array_keys if k.lower() in _AXIS_KEY_HINTS), None)
+    declared = [
+        p["name"] for p in schema.get("parameters") or ()
+        if p.get("role") == "axis" and p["name"] in array_keys
+    ]
+    axis_key = declared[0] if declared else next(
+        (k for k in array_keys if k.lower() in _AXIS_KEY_HINTS), None
+    )
     value_key = next((k for k in array_keys if k != axis_key), array_keys[0])
     return value_key, axis_key
 

@@ -4,8 +4,38 @@ from typing import Any
 
 import numpy as np
 
+from labpilot.core.device.parameter import INTEGRATION_TIME, Parameter, ParamRole
 from labpilot.core.device.schema import DeviceSchema
 from labpilot.instruments._base import AdapterBase, adapter_registry
+
+
+def _spectrum(axis: str, axis_unit: str, value: str, value_unit: str,
+              *, axis_description: str = "") -> tuple[Parameter, Parameter]:
+    """The axis/value pair a spectrometer reports, declared rather than
+    inferred.
+
+    Which of two same-shaped arrays is the x-axis and which is the
+    measurement was previously guessed from a hardcoded list of axis-ish
+    names — "wavelength", "time", "frequency", "x" — in three places
+    (`core/workflow_templates/_common.py`, `ui/.../schema_utils.py`, and
+    the omniscan template). Any spectrometer whose axis is called
+    something else fell through and had its *axis* plotted as the
+    measurement: the IR mock's wavenumbers and the Raman mock's shift both
+    did exactly that. Saying it here fixes it for every consumer at once,
+    and cannot go stale the way a list of names does.
+    """
+    return (
+        Parameter(axis, shape=(None,), unit=axis_unit, role=ParamRole.AXIS,
+                  description=axis_description),
+        Parameter(value, shape=(None,), unit=value_unit, axes=(axis,)),
+    )
+
+
+def _integration_time(limits: tuple[float, float] = (1.0, 60000.0)) -> Parameter:
+    return Parameter("integration_time_ms", unit="ms", role=ParamRole.SETTING,
+                     settable=True, limits=limits,
+                     tags=frozenset({INTEGRATION_TIME}),
+                     description="Exposure per spectrum.")
 
 
 class MockSpectrometer(AdapterBase):
@@ -22,10 +52,10 @@ class MockSpectrometer(AdapterBase):
         return DeviceSchema(
             name=self._name,
             kind="detector",
-            readable={"wavelengths": "ndarray1d", "intensities": "ndarray1d"},
-            settable={"integration_time_ms": "float64"},
-            units={"wavelengths": "nm", "intensities": "counts"},
-            limits={"integration_time_ms": (1.0, 60000.0)},
+            parameters=(
+                *_spectrum("wavelengths", "nm", "intensities", "counts"),
+                _integration_time(),
+            ),
             trigger_modes=["software"],
             tags=["Mock", "Spectrometer", "Visible"],
         )
@@ -68,10 +98,12 @@ class MockHighResSpectrometer(AdapterBase):
         return DeviceSchema(
             name=self._name,
             kind="detector",
-            readable={"wavelengths": "ndarray1d", "intensities": "ndarray1d"},
-            settable={"integration_time_ms": "float64", "grating": "str"},
-            units={"wavelengths": "nm", "intensities": "counts"},
-            limits={"integration_time_ms": (1.0, 60000.0)},
+            parameters=(
+                *_spectrum("wavelengths", "nm", "intensities", "counts"),
+                _integration_time(),
+                Parameter("grating", dtype="str", role=ParamRole.SETTING,
+                          settable=True),
+            ),
             tags=["Mock", "Spectrometer", "HighResolution", "Princeton"],
         )
 
@@ -114,10 +146,10 @@ class MockUVVISSpectrometer(AdapterBase):
         return DeviceSchema(
             name=self._name,
             kind="detector",
-            readable={"wavelengths": "ndarray1d", "absorbance": "ndarray1d"},
-            settable={"integration_time_ms": "float64"},
-            units={"wavelengths": "nm", "absorbance": "AU"},
-            limits={"integration_time_ms": (1.0, 60000.0)},
+            parameters=(
+                *_spectrum("wavelengths", "nm", "absorbance", "AU"),
+                _integration_time(),
+            ),
             tags=["Mock", "Spectrometer", "UV-VIS"],
         )
 
@@ -156,10 +188,10 @@ class MockIRSpectrometer(AdapterBase):
         return DeviceSchema(
             name=self._name,
             kind="detector",
-            readable={"wavenumbers": "ndarray1d", "transmittance": "ndarray1d"},
-            settable={"integration_time_ms": "float64"},
-            units={"wavenumbers": "cm^-1", "transmittance": "%"},
-            limits={"integration_time_ms": (1.0, 60000.0)},
+            parameters=(
+                *_spectrum("wavenumbers", "cm^-1", "transmittance", "%"),
+                _integration_time(),
+            ),
             tags=["Mock", "Spectrometer", "IR"],
         )
 
@@ -201,10 +233,13 @@ class MockRamanSpectrometer(AdapterBase):
         return DeviceSchema(
             name=self._name,
             kind="detector",
-            readable={"shift": "ndarray1d", "intensity": "ndarray1d"},
-            settable={"integration_time_ms": "float64", "laser_wavelength": "float64"},
-            units={"shift": "cm^-1", "intensity": "counts"},
-            limits={"integration_time_ms": (1.0, 60000.0)},
+            parameters=(
+                *_spectrum("shift", "cm^-1", "intensity", "counts",
+                           axis_description="Raman shift from the laser line."),
+                _integration_time(),
+                Parameter("laser_wavelength", unit="nm", role=ParamRole.SETTING,
+                          settable=True, limits=(200.0, 1100.0)),
+            ),
             tags=["Mock", "Spectrometer", "Raman"],
         )
 
@@ -248,13 +283,13 @@ class MockFluorescenceSpectrometer(AdapterBase):
         return DeviceSchema(
             name=self._name,
             kind="detector",
-            readable={"wavelengths": "ndarray1d", "fluorescence": "ndarray1d"},
-            settable={
-                "integration_time_ms": "float64",
-                "excitation_wavelength": "float64",
-            },
-            units={"wavelengths": "nm", "fluorescence": "counts"},
-            limits={"integration_time_ms": (1.0, 60000.0)},
+            parameters=(
+                *_spectrum("wavelengths", "nm", "fluorescence", "counts"),
+                _integration_time(),
+                Parameter("excitation_wavelength", unit="nm",
+                          role=ParamRole.SETTING, settable=True,
+                          limits=(200.0, 1100.0)),
+            ),
             tags=["Mock", "Spectrometer", "Fluorescence"],
         )
 

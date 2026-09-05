@@ -19,6 +19,8 @@ from __future__ import annotations
 import numpy as np
 
 from labpilot.core.device.motion import move_and_settle, move_and_settle_by_moving_flag
+from labpilot.core.device.parameter import ParamRole
+from labpilot.core.device.schema import DeviceSchema
 
 __all__ = [
     "move_and_settle", "move_and_settle_by_moving_flag", "integration_time_key", "spectrum_key",
@@ -43,17 +45,27 @@ def integration_time_key(detector) -> str | None:
 
 
 def spectrum_key(detector) -> str:
-    """This 1D detector's intensity-array readable key name. Different
-    adapters name it "spectrum", "intensities", etc.; "wavelength(s)" is
-    the one readable that's never the value channel, so exclude it and
-    take whatever's left.
+    """This 1D detector's value-array readable key name.
+
+    Prefers what the adapter declares: a readable parameter that is not an
+    axis. Falls back to the old rule — everything except a key containing
+    "wavelength" — for an adapter that declares no roles, which is why a
+    Raman spectrometer reporting `shift`/`intensity` used to return its
+    *shift axis* as the spectrum.
     """
-    readable = detector.schema.readable
+    schema = detector.schema
+    declared = [
+        p.name for p in schema.parameters
+        if p.readable and p.role is not ParamRole.AXIS and p.is_array
+    ]
+    if declared:
+        return declared[0]
+    readable = schema.readable
     candidates = [k for k in readable if "wavelength" not in k.lower()]
     return candidates[0] if candidates else next(iter(readable))
 
 
-def detector_axes(readable: dict, sample_reading: dict) -> tuple[str, list[str], list[list[float]]]:
+def detector_axes(readable, sample_reading: dict) -> tuple[str, list[str], list[list[float]]]:
     """(value_key, axis_names, axis_positions) describing a bound
     detector's OWN internal axes — empty for a 0D detector (a single
     scalar reading), one extra axis for a 1D detector (e.g. a
@@ -80,6 +92,17 @@ def detector_axes(readable: dict, sample_reading: dict) -> tuple[str, list[str],
     "wavelengths" alongside "spectrum"), its real per-sample values — a
     schema alone only declares dtypes, not sizes.
     """
+    # `readable` is a DeviceSchema (which declares which parameter is an
+    # axis) or, from a workflow instance saved before this existed, the
+    # legacy `schema.readable` dict. Only the first can answer the
+    # question outright; the second falls back to the name hints below.
+    schema = readable if isinstance(readable, DeviceSchema) else None
+    declared_axis = None
+    if schema is not None:
+        readable = schema.readable
+        declared = schema.find(role=ParamRole.AXIS, readable=True)
+        declared_axis = declared[0].name if declared else None
+
     array_keys = [k for k, dt in readable.items() if isinstance(dt, str) and dt.startswith("ndarray")]
     if not array_keys:
         # 0D — no extra axes; a single scalar reading per actuator
@@ -87,7 +110,9 @@ def detector_axes(readable: dict, sample_reading: dict) -> tuple[str, list[str],
         value_key = next(iter(readable.keys()))
         return value_key, [], []
 
-    axis_key = next((k for k in array_keys if k.lower() in _AXIS_KEY_HINTS), None)
+    axis_key = declared_axis or next(
+        (k for k in array_keys if k.lower() in _AXIS_KEY_HINTS), None
+    )
     value_key = next((k for k in array_keys if k != axis_key), array_keys[0])
     array = np.asarray(sample_reading[value_key])
 

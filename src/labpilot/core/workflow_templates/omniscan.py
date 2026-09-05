@@ -263,7 +263,7 @@ async def _run_per_point(session: Session) -> dict:
         readings = grid_progress["readings"]
         if "value_key" not in state:
             value_key, det_axis_names, det_axis_positions = detector_axes(
-                detector.schema.readable, readings[0]
+                detector.schema, readings[0]
             )
             detector_shape = [len(positions) for positions in det_axis_positions]
             per_point = 1

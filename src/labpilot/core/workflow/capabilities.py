@@ -283,7 +283,7 @@ class OptimizerCapability:
         sequence = OptimizerSequence.decompose(axes)
 
         sample = await self.detector.read()
-        value_key, _det_names, _det_positions = detector_axes(self.detector.schema.readable, sample)
+        value_key, _det_names, _det_positions = detector_axes(self.detector.schema, sample)
 
         best_position = {ax: float(current[ax]) for ax in axes}
         steps_result: list[dict] = []
