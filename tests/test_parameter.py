@@ -305,3 +305,13 @@ def test_a_motor_setting_is_not_offered_as_an_axis():
     )
     assert stage.position_axes == ("position",)
     assert stage.require("speed").role is ParamRole.SETTING
+
+
+def test_tag_search_is_case_insensitive():
+    """Tags are free-form strings hand-written across 301 adapters, so
+    their capitalisation is not consistent — the mock spectrometers tag
+    themselves "Spectrometer", and a search for "spectrometer" found
+    none of them."""
+    found = adapter_registry.search(tags=["spectrometer"])
+    assert "mock_spectrometer" in found
+    assert found.keys() == adapter_registry.search(tags=["SPECTROMETER"]).keys()

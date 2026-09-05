@@ -484,20 +484,25 @@ class AdapterRegistry:
         return schemas
 
     def search(self, tags: list[str]) -> dict[str, DeviceSchema]:
-        """Search adapters by tags.
+        """Search adapters by tag — any tag matches, case-insensitively.
+
+        Tags are free-form strings written by hand across 301 adapters, so
+        their capitalisation is not consistent and never will be: the mock
+        spectrometers tag themselves "Spectrometer" and a search for
+        "spectrometer" found none of them.
 
         Args:
-            tags: List of tags to search for (e.g., ["camera", "Andor"]).
+            tags: Tags to search for (e.g., ["camera", "Andor"]).
 
         Returns:
             Dict of matching adapters with their schemas.
         """
-        results = {}
-        all_schemas = self.list_with_schemas()
-        for key, schema in all_schemas.items():
-            if any(tag in schema.tags for tag in tags):
-                results[key] = schema
-        return results
+        wanted = {tag.casefold() for tag in tags}
+        return {
+            key: schema
+            for key, schema in self.list_with_schemas().items()
+            if wanted & {tag.casefold() for tag in schema.tags}
+        }
 
 
 # Global singleton registry
