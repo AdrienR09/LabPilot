@@ -416,6 +416,27 @@ class DashboardManager:
             self._save_active_config()
         return self.get_instrument_status(instrument_id)
 
+    async def set_instrument_staged(self, instrument_id: str, staged: bool) -> InstrumentStatus:
+        """Stage or unstage an instrument for acquisition.
+
+        `stage()`/`unstage()` are part of every adapter's contract and are
+        what a real acquisition loop brackets its reads with (arm the
+        camera, allocate the counter's buffer), but they had no route, so
+        the console and any other out-of-process client could only read and
+        write. Without them a scan driven from a notebook silently ran
+        every point unstaged.
+        """
+        if instrument_id not in self.instruments:
+            raise ValueError(f"Instrument {instrument_id} not found")
+
+        adapter = self.instruments[instrument_id]["adapter"]
+        if not adapter.connected:
+            raise NotConnectedError(
+                f"{instrument_id} is not connected", device=instrument_id
+            )
+        await (adapter.stage() if staged else adapter.unstage())
+        return self.get_instrument_status(instrument_id)
+
     async def call_instrument_action(self, instrument_id: str, action_name: str) -> InstrumentStatus:
         """Invoke one of an instrument's declared `DeviceSchema.actions` —
         a zero-argument adapter method that isn't a settable-parameter
@@ -611,19 +632,12 @@ async def get_instrument_schema(instrument_id: str):
     if instrument_id not in manager.instruments:
         raise HTTPException(status_code=404, detail=f"Instrument {instrument_id} not found")
     schema = manager.instruments[instrument_id]["schema"]
-    return {
-        "success": True,
-        "data": {
-            "name": schema.name,
-            "kind": schema.kind,
-            "readable": schema.readable,
-            "settable": schema.settable,
-            "units": schema.units,
-            "limits": {k: list(v) for k, v in schema.limits.items()},
-            "tags": schema.tags,
-            "actions": schema.actions,
-        },
-    }
+    # The whole schema, not a hand-picked subset: this listed eight keys by
+    # name, so `parameters` — with the roles, tags and choices every client
+    # needs to stop guessing from key names — would have been invisible on
+    # the wire until someone remembered to add a ninth line. `mode="json"`
+    # renders tuples as lists and enums as their values.
+    return {"success": True, "data": schema.model_dump(mode="json")}
 
 
 @router.get("/instruments/{instrument_id}/data")
@@ -674,6 +688,32 @@ async def write_instrument_settings(instrument_id: str, request: WriteSettingsRe
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Write failed: {e}")
+
+
+@router.post("/instruments/{instrument_id}/stage")
+async def stage_instrument(instrument_id: str):
+    """Prepare a connected instrument for acquisition (`adapter.stage()`)."""
+    return await _set_staged(instrument_id, True)
+
+
+@router.post("/instruments/{instrument_id}/unstage")
+async def unstage_instrument(instrument_id: str):
+    """Release a connected instrument after acquisition (`adapter.unstage()`)."""
+    return await _set_staged(instrument_id, False)
+
+
+async def _set_staged(instrument_id: str, staged: bool):
+    manager = get_dashboard_manager()
+    try:
+        status = await manager.set_instrument_staged(instrument_id, staged)
+        return {"success": True, "data": status.model_dump()}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except NotConnectedError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except Exception as e:
+        verb = "Stage" if staged else "Unstage"
+        raise HTTPException(status_code=502, detail=f"{verb} failed: {e}") from e
 
 
 @router.post("/instruments/{instrument_id}/actions/{action_name}")

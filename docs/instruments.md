@@ -36,6 +36,55 @@ schema = DeviceSchema(
 
 `DeviceSchema` is a frozen, `extra="forbid"` Pydantic model (`src/labpilot/core/device/schema.py`) — instances are immutable once created, and unknown fields are rejected rather than silently ignored.
 
+### Parameters
+
+Underneath, those four dicts are one tuple of `Parameter` objects
+(`src/labpilot/core/device/parameter.py`). The dicts are computed views
+over it, so the form above keeps working exactly as written — but a new
+adapter should declare parameters directly and get more:
+
+```python
+from labpilot.core.device.parameter import INTEGRATION_TIME, Parameter, ParamRole
+
+schema = DeviceSchema(
+    name="ocean_insight_usb2000",
+    kind="detector",
+    parameters=(
+        Parameter("wavelengths", shape=(None,), unit="nm", role=ParamRole.AXIS),
+        Parameter("intensities", shape=(None,), unit="counts", axes=("wavelengths",)),
+        Parameter("integration_time_ms", unit="ms", settable=True,
+                  role=ParamRole.SETTING, limits=(1.0, 60000.0),
+                  tags=frozenset({INTEGRATION_TIME})),
+        Parameter("trigger_mode", dtype="str", settable=True,
+                  role=ParamRole.SETTING, choices=("software", "hardware")),
+    ),
+    tags=["spectroscopy", "VISA", "USB"],
+)
+```
+
+| Field | Meaning |
+|---|---|
+| `dtype` / `shape` | Element type and array shape — `shape=(None,)` is a 1-D array of runtime length, replacing the opaque `"ndarray1d"` |
+| `role` | `VALUE` (a measurement), `AXIS` (coordinates indexing another parameter), `POSITION` (a commandable axis), `SETTING`, `STATUS` |
+| `limits` / `choices` | **Enforced** on every write, including one-sided limits like `(0.0, None)` |
+| `axes` | Names of the `AXIS` parameters that index this one |
+| `tags` | Cross-vendor marks — `INTEGRATION_TIME` is how a caller asks for "the integration time" whatever this device calls it |
+| `unit`, `description` | Display and tooltips |
+
+Ask the schema rather than pattern-matching on names:
+
+```python
+schema.integration_time            # the Parameter tagged INTEGRATION_TIME, or None
+schema.position_axes               # ('x', 'y', 'z') — commandable axes, not settings
+schema.find(role=ParamRole.AXIS)   # every declared axis
+schema.require("voltage").limits   # (-210.0, 210.0)
+```
+
+Writes are validated against the parameter before they reach hardware:
+an unknown name, a read-only parameter, a value of the wrong type, out of
+range, or not among the choices all raise a `ParameterError` subclass
+(`src/labpilot/core/errors.py`), which the REST layer reports as HTTP 422.
+
 ## Connecting an instrument
 
 **From the Manager:**
@@ -196,6 +245,30 @@ adapter_registry.register("keithley_2400", Keithley2400Adapter)
 the Devices tab's catalog browser, following the existing entries'
 pattern (there's a `_pymeasure`/`_mock`/`_fixture` helper per backend —
 see the top of that file).
+
+## Shipping adapters in your own package
+
+An adapter does not have to live in this repository. Any installed
+package can advertise adapters through the `labpilot.adapters` entry-point
+group, and LabPilot imports them at startup alongside its own:
+
+```toml
+# your package's pyproject.toml
+[project.entry-points."labpilot.adapters"]
+acme = "acme_labpilot"            # a module, imported for its register() side effects
+# or
+acme = "acme_labpilot:register"   # a callable, invoked with no arguments
+```
+
+Either form works; point at a module if one module registers everything,
+at a callable if you have several. Your adapters then behave like any
+other — `adapter_registry.get("acme_x100")`, tag search, the instrument
+browser, the auto-generated UI.
+
+Plugins load *after* the built-in adapters, so a plugin may subclass them,
+and a key collision names the plugin rather than the built-in. A plugin
+that fails to import is recorded in `labpilot.instruments.DISCOVERY_FAILURES`
+and reported on stderr; it never prevents the application from starting.
 
 `src/labpilot/instruments/` is organized by manufacturer, then instrument type
 (`<Manufacturer>/<type>.py`), not by which library backs the adapter. See

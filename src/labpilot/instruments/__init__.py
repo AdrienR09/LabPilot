@@ -1,8 +1,10 @@
 """Adapter registry with auto-discovery.
 
-Automatically discovers and registers all adapters from instruments
-subpackages on import. Missing optional dependencies (pylablib, pymeasure) are
-silently skipped.
+On import this registers every adapter shipped under `labpilot/instruments/`
+and then every adapter advertised by an installed third-party package
+through the `labpilot.adapters` entry-point group (see `discover_plugins`),
+so a driver does not have to live in this tree to be usable. Missing
+optional dependencies (pylablib, pymeasure) are recorded and skipped.
 
 Usage:
     >>> from labpilot.instruments import adapter_registry
@@ -14,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 import pkgutil
 import sys
 from dataclasses import dataclass
@@ -28,6 +31,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DISCOVERY_FAILURES",
+    "ENTRY_POINT_GROUP",
     "INSTRUMENT_CATALOG",
     "AdapterBase",
     "DiscoveryFailure",
@@ -35,7 +39,12 @@ __all__ = [
     "adapter_registry",
     "available_catalog",
     "discover_adapters",
+    "discover_plugins",
 ]
+
+ENTRY_POINT_GROUP = "labpilot.adapters"
+"""Entry-point group third-party driver packages advertise themselves in —
+see `discover_plugins`."""
 
 # Vendor packages whose absence is a normal, expected optional-install state
 # rather than a bug worth reporting.
@@ -155,5 +164,53 @@ def discover_adapters() -> None:
             )
 
 
-# Auto-discover on package import
+def discover_plugins(group: str = ENTRY_POINT_GROUP) -> None:
+    """Import every installed package that advertises LabPilot adapters.
+
+    A third-party driver package declares, in its own pyproject.toml:
+
+        [project.entry-points."labpilot.adapters"]
+        acme = "acme_labpilot:register"
+
+    The target may be a module — imported for its side effects, the same
+    contract as an in-tree adapter module — or a callable, which is called
+    with no arguments so it can register adapters and catalogue entries
+    explicitly. Both are supported because the first is the least
+    ceremony and the second is what a package with more than one module
+    actually wants.
+
+    Until now every driver had to live inside `labpilot/instruments/`,
+    which makes an exhaustive instrument library one maintainer's backlog
+    rather than something the people with the hardware can contribute.
+    Discovery failures are recorded in `DISCOVERY_FAILURES` exactly like
+    in-tree ones: a broken plugin must not take the application down with
+    it, but it must not vanish silently either.
+    """
+    try:
+        entry_points = importlib.metadata.entry_points(group=group)
+    except Exception as e:  # pragma: no cover - importlib.metadata edge cases
+        DISCOVERY_FAILURES.append(DiscoveryFailure(group, str(e), "error"))
+        return
+
+    for entry_point in entry_points:
+        try:
+            loaded = entry_point.load()
+            if callable(loaded):
+                loaded()
+        except Exception as e:
+            DISCOVERY_FAILURES.append(
+                DiscoveryFailure(f"{group}:{entry_point.name}", str(e), "error")
+            )
+            print(
+                f"Warning: Failed to load adapter plugin {entry_point.name!r} "
+                f"({entry_point.value}): {e}",
+                file=sys.stderr,
+            )
+
+
+# Auto-discover on package import: adapters shipped in this package first,
+# then any installed plugins. Plugins go last so a plugin can see (and
+# subclass) the built-in adapters, and so a key collision reports the
+# plugin as the duplicate rather than the built-in.
 discover_adapters()
+discover_plugins()

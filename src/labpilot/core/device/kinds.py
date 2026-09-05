@@ -49,7 +49,12 @@ from __future__ import annotations
 
 from typing import Any, Optional, Union
 
-from labpilot.core.device.motion import move_and_settle
+from labpilot.core.device.motion import (
+    DEFAULT_MAX_POLLS,
+    DEFAULT_TOLERANCE,
+    move_and_settle,
+    resolve_targets,
+)
 from labpilot.core.errors import UnsupportedOperationError
 
 __all__ = ["Motor", "Detector", "Source", "Scanner", "GenericInstrument", "wrap"]
@@ -138,7 +143,7 @@ class Motor(_InstrumentWrapper):
         return {ax: float(data[ax]) for ax in axes}
 
     async def move_abs(
-        self, *args: Any, tolerance: float = 0.02, max_polls: int = 5000, **kwargs: float,
+        self, *args: Any, tolerance: float = DEFAULT_TOLERANCE, max_polls: int = DEFAULT_MAX_POLLS, **kwargs: float,
     ) -> Union[float, dict[str, float]]:
         """Three equivalent calling conventions:
         `move_abs(5.0)` (only valid for a single-axis device),
@@ -153,7 +158,7 @@ class Motor(_InstrumentWrapper):
         return {ax: float(position[ax]) for ax in targets}
 
     async def move_rel(
-        self, *args: Any, tolerance: float = 0.02, max_polls: int = 5000, **kwargs: float,
+        self, *args: Any, tolerance: float = DEFAULT_TOLERANCE, max_polls: int = DEFAULT_MAX_POLLS, **kwargs: float,
     ) -> Union[float, dict[str, float]]:
         """Same calling conventions as `move_abs()`, but each value is a
         delta from the device's current position rather than an absolute
@@ -168,23 +173,7 @@ class Motor(_InstrumentWrapper):
         return {ax: float(position[ax]) for ax in targets}
 
     def _resolve_targets(self, args: tuple, kwargs: dict) -> dict[str, float]:
-        axes = self.axes
-        if kwargs:
-            return {k: float(v) for k, v in kwargs.items()}
-        if len(args) == 2 and isinstance(args[0], str):
-            return {args[0]: float(args[1])}
-        if len(args) == 1:
-            if len(axes) != 1:
-                raise TypeError(
-                    f"move_abs(value)/move_rel(value) need exactly one axis, but "
-                    f"{self._adapter.schema.name} has {axes} — use move_abs(axis, value) "
-                    f"or move_abs(**{{axis: value}}) instead"
-                )
-            return {axes[0]: float(args[0])}
-        raise TypeError(
-            "move_abs()/move_rel() need a value (single-axis device), an (axis, value) "
-            "pair, or axis=value keyword arguments"
-        )
+        return resolve_targets(args, kwargs, self.axes, self._adapter.schema.name)
 
 
 class Detector(_InstrumentWrapper):

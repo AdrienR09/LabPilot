@@ -1,65 +1,273 @@
-"""Ergonomic interactive wrapper around core.api_client.LabPilotClient —
-what the native IPython console (ui/desktop/console_window.py) binds to
-`lp` (see that module's bootstrap startup script). Talks to the live
-LabPilot server over the same REST/WebSocket API the desktop app and web
-UI use — see api_client.LabPilotClient's docstring for why (instruments
-are live hardware handles owned by the server process; an out-of-process
-kernel reaches them the same way every other external client does).
+"""The interactive scripting surface — what the IPython console binds to `lp`.
 
-Typical console use:
+`lp["stage"]` hands back a kind-typed handle whose methods are the same
+ones a workflow template gets from `session.get("actuator")`
+(`core/device/kinds.py`): `move_abs`, `move_rel`, `get_position`,
+`read_value`, `acquire_once`, `set_integration_time`, `stage`, `unstage`,
+`actions`. Same names, same arguments, same meaning — the difference is
+the transport underneath. In a template the wrapper holds the adapter
+directly and its methods are awaited; here every call is a REST round trip
+to the server that owns the hardware, and the methods block instead, which
+is what an interactive prompt wants.
+
+That symmetry is the point. Before this, the console had exactly five
+verbs — read, write, connect, schema, status — so you could not write an
+acquisition loop at it: no settle-wait, no staging, no actions. The loop
+you can now type here,
+
+    >>> apd = lp["fake_apd"]
+    >>> stage = lp["mock_xyz_stage"]
+    >>> apd.stage()
+    >>> for x in np.linspace(0, 10, 51):
+    ...     stage.move_abs(x=x)
+    ...     print(x, apd.read_value())
+    >>> apd.unstage()
+
+is the same loop a template writes, with `await` in front of each call.
+
+The settle rule is not reimplemented here: `move_abs` polls with
+`core.device.motion.is_settled` and that module's tolerance and poll
+budget, so a move from the console and a move from a scan agree on when
+the stage has arrived.
+
+Instruments live in the server process, so this talks to it over the same
+REST API the desktop app and web UI use — see `core/api_client.py`.
 
     >>> lp.instruments
     ['mock_xyz_stage_2', 'fake_apd_8', ...]
     >>> lp['fake_apd_8'].read()
     {'counts': 1023.4}
-    >>> lp['mock_xyz_stage_2'].write(x=1.0, y=0.5)
     >>> lp.workflows
     ['omniscan', ...]
     >>> wf = lp.workflow('641a113f-...')
-    >>> wf.params
-    {'AXIS_RANGES': {...}, ...}
-    >>> wf.run()
-    >>> wf.state()['running']
+    >>> wf.run(); wf.wait()
 """
 
 from __future__ import annotations
 
+import difflib
 import os
 import time
 from typing import Any
 
 from labpilot.core.api_client import LabPilotClient
+from labpilot.core.device.motion import (
+    DEFAULT_MAX_POLLS,
+    DEFAULT_TOLERANCE,
+    POLL_INTERVAL,
+    is_settled,
+    resolve_targets,
+)
+from labpilot.core.errors import UnsupportedOperationError
+
+__all__ = [
+    "Detector",
+    "Instrument",
+    "LabPilotSession",
+    "Motor",
+    "Source",
+    "WorkflowHandle",
+]
 
 
-class InstrumentHandle:
-    """One instrument, bound to its id — see LabPilotSession.__getitem__."""
+class Instrument:
+    """One instrument, addressed by id — the remote half of the same
+    surface `core/device/kinds.py` gives a workflow template."""
 
     def __init__(self, client: LabPilotClient, instrument_id: str) -> None:
         self._client = client
         self.id = instrument_id
 
+    # --- The contract every device has ------------------------------------
+
     def read(self) -> dict[str, Any]:
-        """Current readable values. Raises if not connected — see .connect()."""
+        """Current readable values. Raises if not connected — see connect()."""
         return self._client.read(self.id)
 
     def write(self, **values: Any) -> None:
-        """Set one or more settable values, e.g. `.write(x=1.0, y=0.5)`."""
+        """Set one or more settable values, e.g. `.write(x=1.0, y=0.5)`.
+
+        Validated against the device's own limits and choices before it
+        reaches hardware; an illegal value comes back as an HTTP 422 whose
+        message names the bound and the unit.
+        """
         self._client.write(self.id, values)
 
     def connect(self) -> None:
         self._client.connect(self.id)
 
+    def disconnect(self) -> None:
+        self._client.disconnect(self.id)
+
+    def stage(self) -> None:
+        """Prepare for acquisition (arm the camera, allocate the buffer)."""
+        self._client.stage(self.id)
+
+    def unstage(self) -> None:
+        """Release after acquisition."""
+        self._client.unstage(self.id)
+
+    def call(self, action: str) -> None:
+        """Invoke one of this device's declared `actions` — a zero-argument
+        state transition that isn't a parameter write, e.g. a microwave
+        source's `cw_on`."""
+        self._client.call_action(self.id, action)
+
+    # --- Introspection ----------------------------------------------------
+
     @property
     def schema(self) -> dict[str, Any]:
-        """readable/settable parameter names, dtypes, units, limits."""
+        """This device's parameters, dtypes, units, limits and roles."""
         return self._client.get_schema(self.id)
 
     @property
     def status(self) -> dict[str, Any]:
         return self._client.get_instrument(self.id) or {}
 
+    @property
+    def connected(self) -> bool:
+        return bool(self.status.get("connected"))
+
+    @property
+    def actions(self) -> list[str]:
+        return list(self.schema.get("actions") or ())
+
+    @property
+    def parameters(self) -> list[dict[str, Any]]:
+        """The full `Parameter` records, including role, tags and choices —
+        richer than the flat `schema["readable"]`/`["settable"]` views."""
+        return list(self.schema.get("parameters") or ())
+
+    def _parameter(self, name: str) -> dict[str, Any] | None:
+        return next((p for p in self.parameters if p["name"] == name), None)
+
     def __repr__(self) -> str:
-        return f"<InstrumentHandle {self.id!r}>"
+        return f"<{type(self).__name__} {self.id!r}>"
+
+
+class Motor(Instrument):
+    """A `kind="motor"` device — one or more commandable axes."""
+
+    @property
+    def axes(self) -> list[str]:
+        """The axes this device can actually be moved along — the
+        parameters it declares `role="position"`, which excludes settings
+        like velocity that happen to be readable and numeric."""
+        return [p["name"] for p in self.parameters if p.get("role") == "position"]
+
+    def get_position(self, axis: str | None = None) -> float | dict[str, float]:
+        data = self.read()
+        axes = self.axes
+        if axis is not None:
+            if axis not in axes:
+                raise KeyError(f"{axis!r} is not an axis of {self.id} (axes: {axes})")
+            return float(data[axis])
+        if len(axes) == 1:
+            return float(data[axes[0]])
+        return {name: float(data[name]) for name in axes}
+
+    def move_abs(self, *args: Any, tolerance: float = DEFAULT_TOLERANCE,
+                 max_polls: int = DEFAULT_MAX_POLLS,
+                 **kwargs: float) -> float | dict[str, float]:
+        """Move to an absolute target and block until settled.
+
+        Three equivalent forms: `move_abs(5.0)` (single-axis devices only),
+        `move_abs("x", 5.0)`, or `move_abs(x=5.0, y=2.0)` — any subset of
+        axes, moved together.
+        """
+        return self._move(args, kwargs, tolerance, max_polls)
+
+    def move_rel(self, *args: Any, tolerance: float = DEFAULT_TOLERANCE,
+                 max_polls: int = DEFAULT_MAX_POLLS,
+                 **kwargs: float) -> float | dict[str, float]:
+        """Same forms as `move_abs()`, but each value is a delta from the
+        device's current position."""
+        return self._move(args, kwargs, tolerance, max_polls, relative=True)
+
+    def _move(self, args: tuple, kwargs: dict, tolerance: float, max_polls: int,
+              *, relative: bool = False) -> float | dict[str, float]:
+        targets = resolve_targets(args, kwargs, self.axes, self.id)
+        if relative:
+            current = self.read()
+            targets = {name: current[name] + delta for name, delta in targets.items()}
+
+        self.write(**targets)
+        for _ in range(max_polls):
+            position = self.read()
+            if is_settled(position, targets, tolerance):
+                if len(targets) == 1:
+                    return float(position[next(iter(targets))])
+                return {name: float(position[name]) for name in targets}
+            time.sleep(POLL_INTERVAL)
+        raise RuntimeError(
+            f"{self.id} did not reach {targets} after {max_polls} polls"
+        )
+
+
+class Detector(Instrument):
+    """A `kind="detector"` or `kind="counter"` device."""
+
+    def acquire_once(self) -> dict[str, Any]:
+        """stage -> read -> unstage, for one single-shot reading. Not the
+        right bracket around a whole averaged sweep that must stay staged
+        across many reads — call stage()/unstage() around that yourself."""
+        self.stage()
+        try:
+            return self.read()
+        finally:
+            self.unstage()
+
+    def read_value(self, key: str | None = None) -> float:
+        """One scalar reading. `key` defaults to the first readable
+        parameter. Raises ValueError if that reading is an array — use
+        `.read()` and index into it instead."""
+        data = self.read()
+        if key is None:
+            readable = self.schema.get("readable") or {}
+            if not readable:
+                raise ValueError(f"{self.id} declares nothing readable")
+            key = next(iter(readable))
+        value = data[key]
+        if hasattr(value, "__len__") and not isinstance(value, (str, bytes)):
+            raise ValueError(
+                f"{key!r} on {self.id} is not a scalar reading — use .read()"
+            )
+        return float(value)
+
+    def set_integration_time(self, value: float) -> None:
+        """Set however this device spells its integration time, in whatever
+        unit it declares — the parameter it tags `integration_time`, which
+        may be `integration_time_ms`, `exposure_time_ms`, ... Check
+        `.schema["units"]` for which."""
+        name = next(
+            (p["name"] for p in self.parameters
+             if "integration_time" in (p.get("tags") or ())),
+            None,
+        )
+        if name is None:
+            raise UnsupportedOperationError(
+                f"{self.id} declares no integration-time parameter", device=self.id
+            )
+        self.write(**{name: value})
+
+
+class Source(Instrument):
+    """A `kind="source"` device.
+
+    Deliberately thin beyond the common surface: a generic
+    `enable()`/`disable()` does not hold up across real sources — some use
+    a zero-argument action (`cw_on`, `off`), some a settable flag, some
+    have no on/off concept at all. Use `.actions` and `.call(...)`, or
+    `.write(...)` for a settable flag.
+    """
+
+
+_BY_KIND: dict[str, type[Instrument]] = {
+    "motor": Motor,
+    "detector": Detector,
+    "counter": Detector,
+    "source": Source,
+}
 
 
 class WorkflowHandle:
@@ -93,10 +301,11 @@ class WorkflowHandle:
         status/results — see LabPilotClient.get_workflow_execution_state."""
         return self._client.get_workflow_execution_state(self.id)
 
-    def wait(self, poll_interval: float = 0.5, timeout: float | None = None) -> dict[str, Any]:
+    def wait(self, poll_interval: float = 0.5,
+             timeout: float | None = None) -> dict[str, Any]:
         """Blocks until the current/most recent run stops running, then
-        returns the final state. Convenient for a notebook cell that
-        should finish only once the scan has (`wf.run(); wf.wait()`)."""
+        returns the final state. Convenient for a notebook cell that should
+        finish only once the scan has (`wf.run(); wf.wait()`)."""
         start = time.monotonic()
         while True:
             state = self.state()
@@ -111,9 +320,9 @@ class WorkflowHandle:
 
 
 class LabPilotSession:
-    """Entry point for interactive (notebook/IPython) use — see module
-    docstring. Wraps a LabPilotClient with nicer ergonomics; use
-    `.client` directly for anything not exposed here."""
+    """Entry point for interactive use — see the module docstring. Wraps a
+    `LabPilotClient` with the kind-typed handles; use `.client` directly
+    for anything not exposed here."""
 
     def __init__(self, base_url: str | None = None) -> None:
         base_url = base_url or os.environ.get("LABPILOT_URL", "http://localhost:8000")
@@ -128,8 +337,32 @@ class LabPilotSession:
         """Every registered instrument's id."""
         return [inst["id"] for inst in self.client.list_instruments()]
 
-    def __getitem__(self, instrument_id: str) -> InstrumentHandle:
-        return InstrumentHandle(self.client, instrument_id)
+    def __getitem__(self, instrument_id: str) -> Instrument:
+        """The handle for one instrument, typed by its kind.
+
+        Unknown ids are caught here rather than at the first call. A
+        registered id carries a numeric suffix (`fake_apd_2`, not
+        `fake_apd`), so asking for the adapter's name instead used to
+        produce a bare 404 from whichever method you happened to call
+        first, naming a URL rather than the mistake.
+        """
+        known = {inst["id"]: inst for inst in self.client.list_instruments()}
+        instrument = known.get(instrument_id)
+        if instrument is None:
+            suggestions = difflib.get_close_matches(instrument_id, known, n=3, cutoff=0.4)
+            hint = f" Did you mean {' or '.join(map(repr, suggestions))}?" if suggestions else ""
+            raise KeyError(
+                f"No instrument {instrument_id!r}.{hint} "
+                f"See lp.instruments for all {len(known)}."
+            )
+        return _BY_KIND.get(instrument.get("kind", ""), Instrument)(
+            self.client, instrument_id
+        )
+
+    def get(self, instrument_id: str) -> Instrument:
+        """Alias for `lp[instrument_id]`, for symmetry with a template's
+        `session.get(role)`."""
+        return self[instrument_id]
 
     @property
     def workflows(self) -> list[str]:

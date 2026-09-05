@@ -39,7 +39,8 @@ try:
         f"Connected to LabPilot at {lp.base_url} "
         f"({len(lp.instruments)} instrument(s) registered)."
     )
-    print("Try: lp.instruments, lp['<instrument_id>'].read(), lp.workflows, lp.workflow('<id>').run()")
+    print("Try: lp.instruments, lp['<id>'].read(), lp['<motor>'].move_abs(x=1),")
+    print("     lp['<detector>'].read_value(), lp.workflows, lp.workflow('<id>').run()")
 except Exception as _e:  # pragma: no cover - interactive convenience only
     print(f"Could not auto-connect to LabPilot ({_e}) - check LABPILOT_URL / that the server is up.")
 '''
