@@ -14,7 +14,7 @@ from labpilot.core.plans.scan import scan
 
 
 class MockMotor:
-    """Mock motor implementing Movable protocol."""
+    """Mock motor with a settable position."""
 
     schema = DeviceSchema(
         name="mock_motor",

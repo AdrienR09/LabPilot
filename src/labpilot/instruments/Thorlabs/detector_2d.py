@@ -28,12 +28,11 @@ except ImportError:
     _uc480 = None
 
 if Thorlabs is not None:
-    from labpilot.core.device.protocols import Triggerable
     from labpilot.core.device.schema import DeviceSchema
     from labpilot.instruments._base import AdapterBase, adapter_registry
     from labpilot.instruments._pylablib_camera import PylablibCameraControls
 
-    class ThorlabsTLCameraAdapter(PylablibCameraControls, AdapterBase, Triggerable):
+    class ThorlabsTLCameraAdapter(PylablibCameraControls, AdapterBase):
         """Thorlabs TLCamera SDK adapter (Zelux, Kiralux).
 
         Scientific CMOS cameras with:
@@ -116,7 +115,7 @@ if Thorlabs is not None:
                 frame = np.array(frame)
             return {"frame": frame}
 
-    class UC480Adapter(PylablibCameraControls, AdapterBase, Triggerable):
+    class UC480Adapter(PylablibCameraControls, AdapterBase):
         """IDS uEye (UC480) camera adapter for Thorlabs DCC series.
 
         Industrial cameras with:

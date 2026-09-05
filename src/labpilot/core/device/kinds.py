@@ -50,19 +50,22 @@ from __future__ import annotations
 from typing import Any, Optional, Union
 
 from labpilot.core.device.motion import move_and_settle
+from labpilot.core.errors import UnsupportedOperationError
 
 __all__ = ["Motor", "Detector", "Source", "Scanner", "GenericInstrument", "wrap"]
 
 
 def _numeric_axes(schema) -> list[str]:
-    """Axis names this device can both read back and command as a plain
-    float — excludes a bool key (an on/off flag, not a continuous axis).
-    Deliberately duplicates the same rule
-    `ui/desktop/components/schema_utils.py::move_axes` already uses rather
-    than importing it: that module lives under the desktop/Qt app's own
-    import root, and this one must stay importable from a headless server
-    process with no Qt dependency at all."""
-    return [k for k in schema.readable if k in schema.settable and schema.settable[k] != "bool"]
+    """Axis names this device can both read back and command.
+
+    Now just the parameters the adapter's schema marks `role=POSITION` —
+    which is where the "readable and settable and not a bool" rule this
+    used to reimplement has moved (`Parameter.from_legacy`). Two things
+    changed with it: a motor's velocity or step size is no longer offered
+    as something to move (it is a SETTING, so `MockBasicActuator1D`'s
+    single axis is now genuinely single), and an adapter that knows its
+    own axes can declare them outright instead of being inferred at."""
+    return list(schema.position_axes)
 
 
 class _InstrumentWrapper:
@@ -215,12 +218,13 @@ class Detector(_InstrumentWrapper):
         return float(value)
 
     async def set_integration_time(self, ms: float) -> None:
-        key = next((k for k in self._adapter.schema.settable if "integration_time" in k), None)
-        if key is None:
-            raise NotImplementedError(
-                f"{self._adapter.schema.name} declares no integration-time-like settable key"
+        parameter = self._adapter.schema.integration_time
+        if parameter is None:
+            raise UnsupportedOperationError(
+                f"{self._adapter.schema.name} declares no integration-time parameter",
+                device=self._adapter.schema.name,
             )
-        await self._adapter.write({key: ms})
+        await self._adapter.write({parameter.name: ms})
 
 
 class Source(_InstrumentWrapper):

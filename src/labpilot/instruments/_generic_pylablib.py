@@ -125,7 +125,7 @@ class PylablibStageAdapter(AdapterBase):
             raise NotConnectedError(f"{self._name} is not connected", device=self._name)
         return {"position": float(self._device.get_position())}
 
-    # --- Movable protocol (core.device.protocols.Movable) ---
+    # --- Motion control ---
 
     async def set(self, value: Any, *, timeout: float = 10.0) -> None:
         """Move to target position and wait for completion."""

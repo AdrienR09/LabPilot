@@ -20,12 +20,11 @@ except ImportError:
     PrincetonInstruments = None
 
 if PrincetonInstruments is not None:
-    from labpilot.core.device.protocols import Triggerable
     from labpilot.core.device.schema import DeviceSchema
     from labpilot.instruments._base import AdapterBase, adapter_registry
     from labpilot.instruments._pylablib_camera import PylablibCameraControls
 
-    class PicamAdapter(PylablibCameraControls, AdapterBase, Triggerable):
+    class PicamAdapter(PylablibCameraControls, AdapterBase):
         """Princeton Instruments Picam adapter."""
 
         def __init__(self, camera_index: int = 0, name: str = "princeton_picam") -> None:

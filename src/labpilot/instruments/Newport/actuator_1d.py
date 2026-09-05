@@ -47,11 +47,10 @@ except ImportError:
     Newport = None
 
 if Newport is not None:
-    from labpilot.core.device.protocols import Movable
     from labpilot.core.device.schema import DeviceSchema
     from labpilot.instruments._base import AdapterBase, adapter_registry
 
-    class Picomotor8742Adapter(AdapterBase, Movable):
+    class Picomotor8742Adapter(AdapterBase):
         """Newport Picomotor 8742 controller adapter."""
 
         def __init__(self, port: str, axis: int = 1, name: str = "picomotor_8742") -> None:

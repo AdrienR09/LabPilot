@@ -1,13 +1,18 @@
-"""Protocol classes for hardware device abstraction.
+"""`Readable` — the minimal contract every device satisfies.
 
-Uses PEP 544 structural subtyping (Protocol) rather than inheritance. Devices
-implement these protocols via duck typing — no explicit inheritance required.
+`Movable` and `Triggerable` used to live here too. They were a fourth
+parallel taxonomy alongside `DeviceSchema.kind`, `catalog.InstrumentType`
+and `instruments/generic_params.py`'s `GENERIC_PARAMS`, and unlike the
+other three they were checked nowhere: there was not one `isinstance`
+call against either of them anywhere in the tree, 9 of 26 motors
+satisfied `Movable`, and 8 of 49 detectors satisfied `Triggerable`. The
+adapters that inherited them keep their `set`/`stop`/`where` and
+`trigger`/`arm` methods — nothing called those *through* the protocol.
 
-This enables:
-- Zero-coupling device drivers (no base class import needed)
-- Easy wrapping of third-party drivers (just add methods)
-- Compile-time type checking with mypy/pyright
-- Runtime type checking with isinstance(device, Readable)
+What they were trying to say is now said by the schema, where it can be
+acted on: a commandable axis is a `Parameter` with `role=POSITION` (see
+`DeviceSchema.position_axes`), and trigger support is
+`DeviceSchema.trigger_modes`.
 """
 
 from __future__ import annotations
@@ -16,7 +21,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from labpilot.core.device.schema import DeviceSchema
 
-__all__ = ["Movable", "Readable", "Triggerable"]
+__all__ = ["Readable"]
 
 
 @runtime_checkable
@@ -67,78 +72,5 @@ class Readable(Protocol):
         - Stopping background tasks
 
         Must be idempotent and safe to call even if stage() failed.
-        """
-        ...
-
-
-@runtime_checkable
-class Movable(Readable, Protocol):
-    """Device with settable position (motors, stages, tunable lasers).
-
-    Extends Readable with motion control methods.
-    """
-
-    async def set(self, value: Any, *, timeout: float = 10.0) -> None:
-        """Move device to target position and wait for completion.
-
-        Args:
-            value: Target position. Type depends on device (float, int, tuple).
-            timeout: Maximum seconds to wait for motion to complete.
-
-        Raises:
-            TimeoutError: If motion does not complete within timeout.
-            ValueError: If value is outside limits defined in schema.
-        """
-        ...
-
-    async def stop(self) -> None:
-        """Immediately halt any in-progress motion.
-
-        Should return quickly (< 100ms). Device should remain in a safe state
-        after stopping (e.g., motor drivers still enabled).
-        """
-        ...
-
-    async def where(self) -> Any:
-        """Get current device position.
-
-        Returns:
-            Current position. Type matches value passed to set().
-
-        Example:
-            >>> pos = await motor.where()
-            >>> print(f"Current position: {pos} µm")
-        """
-        ...
-
-
-@runtime_checkable
-class Triggerable(Readable, Protocol):
-    """Device that supports external triggering (cameras, DAQ cards).
-
-    Extends Readable with trigger control methods.
-    """
-
-    async def trigger(self) -> None:
-        """Issue a software trigger.
-
-        Initiates one acquisition cycle. Used in software-triggered scans.
-        Should return immediately (acquisition happens in background).
-        """
-        ...
-
-    async def arm(self, mode: str) -> None:
-        """Configure trigger mode.
-
-        Args:
-            mode: Trigger mode string. Must be one of schema.trigger_modes.
-                  Common values: "software", "hardware", "free_run".
-
-        Raises:
-            ValueError: If mode is not in schema.trigger_modes.
-
-        Example:
-            >>> await camera.arm("hardware")
-            >>> # Now camera waits for external TTL trigger
         """
         ...

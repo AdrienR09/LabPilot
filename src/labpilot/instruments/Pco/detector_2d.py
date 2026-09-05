@@ -21,11 +21,10 @@ except ImportError:
     PCO = None
 
 if PCO is not None:
-    from labpilot.core.device.protocols import Triggerable
     from labpilot.core.device.schema import DeviceSchema
     from labpilot.instruments._base import AdapterBase, adapter_registry
 
-    class PCOAdapter(AdapterBase, Triggerable):
+    class PCOAdapter(AdapterBase):
         """PCO camera adapter."""
 
         def __init__(self, camera_index: int = 0, name: str = "pco") -> None:

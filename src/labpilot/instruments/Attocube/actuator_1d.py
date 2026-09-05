@@ -48,11 +48,10 @@ except ImportError:
     Attocube = None
 
 if Attocube is not None:
-    from labpilot.core.device.protocols import Movable
     from labpilot.core.device.schema import DeviceSchema
     from labpilot.instruments._base import AdapterBase, adapter_registry
 
-    class ANC300Adapter(AdapterBase, Movable):
+    class ANC300Adapter(AdapterBase):
         """Attocube ANC300 piezo controller adapter."""
 
         def __init__(self, port: str, axis: int = 0, name: str = "anc300") -> None:
@@ -115,7 +114,7 @@ if Attocube is not None:
         async def stop(self) -> None:
             await self._to_thread(self._stop_sync)
 
-    class ANC350Adapter(AdapterBase, Movable):
+    class ANC350Adapter(AdapterBase):
         """Attocube ANC350 piezo controller adapter."""
 
         def __init__(self, serial: str, axis: int = 0, name: str = "anc350") -> None:

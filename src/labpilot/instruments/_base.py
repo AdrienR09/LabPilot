@@ -8,7 +8,7 @@ This enables:
 - Zero-blocking async/await API for all instruments
 - No changes needed to third-party driver code
 - Automatic integration with LabPilot Session + EventBus
-- Type-safe protocols (Readable/Movable/Triggerable)
+- One `Readable` protocol, plus a schema that says what each device can do
 """
 
 from __future__ import annotations
@@ -267,7 +267,7 @@ class AdapterBase(Readable):
         `async def set_position(self, value)`). Subclasses whose settings
         API doesn't fit this convention (e.g. wrapping a third-party object
         with a different settings API, or preferring the narrower
-        `Movable.set()` protocol instead) should override this method
+        a narrower `set()` method instead) should override this method
         entirely — and call `validate_write()` themselves.
 
         Args:

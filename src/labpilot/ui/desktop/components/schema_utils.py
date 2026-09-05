@@ -8,6 +8,8 @@ from typing import Optional
 
 from backend_client import BackendClient
 
+from labpilot.core.device.parameter import INTEGRATION_TIME
+
 _AXIS_KEY_HINTS = ("wavelength", "wavelengths", "time", "times", "frequency", "frequencies", "x")
 
 
@@ -55,22 +57,36 @@ def config_only_names(schema: dict) -> list[str]:
     return [k for k in schema.get("settable", {}) if k not in readable]
 
 
+def integration_time_names(schema: dict) -> list[str]:
+    """Names the device itself tags as its integration time.
+
+    Read off the serialised `parameters`, which is the adapter's own
+    declaration — where this used to be a substring search for
+    "integration_time" performed independently here, in
+    `core/workflow_templates/_common.py`, in `core/device/kinds.py` and in
+    `instruments/mixins.py`, with two different resolution rules between
+    them."""
+    return [
+        parameter["name"]
+        for parameter in schema.get("parameters") or ()
+        if INTEGRATION_TIME in (parameter.get("tags") or ())
+    ]
+
+
 def main_config_names(kind: str, dimensionality: str, schema: dict) -> list[str]:
     """This instrument's "main" config-only names for its native Settings
-    dock. A 0D detector's basic control is just its integration time
-    (matched by substring — adapters name it integration_time,
-    integration_time_ms, etc. — the same convention
-    core/workflow_templates/_common.py's `integration_time_key` uses on
-    the backend side); anything else a specific 0D adapter also declares
-    settable (e.g. a mock's own simulation-tuning knobs) is manufacturer/
-    fixture-specific noise, not a real detector setting, so it's left out
-    here. Every other kind/dimensionality shows all of `config_only_names`
-    unchanged — manufacturer-specific extras (a camera's real hardware
-    settings beyond exposure/gain, say) are meant to show up here
-    automatically, not just the generic ones."""
+    dock. A 0D detector's basic control is just its integration time;
+    anything else a specific 0D adapter also declares settable (e.g. a
+    mock's own simulation-tuning knobs) is manufacturer/fixture-specific
+    noise, not a real detector setting, so it's left out here. Every other
+    kind/dimensionality shows all of `config_only_names` unchanged —
+    manufacturer-specific extras (a camera's real hardware settings beyond
+    exposure/gain, say) are meant to show up here automatically, not just
+    the generic ones."""
     names = config_only_names(schema)
     if kind == "detector" and dimensionality == "0D":
-        return [n for n in names if "integration_time" in n]
+        tagged = set(integration_time_names(schema))
+        return [n for n in names if n in tagged]
     return names
 
 

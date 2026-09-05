@@ -18,11 +18,10 @@ except ImportError:
     PhysikInstrumente = None
 
 if PhysikInstrumente is not None:
-    from labpilot.core.device.protocols import Movable
     from labpilot.core.device.schema import DeviceSchema
     from labpilot.instruments._base import AdapterBase, adapter_registry
 
-    class PIE516Adapter(AdapterBase, Movable):
+    class PIE516Adapter(AdapterBase):
         """PI E516 piezo controller adapter."""
 
         def __init__(self, port: str, axis: int = 1, name: str = "pi_e516") -> None:

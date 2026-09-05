@@ -111,6 +111,15 @@ _CANONICAL_TO_LEGACY: dict[str, str] = {
     "f8": "float64", "i8": "int32", "bool": "bool", "str": "str", "json": "json",
 }
 
+# Numeric, readable-and-settable parameters that a motor has but that are
+# not positions you can scan. Without this, a stage declaring both
+# "position" and "speed" reports two commandable axes, and anything asking
+# for its axes (a move control, a scan) offers to sweep its speed.
+_MOTOR_SETTINGS = frozenset({
+    "velocity", "speed", "acceleration", "deceleration", "jerk",
+    "step_size", "backlash", "home_offset",
+})
+
 
 def legacy_dtype_to_parts(dtype: str) -> tuple[str, tuple[int | None, ...]]:
     """Split an old-style dtype string into `(element dtype, shape)`.
@@ -334,7 +343,10 @@ class Parameter:
         """
         element, shape = legacy_dtype_to_parts(dtype)
 
-        if settable and readable and not shape and element in ("f8", "i8") and kind == "motor":
+        if (
+            settable and readable and not shape and element in ("f8", "i8")
+            and kind == "motor" and name not in _MOTOR_SETTINGS
+        ):
             role = ParamRole.POSITION
         elif settable:
             role = ParamRole.SETTING

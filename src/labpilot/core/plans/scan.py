@@ -16,7 +16,7 @@ from typing import Any
 import anyio
 import numpy as np
 
-from labpilot.core.device.protocols import Movable, Readable
+from labpilot.core.device.protocols import Readable
 from labpilot.core.events import Event, EventBus, EventKind
 from labpilot.core.plans.base import ScanPlan
 
@@ -25,7 +25,7 @@ __all__ = ["grid_scan", "scan", "time_scan"]
 
 async def scan(
     plan: ScanPlan,
-    motor: Movable,
+    motor: Any,
     detector: Readable,
     bus: EventBus,
 ) -> AsyncGenerator[Event, None]:
@@ -40,7 +40,7 @@ async def scan(
 
     Args:
         plan: Scan plan with motor/detector names, positions, dwell time.
-        motor: Movable device for motion control.
+        motor: Device with a settable position axis.
         detector: Readable device for data acquisition.
         bus: EventBus for event broadcasting.
 
@@ -178,8 +178,8 @@ async def scan(
 
 
 async def grid_scan(
-    motor_x: Movable,
-    motor_y: Movable,
+    motor_x: Any,
+    motor_y: Any,
     detector: Readable,
     x_start: float,
     x_stop: float,

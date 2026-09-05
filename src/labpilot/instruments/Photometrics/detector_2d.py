@@ -21,12 +21,11 @@ except ImportError:
     Photometrics = None
 
 if Photometrics is not None:
-    from labpilot.core.device.protocols import Triggerable
     from labpilot.core.device.schema import DeviceSchema
     from labpilot.instruments._base import AdapterBase, adapter_registry
     from labpilot.instruments._pylablib_camera import PylablibCameraControls
 
-    class PVCAMAdapter(PylablibCameraControls, AdapterBase, Triggerable):
+    class PVCAMAdapter(PylablibCameraControls, AdapterBase):
         """Photometrics PVCAM adapter."""
 
         def __init__(self, camera_index: int = 0, name: str = "photometrics_pvcam") -> None:

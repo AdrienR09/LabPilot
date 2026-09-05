@@ -22,12 +22,11 @@ except ImportError:
     Andor = None
 
 if Andor is not None:
-    from labpilot.core.device.protocols import Triggerable
     from labpilot.core.device.schema import DeviceSchema
     from labpilot.instruments._base import AdapterBase, adapter_registry
     from labpilot.instruments._pylablib_camera import PylablibCameraControls
 
-    class AndorSDK2Adapter(AdapterBase, Triggerable):
+    class AndorSDK2Adapter(AdapterBase):
         """Andor SDK2 camera adapter (iXon, Newton, Luca).
 
         EMCCD/CCD cameras with :
@@ -221,7 +220,7 @@ if Andor is not None:
             x0, x1, y0, y1 = value
             await self._to_thread(self._camera.set_roi, x0, x1, y0, y1)
 
-    class AndorSDK3Adapter(PylablibCameraControls, AdapterBase, Triggerable):
+    class AndorSDK3Adapter(PylablibCameraControls, AdapterBase):
         """Andor SDK3 camera adapter (Zyla, Neo sCMOS).
 
         High-speed sCMOS cameras with:

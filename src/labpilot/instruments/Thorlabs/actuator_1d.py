@@ -25,11 +25,10 @@ except ImportError:
     Thorlabs = None
 
 if Thorlabs is not None:
-    from labpilot.core.device.protocols import Movable
     from labpilot.core.device.schema import DeviceSchema
     from labpilot.instruments._base import AdapterBase, adapter_registry
 
-    class KinesisMotorAdapter(AdapterBase, Movable):
+    class KinesisMotorAdapter(AdapterBase):
         """Thorlabs Kinesis motor controller adapter.
 
         DC servo and stepper motor controllers with:
@@ -172,7 +171,7 @@ if Thorlabs is not None:
             """Test motor connectivity by reading position."""
             _ = self._where_sync()
 
-    class MFFAdapter(AdapterBase, Movable):
+    class MFFAdapter(AdapterBase):
         """Thorlabs MFF flip mount adapter.
 
         Motorized flip mount for beam steering/blocking:
@@ -251,7 +250,7 @@ if Thorlabs is not None:
         async def stop(self) -> None:
             pass
 
-    class FWAdapter(AdapterBase, Movable):
+    class FWAdapter(AdapterBase):
         """Thorlabs filter wheel adapter.
 
         Motorized filter wheel with 6 or 12 positions:

@@ -291,3 +291,17 @@ async def test_a_valid_write_still_reaches_every_key():
     device = _Bounded()
     await device.write({"integration_time_ms": 50.0, "mode": "fast"})
     assert device.written == {"integration_time_ms": 50.0, "mode": "fast"}
+
+
+def test_a_motor_setting_is_not_offered_as_an_axis():
+    """A stage that reports both its position and its speed has one axis to
+    move, not two. `_numeric_axes` in `core/device/kinds.py` and the Qt move
+    control both used "readable and settable and not a bool", which offered
+    `fake_stage`'s speed as something to scan."""
+    stage = DeviceSchema(
+        name="stage", kind="motor",
+        readable={"position": "float64", "speed": "float64"},
+        settable={"position": "float64", "speed": "float64"},
+    )
+    assert stage.position_axes == ("position",)
+    assert stage.require("speed").role is ParamRole.SETTING

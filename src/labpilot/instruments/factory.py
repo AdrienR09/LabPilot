@@ -2,7 +2,7 @@
 
 The "general instrument structure" already exists: `AdapterBase` (in
 `_base.py`) is the common concrete base every adapter subclasses, and
-`core.device.protocols.Readable`/`Movable`/`Triggerable` are PEP 544
+`core.device.protocols.Readable` is a PEP 544
 Protocols describing what an adapter can do structurally. Both already use
 Python's metaclass machinery (`ABCMeta` / `_ProtocolMeta`) — there's no need
 for a bespoke metaclass on top of that; what was actually missing was a

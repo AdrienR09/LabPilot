@@ -22,12 +22,11 @@ except ImportError:
     DCAM = None
 
 if DCAM is not None:
-    from labpilot.core.device.protocols import Triggerable
     from labpilot.core.device.schema import DeviceSchema
     from labpilot.instruments._base import AdapterBase, adapter_registry
     from labpilot.instruments._pylablib_camera import PylablibCameraControls
 
-    class DCAMAdapter(PylablibCameraControls, AdapterBase, Triggerable):
+    class DCAMAdapter(PylablibCameraControls, AdapterBase):
         """Hamamatsu DCAM camera adapter (Orca, ImagEM).
 
         High-speed scientific cameras with:

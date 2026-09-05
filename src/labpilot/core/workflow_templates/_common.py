@@ -29,15 +29,17 @@ _AXIS_KEY_HINTS = ("wavelength", "wavelengths", "time", "times", "frequency", "f
 
 
 def integration_time_key(detector) -> str | None:
-    """This detector's integration-time-like settable key name, or None if
-    it doesn't have one — different adapters name it integration_time_ms,
-    integration_time_s, etc., checked generically by substring rather than
-    one hardcoded name.
+    """This detector's integration-time settable key name, or None.
+
+    Different adapters name it integration_time_ms, integration_time_s,
+    exposure_time_ms, ... The adapter tags whichever one it is (see
+    `core/device/parameter.py`), so this asks the schema rather than
+    searching its key names for a substring — the same question the Qt
+    settings dock and `core/device/kinds.py` also used to answer for
+    themselves, with two different rules between them.
     """
-    for key in detector.schema.settable:
-        if "integration_time" in key:
-            return key
-    return None
+    parameter = detector.schema.integration_time
+    return parameter.name if parameter is not None else None
 
 
 def spectrum_key(detector) -> str:
