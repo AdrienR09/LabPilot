@@ -7,13 +7,13 @@ async def run(session: Session) -> dict:
     ...
 ```
 
-`session` is the live `Session` (`src/core/session.py`) — the same device
+`session` is the live `Session` (`src/labpilot/core/session.py`) — the same device
 registry and event bus the whole running server shares. Everything else
 (instrument roles, live result rendering, tunable parameters, the
 optimizer, safety limits) is layered on top of that one contract via a
 handful of well-known module-level constants and helper classes, covered
 below. LabPilot ships 14 ready-to-use templates
-(`src/core/workflow_templates/`): `omniscan`, `generic_1d_scan`,
+(`src/labpilot/core/workflow_templates/`): `omniscan`, `generic_1d_scan`,
 `generic_2d_scan`, `confocal_scanner`, `hyperspectral_imaging`,
 `grating_spectrometer`, `odmr_sweep`, `autofocus`,
 `actuator_optimization`, `pid_stabilization`, `pump_probe_spectroscopy`,
@@ -222,7 +222,7 @@ engine, so a full N-D scan and an optimizer's own sub-scans don't each
 reimplement actuator movement/settling:
 
 ```python
-from core.workflow.capabilities import ScanCapability, OptimizerCapability
+from labpilot.core.workflow.capabilities import ScanCapability, OptimizerCapability
 
 scan = ScanCapability(actuator, detector, settle_tolerance=0.02, max_settle_polls=5000)
 result = await scan.run_grid(
@@ -263,7 +263,7 @@ explicitly once your template needs more than that inference gives you.
 
 ## Writing a new template
 
-1. Create `src/core/workflow_templates/my_template.py`.
+1. Create `src/labpilot/core/workflow_templates/my_template.py`.
 2. Declare `REQUIRED_INSTRUMENTS`, `RESULT_UI` (if it should render
    live), and any tunable UPPERCASE constants.
 3. Write `async def run(session: Session) -> dict`, resolving roles via

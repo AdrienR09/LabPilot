@@ -9,7 +9,7 @@ new adapter and get a working UI/workflow integration for free.
 ## The `DeviceSchema` contract
 
 ```python
-from core.device.schema import DeviceSchema
+from labpilot.core.device.schema import DeviceSchema
 
 schema = DeviceSchema(
     name="ocean_insight_usb2000",
@@ -34,7 +34,7 @@ schema = DeviceSchema(
 | `trigger_modes` | e.g. `["software", "hardware"]` |
 | `tags` | Free-form, searchable (`adapter_registry.search(tags=[...])`) |
 
-`DeviceSchema` is a frozen, `extra="forbid"` Pydantic model (`src/core/device/schema.py`) — instances are immutable once created, and unknown fields are rejected rather than silently ignored.
+`DeviceSchema` is a frozen, `extra="forbid"` Pydantic model (`src/labpilot/core/device/schema.py`) — instances are immutable once created, and unknown fields are rejected rather than silently ignored.
 
 ## Connecting an instrument
 
@@ -68,8 +68,8 @@ See [console.md](console.md) for what `lp` is, or
 
 An instrument can support more than one way of being reached — VISA,
 serial/COM, TCP/IP, USB (by serial number), or none (mocks/fixtures).
-`InstrumentMetadata.connection_types` (`src/instruments/catalog.py`) lists
-which methods a catalog entry supports; `src/instruments/connections.py`
+`InstrumentMetadata.connection_types` (`src/labpilot/instruments/catalog.py`) lists
+which methods a catalog entry supports; `src/labpilot/instruments/connections.py`
 defines each method's own parameter fields:
 
 | Method | Fields |
@@ -95,8 +95,8 @@ adds the manufacturer/model/dimensionality metadata the UI needs
 entry corresponds to a real, registered adapter.
 
 ```python
-from instruments import adapter_registry, INSTRUMENT_CATALOG
-from instruments.catalog import get_instruments_by_type, get_instruments_by_tag, InstrumentType
+from labpilot.instruments import adapter_registry, INSTRUMENT_CATALOG
+from labpilot.instruments.catalog import get_instruments_by_type, get_instruments_by_tag, InstrumentType
 
 adapter_registry.list()                              # {key: AdapterClass} — everything registered
 adapter_registry.search(tags=["camera"])               # filter by DeviceSchema tags
@@ -115,7 +115,7 @@ Most of the time you'll go through the Devices tab or the dashboard API
 (below), but an adapter can be created directly too:
 
 ```python
-from instruments.factory import create_adapter
+from labpilot.instruments.factory import create_adapter
 
 adapter = create_adapter("mock_spectrometer", {}, name="spec1")
 adapter = create_adapter("keithley_2400", {"resource": "GPIB::24"})
@@ -130,14 +130,14 @@ can be reused across adapters needing different subsets.
 
 ## Writing a new adapter
 
-Every adapter subclasses `AdapterBase` (`src/instruments/_base.py`),
+Every adapter subclasses `AdapterBase` (`src/labpilot/instruments/_base.py`),
 which handles the async/sync boundary for you: every hardware call you
 implement is a plain **synchronous** method, run in a thread pool via
 `anyio.to_thread.run_sync()` so it never blocks the server's event loop.
 
 ```python
-from instruments._base import AdapterBase, adapter_registry
-from core.device.schema import DeviceSchema
+from labpilot.instruments._base import AdapterBase, adapter_registry
+from labpilot.core.device.schema import DeviceSchema
 
 class Keithley2400Adapter(AdapterBase):
     def __init__(self, resource: str):
@@ -197,7 +197,7 @@ the Devices tab's catalog browser, following the existing entries'
 pattern (there's a `_pymeasure`/`_mock`/`_fixture` helper per backend —
 see the top of that file).
 
-`src/instruments/` is organized by manufacturer, then instrument type
+`src/labpilot/instruments/` is organized by manufacturer, then instrument type
 (`<Manufacturer>/<type>.py`), not by which library backs the adapter. See
-[src/instruments/README.md](../src/instruments/README.md) for coverage
+[src/labpilot/instruments/README.md](../src/labpilot/instruments/README.md) for coverage
 notes.

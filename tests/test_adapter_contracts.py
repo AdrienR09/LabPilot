@@ -15,13 +15,13 @@ from __future__ import annotations
 
 import pytest
 
-from instruments import (
+from labpilot.instruments import (
     DISCOVERY_FAILURES,
     INSTRUMENT_CATALOG,
     adapter_registry,
     available_catalog,
 )
-from instruments.generic_params import validate_write_dispatch
+from labpilot.instruments.generic_params import validate_write_dispatch
 
 # Registered on purpose without a catalogue row: a generic escape hatch that
 # wraps *any* pymeasure Instrument, so it needs an `instrument_class=` argument

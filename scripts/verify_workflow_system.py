@@ -24,7 +24,7 @@ print("=" * 80)
 print()
 
 # Test imports
-from core.workflow import (
+from labpilot.core.workflow import (
     WorkflowGraph,
     WorkflowEdge,
     AcquireNode,

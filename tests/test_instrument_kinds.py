@@ -4,14 +4,23 @@ from __future__ import annotations
 
 import pytest
 
-from core.device.kinds import Detector, GenericInstrument, Motor, Scanner, Source, wrap
-from core.session import Session
-from instruments.MockBasic.simple import (
-    MockBasicActuator0D, MockBasicDetector0D, MockBasicDetector1D,
+from labpilot.core.device.kinds import (
+    Detector,
+    GenericInstrument,
+    Motor,
+    Scanner,
+    Source,
+    wrap,
 )
-from instruments.mock.hardware_scan import MockNIScanner
-from instruments.mock.microwave_sources import MockMicrowaveSource
-from instruments.mock.motors import MockMotor, MockXYZStage
+from labpilot.core.session import Session
+from labpilot.instruments.mock.hardware_scan import MockNIScanner
+from labpilot.instruments.mock.microwave_sources import MockMicrowaveSource
+from labpilot.instruments.mock.motors import MockMotor, MockXYZStage
+from labpilot.instruments.MockBasic.simple import (
+    MockBasicActuator0D,
+    MockBasicDetector0D,
+    MockBasicDetector1D,
+)
 
 
 @pytest.fixture

@@ -8,38 +8,41 @@ See **[docs/index.md](docs/index.md)** for the full documentation (instruments, 
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│  src/ui/desktop/  — desktop shell                            │
-│  manager_qt_webview.py: Qt window embedding the React app    │
-│  via QWebEngineView, bridged through qt_bridge.py             │
+│  labpilot.ui.desktop  — desktop shell                       │
+│  manager_qt_webview.py: Qt window embedding the React app   │
+│  via QWebEngineView, bridged through qt_bridge.py           │
 └───────────────────────┬────────────────────────────────────┘
-                         │ HTTP + WebSocket (:8000)
+                        │ HTTP + WebSocket (:8000)
 ┌───────────────────────▼────────────────────────────────────┐
-│  src/core/server.py  — FastAPI backend                       │
-│  devices, workflows, config persistence, Qt window spawning  │
+│  labpilot.core.server  — FastAPI backend                    │
+│  devices, workflows, config persistence, Qt window spawning │
 └───────────────────────┬────────────────────────────────────┘
-                         │
+                        │
 ┌───────────────────────▼────────────────────────────────────┐
-│  src/instruments/  — instrument adapter registry             │
-│  organized by manufacturer, then instrument type             │
-│  catalog.py: manufacturer/model/dimensionality metadata      │
+│  labpilot.instruments  — instrument adapter registry        │
+│  organized by manufacturer, then instrument type            │
+│  catalog.py: manufacturer/model/dimensionality metadata     │
 └────────────────────────────────────────────────────────────┘
 ```
 
-Everything installable lives under `src/`, as three top-level packages:
+Everything installable lives under `src/labpilot/`, as one package with three
+subpackages. `import labpilot` itself is cheap — it pulls in no subpackage, so
+it never triggers the adapter discovery pass `labpilot.instruments` performs on
+import.
 
-- **`src/instruments/`** — the instrument library. `adapter_registry` is the source of truth for what's connectable; `catalog.py` adds the display metadata (manufacturer, model, 0D/1D/2D/ND classification) the UI needs to pick a window layout.
-- **`src/core/`** — everything non-UI: device schema, session/FSM, scan plans, the workflow engine, storage, config persistence, and the FastAPI server.
-  - `device/` — `DeviceSchema`/protocols that every adapter implements (readable/settable parameters, units, limits, trigger modes).
+- **`labpilot.instruments`** — the instrument library. `adapter_registry` is the source of truth for what's connectable; `catalog.py` adds the display metadata (manufacturer, model, 0D/1D/2D/ND classification) the UI needs to pick a window layout. `available_catalog()` narrows that to adapters that actually registered on this machine.
+- **`labpilot.core`** — everything non-UI: device schema, session, the workflow engine, storage, config persistence, and the FastAPI server.
+  - `device/` — `DeviceSchema` plus the kind-typed `Motor`/`Detector`/`Source`/`Scanner` wrappers `Session.get()` returns.
   - `session.py` / `fsm.py` / `events.py` — `Session` (device registry + event bus), scan lifecycle state machine.
   - `plans/` — linear TOML-serializable scan plans (`ScanPlan`), for simple parameter sweeps.
-  - `workflow/` — general DAG-based experiment workflows (Acquire/Analyse/Branch/Loop/Optimise nodes), used by the AI chat assistant and the workflow editor. A different, more general abstraction than `plans/`, not a duplicate of it.
-  - `workflow_library/` — per-instance copies of a template, created when a workflow is loaded.
-  - `config/` — session persistence (`ConfigPersistence`, JSON under `~/.labpilot/`).
-  - `storage/` — HDF5 data writer + SQLite run catalogue.
-  - `api/` — the `/api/dashboard/*` router (fake-instrument demo dashboard).
+  - `workflow/` — the workflow engine. A workflow is a Python module exposing `async def run(session) -> dict`; `WorkflowGraph` is its stored record (id, metadata, instrument bindings), not an execution model.
+  - `workflow_templates/` — the 14 shipped templates. `workflow_library/` holds the per-instance copy made when one is loaded (generated at runtime, gitignored).
+  - `config/` — persistent state under `~/.labpilot`, relocatable with `LABPILOT_HOME` (`config/paths.py`).
+  - `storage/` — HDF5 data writer + SQLite run catalogue. Built, not yet wired into the acquisition path.
+  - `api/` — the `/api/dashboard/*` router: the instrument manager the Devices tab drives.
   - `server.py` / `cli.py` — the FastAPI app and the `labpilot` CLI.
-- **`src/ui/`** — everything UI:
-  - `desktop/` — the standalone Qt desktop shell (see [src/ui/desktop/README.md](src/ui/desktop/README.md)). A separate process from `core.server`, talks to it over HTTP.
+- **`labpilot.ui`** — everything UI:
+  - `desktop/` — the standalone Qt desktop shell (see [src/labpilot/ui/desktop/README.md](src/labpilot/ui/desktop/README.md)). A separate process from `labpilot.core.server`, talking to it over HTTP.
 
 ## Running
 
@@ -47,7 +50,7 @@ Everything installable lives under `src/`, as three top-level packages:
 ./launch.sh
 ```
 
-Starts the React dev server (`frontend/`, port 3000) and the Qt shell (`src/ui/desktop/manager_qt_webview.py`) together. See [src/ui/desktop/README.md](src/ui/desktop/README.md) for how the Qt/React pieces fit together, and note the caveat there: the embedded shell currently talks to `qt_bridge.py`'s mock instrument data rather than the real backend — wiring it to `core.server` is the main piece of unfinished integration work.
+Starts the React dev server (`frontend/`, port 3000) and the Qt shell (`src/labpilot/ui/desktop/manager_qt_webview.py`) together; the Qt shell starts and owns its own backend process. See [src/labpilot/ui/desktop/README.md](src/labpilot/ui/desktop/README.md) for how the Qt and React pieces fit together.
 
 To run the backend standalone (needed for workflow execution and the browser at `http://localhost:8000`):
 
@@ -61,16 +64,16 @@ labpilot list-adapters --tags camera
 ## Instrument adapters
 
 ```python
-from instruments import adapter_registry, INSTRUMENT_CATALOG
+from labpilot.instruments import adapter_registry, INSTRUMENT_CATALOG
 
 adapter_registry.list()                   # {key: AdapterClass} for everything registered
 adapter_registry.search(tags=["camera"])  # filter by DeviceSchema tags
 INSTRUMENT_CATALOG                        # manufacturer/model/dimensionality metadata
 ```
 
-`src/instruments/` is organized by manufacturer, then instrument type (`<Manufacturer>/<type>.py`) — not by which library backs the adapter. 262 instruments are catalogued across 80 manufacturers: 40 mock, 9 test fixtures, 188 PyMeasure (6 hand-written + 182 auto-generated from every real class in the installed pymeasure library), 25 pylablib. See [src/instruments/README.md](src/instruments/README.md) for coverage notes, including what's not covered yet (PyMoDAQ).
+`src/labpilot/instruments/` is organized by manufacturer, then instrument type (`<Manufacturer>/<type>.py`) — not by which library backs the adapter. 262 instruments are catalogued across 80 manufacturers: 40 mock, 9 test fixtures, 188 PyMeasure (6 hand-written + 182 auto-generated from every real class in the installed pymeasure library), 25 pylablib. See [src/labpilot/instruments/README.md](src/labpilot/instruments/README.md) for coverage notes, including what's not covered yet (PyMoDAQ).
 
-To add a new instrument, create an adapter under `src/instruments/<Manufacturer>/` following `instruments/_base.py`'s `AdapterBase`, and add a matching entry to `instruments/catalog.py`.
+To add a new instrument, create an adapter under `src/labpilot/instruments/<Manufacturer>/` following `_base.py`'s `AdapterBase`, and add a matching entry to `catalog.py`. `tests/test_adapter_contracts.py` checks that the two agree and that every key your schema declares settable has a working setter.
 
 ## Development
 

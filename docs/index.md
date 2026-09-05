@@ -36,20 +36,20 @@ you're looking for something specific.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│  Manager window (src/ui/desktop/)                            │
+│  Manager window (src/labpilot/ui/desktop/)                            │
 │  A native Qt window embedding the React app (frontend/)      │
 │  via QWebEngineView, plus its own native windows (instrument  │
 │  windows, the workflow window, the IPython console)          │
 └───────────────────────┬────────────────────────────────────┘
                          │ HTTP + WebSocket (:8000)
 ┌───────────────────────▼────────────────────────────────────┐
-│  LabPilot server (src/core/server.py) — FastAPI backend      │
+│  LabPilot server (src/labpilot/core/server.py) — FastAPI backend      │
 │  Session (device registry + event bus), WorkflowEngine,      │
 │  config persistence                                            │
 └───────────────────────┬────────────────────────────────────┘
                          │
 ┌───────────────────────▼────────────────────────────────────┐
-│  Instrument adapters (src/instruments/)                      │
+│  Instrument adapters (src/labpilot/instruments/)                      │
 │  one common DeviceSchema interface: readable/settable        │
 │  parameters, units, limits — regardless of what library      │
 │  (PyMeasure, pylablib, mock) backs the adapter                │

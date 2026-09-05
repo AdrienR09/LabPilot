@@ -5,20 +5,22 @@ Tests all REST API endpoints, WebSocket functionality, error handling,
 and integration with core components.
 """
 
-import pytest
 import asyncio
 import json
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
-from typing import Dict, Any, List
+from typing import Any, Dict, List
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
+
+import pytest
+from fastapi import FastAPI
 
 # Import FastAPI testing components
 from fastapi.testclient import TestClient
-from fastapi import FastAPI
+
+from labpilot.core.config import DeviceConfig, SessionConfig
 
 # Import server components
-from core.server import create_app, LabPilotServer, WebSocketManager
-from core.config import SessionConfig, DeviceConfig
-from core.session import Session
+from labpilot.core.server import LabPilotServer, WebSocketManager, create_app
+from labpilot.core.session import Session
 
 
 @pytest.fixture
@@ -242,7 +244,7 @@ class TestWorkflowEndpoints:
             "description": "Test workflow"
         }
 
-        with patch('core.server.WorkflowGraph') as mock_wf:
+        with patch('labpilot.core.server.WorkflowGraph') as mock_wf:
             mock_workflow = Mock()
             mock_workflow.id = "new_wf_id"
             mock_workflow.name = "New Workflow"
@@ -294,8 +296,8 @@ class TestQtEndpoints:
         }
 
         # Mock subprocess to simulate successful launch
-        with patch('core.server.subprocess.Popen') as mock_popen, \
-             patch('core.server.Path') as mock_path:
+        with patch('labpilot.core.server.subprocess.Popen') as mock_popen, \
+             patch('labpilot.core.server.Path') as mock_path:
 
             # Setup path mocking
             mock_path.return_value.exists.return_value = True
@@ -385,7 +387,7 @@ class TestWebSocket:
 
     def test_websocket_broadcast(self, mock_server):
         """Test WebSocket broadcasting functionality."""
-        from core.server import WebSocketManager
+        from labpilot.core.server import WebSocketManager
 
         manager = WebSocketManager()
 

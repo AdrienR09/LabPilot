@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from core.events import Event, EventBus, EventKind
+from labpilot.core.events import Event, EventBus, EventKind
 
 
 def test_event_kind_enum() -> None:

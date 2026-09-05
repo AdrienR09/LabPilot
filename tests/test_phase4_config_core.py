@@ -6,10 +6,10 @@ external dependencies like FastAPI. This verifies the core
 functionality that Phase 4 provides.
 """
 
-import sys
-import json
-import tempfile
 import asyncio
+import json
+import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -17,14 +17,15 @@ from pathlib import Path
 labpilot_root = Path(__file__).parent.parent
 sys.path.insert(0, str(labpilot_root / "src"))
 
-from core.config import (
+from labpilot.core.config import (
+    ConfigError,
+    ConfigPersistence,
+    DeviceConfig,
     SessionConfig,
     UserPreferences,
-    DeviceConfig,
-    ConfigPersistence,
-    ConfigError,
 )
-from core.session import Session
+from labpilot.core.session import Session
+
 
 async def test_user_preferences():
     """Test UserPreferences dataclass."""

@@ -74,5 +74,5 @@ examples/*.db
 .ruff_cache/
 
 # Workflow instances written at runtime by the template loader
-src/core/workflow_library/*.py
-!src/core/workflow_library/__init__.py
+src/labpilot/core/workflow_library/*.py
+!src/labpilot/core/workflow_library/__init__.py

@@ -1,6 +1,6 @@
 # The Manager UI
 
-The Manager is a native Qt window (`src/ui/desktop/manager_qt_webview.py`)
+The Manager is a native Qt window (`src/labpilot/ui/desktop/manager_qt_webview.py`)
 embedding the React app (`frontend/`) via `QWebEngineView`, plus its own
 native toolbar and windows for things that don't belong inside the
 embedded web page.
@@ -31,7 +31,7 @@ live plot, settings editable from the same window).
 ## The workflow window
 
 Executing or opening a workflow opens its own native window
-(`src/ui/desktop/workflow_window.py`) with:
+(`src/labpilot/ui/desktop/workflow_window.py`) with:
 
 - An **Execute**/**Stop** toolbar pair (Execute disables itself while a
   run is in progress) and a **Save** action exporting every visible scan

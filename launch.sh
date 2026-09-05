@@ -69,7 +69,7 @@ echo "✅ React Frontend ready at http://localhost:3000"
 echo ""
 
 # Launch Qt Manager — this spawns and owns its own backend server process
-# (src/ui/desktop/managed_server.py) as a real subprocess, not something
+# (src/labpilot/ui/desktop/managed_server.py) as a real subprocess, not something
 # this script needs to start separately anymore: manager_qt_webview.py
 # starts `labpilot start` itself and waits for it to be ready before the
 # window even opens, printing a clear error and exiting non-zero if it
@@ -77,7 +77,7 @@ echo ""
 # --external-backend here instead if you want to point this at an
 # already-running/remote server rather than let the manager own one.
 echo "🪟 Launching Qt Manager (it will start its own backend server)..."
-cd "$PROJECT_ROOT/src/ui/desktop"
+cd "$PROJECT_ROOT/src/labpilot/ui/desktop"
 python manager_qt_webview.py "$@"
 
 # Cleanup runs on exit

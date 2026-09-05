@@ -7,10 +7,10 @@ from typing import Any
 import numpy as np
 import pytest
 
-from core.events import EventBus, EventKind
-from core.device.schema import DeviceSchema
-from core.plans.base import ScanPlan
-from core.plans.scan import scan
+from labpilot.core.device.schema import DeviceSchema
+from labpilot.core.events import EventBus, EventKind
+from labpilot.core.plans.base import ScanPlan
+from labpilot.core.plans.scan import scan
 
 
 class MockMotor:

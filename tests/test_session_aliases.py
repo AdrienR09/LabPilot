@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import asyncio
 
-from core.session import Session
-from instruments.MockBasic.simple import MockBasicDetector0D
+from labpilot.core.session import Session
+from labpilot.instruments.MockBasic.simple import MockBasicDetector0D
 
 
 async def _make_session() -> Session:

@@ -11,7 +11,7 @@ in `error`/the HTTP body's `detail`.
 
 ## Python client
 
-Two layers, both in `src/core/`:
+Two layers, both in `src/labpilot/core/`:
 
 - **`api_client.LabPilotClient`** — thin, synchronous `httpx`-based
   wrapper, one method per endpoint below. No Qt dependency; usable from
@@ -21,12 +21,12 @@ Two layers, both in `src/core/`:
   [console.md](console.md) for its full surface.
 
 ```python
-from core.api_client import LabPilotClient
+from labpilot.core.api_client import LabPilotClient
 client = LabPilotClient("http://localhost:8000")
 client.list_instruments()
 ```
 
-The desktop app's `src/ui/desktop/backend_client.py` re-exports
+The desktop app's `src/labpilot/ui/desktop/backend_client.py` re-exports
 `LabPilotClient` as `BackendClient` (its historical name there) and adds
 a Qt-signal-based `WorkflowStatePoller` on top for live GUI updates.
 
@@ -108,7 +108,7 @@ client actually needs to handle for live workflow display:
 | `WORKFLOW_ERROR` | `{error}` | Run raises |
 | `WORKFLOW_STOPPED` | `{}` | Cancelled via `/stop` |
 
-`WorkflowStatePoller` (`src/ui/desktop/backend_client.py`) is the
+`WorkflowStatePoller` (`src/labpilot/ui/desktop/backend_client.py`) is the
 reference client implementation — it maintains a local buffer from
 `READING` events (cheap, applied instantly, no refetch) and periodically
 self-heals it from the always-authoritative `execution_state` REST

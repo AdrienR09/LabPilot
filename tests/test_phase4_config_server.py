@@ -11,25 +11,26 @@ Verifies that:
 This test can run without requiring actual devices or AI providers.
 """
 
-import sys
-import json
-import tempfile
 import asyncio
+import json
+import sys
+import tempfile
 from pathlib import Path
 
 # Add labpilot to path
 labpilot_root = Path(__file__).parent.parent
 sys.path.insert(0, str(labpilot_root / "src"))
 
-from core.config import (
+from labpilot.core.config import (
+    ConfigError,
+    ConfigPersistence,
+    DeviceConfig,
     SessionConfig,
     UserPreferences,
-    DeviceConfig,
-    ConfigPersistence,
-    ConfigError,
 )
-from core.server import LabPilotServer, create_app
-from core.session import Session
+from labpilot.core.server import LabPilotServer, create_app
+from labpilot.core.session import Session
+
 
 async def test_config_persistence():
     """Test configuration persistence functionality."""
@@ -216,7 +217,7 @@ async def test_websocket_manager():
     print("5. Testing WebSocket components...")
 
     try:
-        from core.server import WebSocketManager
+        from labpilot.core.server import WebSocketManager
 
         # Create WebSocket manager
         manager = WebSocketManager()

@@ -67,7 +67,7 @@ will fail to open with an error naming what to install.
 
 ## How it's wired (for reference)
 
-`src/ui/desktop/console_window.py`'s `ConsoleWindow` launches a real
+`src/labpilot/ui/desktop/console_window.py`'s `ConsoleWindow` launches a real
 `ipykernel` process (`QtKernelManager` with an explicit `kernel_cmd` — no
 Jupyter server, no kernelspec registration needed) with its `IPYTHONDIR`
 pointed at a small generated IPython profile whose `startup/00-labpilot.py`

@@ -2,7 +2,7 @@
 
 `session.get(role)` (see [Workflows](workflows.md#instrument-roles)) returns
 a **kind-typed wrapper** — `Motor`, `Detector`, `Source`, `Scanner`, or
-`GenericInstrument` (`src/core/device/kinds.py`), chosen from the bound
+`GenericInstrument` (`src/labpilot/core/device/kinds.py`), chosen from the bound
 instrument's own `schema.kind` (see [Instruments](instruments.md)). This is
 what lets a script call `actuator.move_abs(x=1.0, y=2.0)` /
 `await detector.read_value()` — the same method names regardless of which
@@ -121,7 +121,7 @@ a matching dataclass in `core.workflow.result_types`, importable in a
 template and used in place of the raw dict:
 
 ```python
-from core.workflow.result_types import ImageResult
+from labpilot.core.workflow.result_types import ImageResult
 
 RESULT_UI = ImageResult(
     value="image", x="x_positions", y="y_positions", value_label="Counts",

@@ -25,9 +25,9 @@ print("=" * 80)
 print()
 
 # Test imports
-from core.session import Session
-from core.events import EventBus, EventKind
-from core.ai import (
+from labpilot.core.session import Session
+from labpilot.core.events import EventBus, EventKind
+from labpilot.core.ai import (
     AISession,
     ToolRegistry,
     ContextBuilder,

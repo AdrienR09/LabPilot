@@ -20,8 +20,13 @@ import ast
 
 import pytest
 
-from core.workflow.result_types import (
-    ImageResult, NDScanResult, OdmrResult, ResultUIError, SpectrumResult, parse_result_ui_literal,
+from labpilot.core.workflow.result_types import (
+    ImageResult,
+    NDScanResult,
+    OdmrResult,
+    ResultUIError,
+    SpectrumResult,
+    parse_result_ui_literal,
 )
 
 

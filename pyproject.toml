@@ -53,7 +53,7 @@ gui = [
     "PyOpenGL >= 3.1",
     "vispy >= 0.14",
     # Scientific viewer widgets (Viewer0D/1D/2D) embedded in the native
-    # instrument windows — see src/ui/desktop/instrument_windows.py.
+    # instrument windows — see src/labpilot/ui/desktop/instrument_windows.py.
     "pymodaq_gui >= 5.1",
 ]
 
@@ -91,10 +91,10 @@ Repository = "https://github.com/labpilot/labpilot"
 Issues = "https://github.com/labpilot/labpilot/issues"
 
 [project.scripts]
-labpilot = "core.cli:main"
+labpilot = "labpilot.core.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/core", "src/instruments", "src/ui"]
+packages = ["src/labpilot"]
 
 [tool.ruff]
 line-length = 88
@@ -160,7 +160,7 @@ disallow_untyped_defs = false
 ignore_missing_imports = true
 
 [tool.coverage.run]
-source = ["src/core", "src/instruments", "src/ui"]
+source = ["src/labpilot"]
 omit = [
     "*/tests/*",
     "*/__init__.py",

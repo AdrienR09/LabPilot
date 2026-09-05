@@ -22,7 +22,7 @@ print()
 
 # Import adapter registry (triggers auto-discovery)
 print("1. Importing adapter registry...")
-from instruments import adapter_registry
+from labpilot.instruments import adapter_registry
 print("✅ Successfully imported adapter_registry")
 
 print()

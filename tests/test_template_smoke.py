@@ -28,11 +28,11 @@ from pathlib import Path
 
 import pytest
 
-from core.session import Session
-from core.workflow.instrument_roles import read_result_ui, read_workflow_params
-from instruments.mock.hardware_scan import MockNIScanner
-from instruments.mock.microwave_sources import MockMicrowaveSource
-from instruments.MockBasic.simple import (
+from labpilot.core.session import Session
+from labpilot.core.workflow.instrument_roles import read_result_ui, read_workflow_params
+from labpilot.instruments.mock.hardware_scan import MockNIScanner
+from labpilot.instruments.mock.microwave_sources import MockMicrowaveSource
+from labpilot.instruments.MockBasic.simple import (
     MockBasicActuator1D,
     MockBasicActuatorND,
     MockBasicDetector0D,
@@ -41,7 +41,7 @@ from instruments.MockBasic.simple import (
     MockBasicSource,
 )
 
-TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "src" / "core" / "workflow_templates"
+TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "src" / "labpilot" / "core" / "workflow_templates"
 
 # One mock per (kind, dimensionality) a template can ask for. `dimensionality`
 # is omitted by roles that accept anything, hence the None fallbacks.

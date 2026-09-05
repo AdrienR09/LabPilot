@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.fsm import InvalidTransitionError, ScanState, State
+from labpilot.core.fsm import InvalidTransitionError, ScanState, State
 
 
 def test_state_enum() -> None:
