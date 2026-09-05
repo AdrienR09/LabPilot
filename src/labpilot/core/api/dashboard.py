@@ -27,6 +27,11 @@ from labpilot.core.config.instrument_ui_prefs import (
     get_instrument_ui_prefs,
     set_instrument_ui_prefs,
 )
+from labpilot.core.errors import (
+    NotConnectedError,
+    ParameterError,
+    UnsupportedOperationError,
+)
 from labpilot.core.session import Session
 from labpilot.instruments import INSTRUMENT_CATALOG, adapter_registry, available_catalog
 from labpilot.instruments.factory import UnknownAdapterError, create_adapter
@@ -392,13 +397,22 @@ class DashboardManager:
             raise ValueError(f"Instrument {instrument_id} not found")
 
         inst = self.instruments[instrument_id]
-        if persist:
-            inst.setdefault("custom_settings", {}).update(values)
+        adapter = inst["adapter"]
 
-        if inst["adapter"].connected:
-            await inst["adapter"].write(values)
+        # Validate first, and validate even when the instrument is
+        # disconnected: this endpoint saves settings for later application,
+        # so without this an out-of-range value would be stored, reported
+        # as saved, and then fail on the next connect — far from where the
+        # user typed it. Needs no hardware, only the schema.
+        checked = adapter.validate_write(values)
+
+        if adapter.connected:
+            await adapter.write(values)
 
         if persist:
+            # The coerced values, not the raw ones, so what gets replayed
+            # on the next connect is what the device actually accepted.
+            inst.setdefault("custom_settings", {}).update(checked)
             self._save_active_config()
         return self.get_instrument_status(instrument_id)
 
@@ -647,8 +661,15 @@ async def write_instrument_settings(instrument_id: str, request: WriteSettingsRe
         )
         message = "Settings applied" if was_connected else "Settings saved — will apply when connected"
         return {"success": True, "data": {"message": message}}
-    except NotImplementedError as e:
-        raise HTTPException(status_code=501, detail=str(e))
+    except ParameterError as e:
+        # An unknown name, a read-only parameter, an out-of-range or
+        # non-numeric value — always the caller's fault, so it must not
+        # come back as a 502 that reads like the instrument failed.
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except (UnsupportedOperationError, NotImplementedError) as e:
+        raise HTTPException(status_code=501, detail=str(e)) from e
+    except NotConnectedError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except (ValueError, KeyError) as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:

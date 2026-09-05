@@ -20,6 +20,8 @@ The adapter will:
 from __future__ import annotations
 
 import importlib
+import inspect
+import re
 from typing import Any
 
 try:
@@ -29,7 +31,9 @@ except ImportError:
     Instrument = None
 
 if Instrument is not None:
+    from labpilot.core.device.parameter import INTEGRATION_TIME, Parameter, ParamRole
     from labpilot.core.device.schema import DeviceSchema
+    from labpilot.core.errors import NotConnectedError
     from labpilot.instruments._base import AdapterBase, adapter_registry
     from labpilot.instruments.catalog import (
         INSTRUMENT_CATALOG,
@@ -59,6 +63,224 @@ if Instrument is not None:
             if entry.backend == InstrumentBackend.PYMEASURE and entry.model == cls_name:
                 return _CATALOG_TYPE_TO_KIND.get(entry.instrument_type, "generic")
         return "generic"
+
+    # --- Introspection of pymeasure's own property descriptors -----------
+    #
+    # `Instrument.control()` builds its getter and setter as closures whose
+    # *default arguments* carry every fact the property was declared with —
+    # the SCPI commands, the validator, the legal `values`, whether those
+    # values are a map. Reading those defaults back (they are ordinary
+    # function defaults, so `inspect.signature` sees them) turns the
+    # declaration into a `Parameter` with real limits and choices.
+    #
+    # What this replaces was guesswork: every property was typed "float64"
+    # regardless, units were scraped by taking whatever sat between the
+    # first "(" and ")" anywhere in the docstring, and — the significant
+    # one — a property was called settable whenever `attr.fset` was not
+    # None. `fset` is *never* None for a pymeasure control: a read-only
+    # measurement gets a setter closure whose `set_command` default is
+    # None, and raises LookupError when called. So every one of the 183
+    # generated adapters advertised each of its read-only measurements as a
+    # writable setting, and the UI drew a control for it.
+
+    def _descriptor_defaults(func: Any) -> dict[str, Any]:
+        """Every declared fact a pymeasure accessor closure carries.
+
+        `control()` passes some of them as default arguments (`values`,
+        `validator`, `set_command`) and captures the rest as closure
+        variables (`cast`, `separator`); both are read here, since which
+        is which is an implementation detail of pymeasure's and has moved
+        between releases.
+        """
+        if func is None:
+            return {}
+        facts: dict[str, Any] = {}
+        for name, cell in zip(
+            getattr(func.__code__, "co_freevars", ()), func.__closure__ or (), strict=False
+        ):
+            try:
+                facts[name] = cell.cell_contents
+            except ValueError:  # empty cell, still being defined
+                continue
+        try:
+            signature = inspect.signature(func)
+        except (TypeError, ValueError):
+            return facts
+        facts.update({
+            name: parameter.default
+            for name, parameter in signature.parameters.items()
+            if parameter.default is not inspect.Parameter.empty
+        })
+        return facts
+
+    # pymeasure validators that mean "values is a (min, max) range" vs
+    # "values enumerates the legal settings". Matched by name because they
+    # are plain module-level functions in pymeasure.instruments.validators
+    # and stay identifiable through `functools.partial`-free composition.
+    _RANGE_VALIDATORS = frozenset({
+        "strict_range", "truncated_range", "modular_range",
+        "modular_range_bidirectional",
+    })
+    _DISCRETE_VALIDATORS = frozenset({
+        "strict_discrete_set", "truncated_discrete_set", "strict_discrete_range",
+    })
+
+    _DTYPE_BY_PYTHON_TYPE = {float: "f8", int: "i8", bool: "bool", str: "str"}
+
+    # Unit words pymeasure docstrings actually use, mapped to symbols. A
+    # closed vocabulary on purpose: the previous "text inside the first
+    # parentheses" rule produced units like "float, strictly from -210 to
+    # 210" and "V or A", which then rendered as axis labels.
+    _UNIT_WORDS = {
+        "volts": "V", "volt": "V", "millivolts": "mV", "microvolts": "µV",
+        "amps": "A", "amperes": "A", "ampere": "A", "milliamps": "mA",
+        "seconds": "s", "second": "s", "milliseconds": "ms",
+        "microseconds": "µs", "nanoseconds": "ns",
+        "hertz": "Hz", "hz": "Hz", "kilohertz": "kHz", "megahertz": "MHz",
+        "ohms": "Ω", "ohm": "Ω", "watts": "W", "watt": "W",
+        "degrees": "deg", "degree": "deg", "kelvin": "K", "celsius": "°C",
+        "meters": "m", "metres": "m", "millimeters": "mm", "micrometers": "µm",
+        "percent": "%", "decibels": "dB", "dbm": "dBm",
+    }
+    _UNIT_PATTERN = re.compile(r"\bin ([A-Za-zµΩ°%]+)\b")
+
+    def _unit_from_doc(doc: str) -> str:
+        """The physical unit a pymeasure docstring states, or "".
+
+        Only the "... in <unit>" phrasing pymeasure's own style guide uses,
+        and only for words in `_UNIT_WORDS` — an unrecognised word yields
+        no unit rather than a wrong one.
+
+        Every occurrence is tried, not just the first: a hyphen is a word
+        boundary, so "the lock-in frequency in Hz" matches at "in
+        frequency" before it reaches the real "in Hz".
+        """
+        for match in _UNIT_PATTERN.finditer(doc or ""):
+            unit = _UNIT_WORDS.get(match.group(1).lower())
+            if unit:
+                return unit
+        return ""
+
+    def _dtype_for(values: Any, choices: tuple[Any, ...] | None, cast: Any) -> str:
+        """Element dtype implied by a property's legal values.
+
+        Takes the *values*' own types over `cast`, because `cast` describes
+        how the instrument's reply string is parsed (it defaults to `float`
+        even for a property whose legal settings are the strings 'current'
+        and 'voltage') rather than what the property holds.
+        """
+        if choices:
+            return _DTYPE_BY_PYTHON_TYPE.get(type(choices[0]), "str")
+        if isinstance(cast, type):
+            mapped = _DTYPE_BY_PYTHON_TYPE.get(cast)
+            if mapped is not None:
+                return mapped
+        if isinstance(values, (list, tuple)) and values and all(
+            isinstance(v, int) and not isinstance(v, bool) for v in values
+        ):
+            return "i8"
+        return "f8"
+
+    def _parameter_from_property(name: str, prop: Any) -> Parameter | None:
+        """One `Parameter` describing a pymeasure property, or None if the
+        attribute isn't a property at all."""
+        fget = getattr(prop, "fget", None)
+        fset = getattr(prop, "fset", None)
+        if fget is None and fset is None:
+            return None
+
+        get_defaults = _descriptor_defaults(fget)
+        set_defaults = _descriptor_defaults(fset)
+
+        # A pymeasure control always has both closures; the *_command
+        # defaults say which directions actually work. A plain Python
+        # @property has neither key, and is readable/settable by whether
+        # its accessors exist at all.
+        if "get_command" in get_defaults:
+            readable = get_defaults["get_command"] is not None
+        else:
+            readable = fget is not None
+        if "set_command" in set_defaults:
+            settable = set_defaults["set_command"] is not None
+        else:
+            settable = fset is not None
+
+        if not readable and not settable:
+            return None
+
+        source = set_defaults or get_defaults
+        values = source.get("values", ())
+        validator_name = getattr(source.get("validator"), "__name__", "")
+
+        limits: tuple[float | None, float | None] | None = None
+        choices: tuple[Any, ...] | None = None
+
+        if source.get("map_values") and isinstance(values, dict):
+            # Mapped values: the dict keys are what a user sets, the
+            # values are the instrument's wire encoding.
+            choices = tuple(values.keys())
+        elif validator_name in _DISCRETE_VALIDATORS and isinstance(
+            values, (list, tuple, range)
+        ):
+            choices = tuple(values)
+        elif validator_name in _RANGE_VALIDATORS and isinstance(
+            values, (list, tuple, range)
+        ) and len(values) == 2:
+            try:
+                limits = (float(values[0]), float(values[1]))
+            except (TypeError, ValueError):
+                limits = None
+        elif source.get("map_values") and isinstance(values, (list, tuple, range)):
+            choices = tuple(values)
+
+        # A mapped discrete set can be large (SR830's sensitivity has 27
+        # entries); that is fine for a combo box but not as a limits pair,
+        # so choices and limits stay mutually exclusive above.
+        if choices is not None and not choices:
+            choices = None
+
+        doc = inspect.getdoc(prop) or ""
+        dtype = _dtype_for(values, choices, get_defaults.get("cast"))
+        unit = _unit_from_doc(doc)
+
+        tags = set()
+        if settable and ("integration_time" in name or "exposure" in name):
+            tags.add(INTEGRATION_TIME)
+
+        return Parameter(
+            name=name,
+            dtype=dtype,
+            unit=unit,
+            role=ParamRole.SETTING if settable else ParamRole.VALUE,
+            readable=readable,
+            settable=settable,
+            limits=limits,
+            choices=choices,
+            tags=frozenset(tags),
+            description=doc.strip().split("\n")[0][:200],
+        )
+
+    def introspect_parameters(cls: type) -> tuple[Parameter, ...]:
+        """Every `Parameter` a pymeasure Instrument class declares."""
+        parameters: list[Parameter] = []
+        for attr_name in dir(cls):
+            if attr_name.startswith("_"):
+                continue
+            try:
+                attr = inspect.getattr_static(cls, attr_name)
+            except AttributeError:
+                continue
+            if attr is None:
+                continue
+            try:
+                parameter = _parameter_from_property(attr_name, attr)
+            except Exception:
+                # One malformed property must not cost the whole
+                # instrument its schema.
+                continue
+            if parameter is not None:
+                parameters.append(parameter)
+        return tuple(parameters)
 
     class PyMeasureGenericAdapter(AdapterBase):
         """Generic adapter for any pymeasure Instrument.
@@ -131,43 +353,10 @@ if Instrument is not None:
             if self._name is None:
                 self._name = f"pymeasure_{cls.__name__.lower()}"
 
-            # Introspect pymeasure properties
-            readable = {}
-            settable = {}
-            units = {}
-
-            # Get all class attributes that are pymeasure properties
-            for attr_name in dir(cls):
-                attr = getattr(cls, attr_name, None)
-                if attr is None or attr_name.startswith("_"):
-                    continue
-
-                # Check if it's a pymeasure property (has fget/fset)
-                if hasattr(attr, "fget"):
-                    # Readable property
-                    readable[attr_name] = "float64"  # Default type
-
-                    # Check if settable
-                    if hasattr(attr, "fset") and attr.fset is not None:
-                        settable[attr_name] = "float64"
-
-                    # Try to extract units from docstring
-                    doc = attr.__doc__ or ""
-                    if "(" in doc and ")" in doc:
-                        # Extract units from docstring like "Voltage (V)"
-                        unit_start = doc.find("(")
-                        unit_end = doc.find(")", unit_start)
-                        unit = doc[unit_start + 1 : unit_end].strip()
-                        if unit and len(unit) < 10:  # Sanity check
-                            units[attr_name] = unit
-
-            # Build schema
             self._schema = DeviceSchema(
                 name=self._name,
                 kind=_kind_for_pymeasure_class(cls.__name__),
-                readable=readable,
-                settable=settable,
-                units=units,
+                parameters=introspect_parameters(cls),
                 tags=[
                     "PyMeasure",
                     cls.__name__,
@@ -206,7 +395,9 @@ if Instrument is not None:
                 Dict mapping property names to values.
             """
             if self._instrument is None:
-                raise RuntimeError("Adapter not connected")
+                raise NotConnectedError(
+                    f"{self._name} is not connected", device=self._name
+                )
 
             data = {}
             for axis_name in self.schema.readable.keys():
@@ -220,19 +411,28 @@ if Instrument is not None:
             return data
 
         def _write_sync(self, values: dict[str, Any]) -> None:
-            """Set one or more settable properties on the wrapped instrument."""
+            """Set one or more already-validated properties on the wrapped
+            instrument. Assignment goes straight to the pymeasure property,
+            whose own validator is the final authority — this adapter's
+            introspected limits mirror that validator, so a value rejected
+            here would have been rejected there too, just later and with a
+            message naming a SCPI command instead of a parameter."""
             if self._instrument is None:
-                raise RuntimeError("Adapter not connected")
-
-            settable = self.schema.settable
+                raise NotConnectedError(
+                    f"{self._name} is not connected", device=self._name
+                )
             for name, value in values.items():
-                if name not in settable:
-                    raise ValueError(f"{name!r} is not settable on this instrument")
                 setattr(self._instrument, name, value)
 
         async def write(self, values: dict[str, Any]) -> None:
-            """Set one or more settable properties (async wrapper)."""
-            await self._to_thread(self._write_sync, values)
+            """Set one or more settable properties (async wrapper).
+
+            Overrides the base `set_<key>` dispatch — a pymeasure
+            instrument's settings are properties, not methods — so it calls
+            `validate_write()` explicitly, which is what the base class
+            would otherwise have done.
+            """
+            await self._to_thread(self._write_sync, self.validate_write(values))
 
         def _self_test_sync(self) -> None:
             """Test instrument connectivity.
@@ -240,7 +440,9 @@ if Instrument is not None:
             Most pymeasure instruments have an 'id' property we can read.
             """
             if self._instrument is None:
-                raise RuntimeError("Adapter not connected")
+                raise NotConnectedError(
+                    f"{self._name} is not connected", device=self._name
+                )
 
             # Try to read ID
             try:

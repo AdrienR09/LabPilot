@@ -14,7 +14,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from labpilot.core.device.parameter import Parameter, ParamRole
 from labpilot.core.device.schema import DeviceSchema
+from labpilot.core.errors import NotConnectedError
 from labpilot.instruments._base import AdapterBase, adapter_registry
 
 
@@ -40,9 +42,10 @@ class PylablibCameraAdapter(AdapterBase):
         return DeviceSchema(
             name=self._name,
             kind="detector",
-            readable={"image": "ndarray2d"},
-            settable={},
-            units={"image": "counts"},
+            parameters=(
+                Parameter("image", shape=(None, None), unit="counts",
+                          description="One captured frame."),
+            ),
             tags=["pylablib", self._device_class.__name__, "camera"],
         )
 
@@ -61,7 +64,7 @@ class PylablibCameraAdapter(AdapterBase):
 
     def _read_sync(self) -> dict[str, Any]:
         if self._device is None:
-            raise RuntimeError("Not connected")
+            raise NotConnectedError(f"{self._name} is not connected", device=self._name)
         return {"image": self._device.snap()}
 
 
@@ -91,9 +94,16 @@ class PylablibStageAdapter(AdapterBase):
         return DeviceSchema(
             name=self._name,
             kind="motor",
-            readable={"position": "float64"},
-            settable={"position": "float64"},
-            units={"position": "steps"},
+            parameters=(
+                # Declared POSITION rather than left to be inferred from
+                # "readable + settable + numeric + kind==motor": these
+                # adapters are the ones a scan actually drives, so the
+                # role that makes `schema.position_axes` correct is worth
+                # stating outright.
+                Parameter("position", unit="steps", role=ParamRole.POSITION,
+                          settable=True,
+                          description="Stage position in controller steps."),
+            ),
             tags=["pylablib", self._device_class.__name__, "stage"],
         )
 
@@ -112,7 +122,7 @@ class PylablibStageAdapter(AdapterBase):
 
     def _read_sync(self) -> dict[str, Any]:
         if self._device is None:
-            raise RuntimeError("Not connected")
+            raise NotConnectedError(f"{self._name} is not connected", device=self._name)
         return {"position": float(self._device.get_position())}
 
     # --- Movable protocol (core.device.protocols.Movable) ---
@@ -120,7 +130,7 @@ class PylablibStageAdapter(AdapterBase):
     async def set(self, value: Any, *, timeout: float = 10.0) -> None:
         """Move to target position and wait for completion."""
         if self._device is None:
-            raise RuntimeError("Not connected")
+            raise NotConnectedError(f"{self._name} is not connected", device=self._name)
 
         def _move() -> None:
             self._device.move_to(value)
@@ -176,9 +186,18 @@ class PylablibAWGAdapter(AdapterBase):
         return DeviceSchema(
             name=self._name,
             kind="source",
-            readable={"frequency": "float64", "amplitude": "float64", "offset": "float64", "enabled": "bool"},
-            settable={"frequency": "float64", "amplitude": "float64", "offset": "float64", "enabled": "bool"},
-            units={"frequency": "Hz", "amplitude": "V", "offset": "V"},
+            parameters=(
+                Parameter("frequency", unit="Hz", role=ParamRole.SETTING,
+                          settable=True, limits=(0.0, None),
+                          description="Output frequency."),
+                Parameter("amplitude", unit="V", role=ParamRole.SETTING,
+                          settable=True, limits=(0.0, None),
+                          description="Peak-to-peak output amplitude."),
+                Parameter("offset", unit="V", role=ParamRole.SETTING,
+                          settable=True, description="DC offset."),
+                Parameter("enabled", dtype="bool", role=ParamRole.SETTING,
+                          settable=True, description="Output on/off."),
+            ),
             tags=["pylablib", self._device_class.__name__, "awg", "function-generator"],
         )
 
@@ -195,7 +214,7 @@ class PylablibAWGAdapter(AdapterBase):
 
     def _read_sync(self) -> dict[str, Any]:
         if self._device is None:
-            raise RuntimeError("Not connected")
+            raise NotConnectedError(f"{self._name} is not connected", device=self._name)
         return {
             "frequency": float(self._device.get_frequency()),
             "amplitude": float(self._device.get_amplitude()),
@@ -205,20 +224,20 @@ class PylablibAWGAdapter(AdapterBase):
 
     async def set_frequency(self, value: float) -> None:
         if self._device is None:
-            raise RuntimeError("Not connected")
+            raise NotConnectedError(f"{self._name} is not connected", device=self._name)
         await self._to_thread(self._device.set_frequency, float(value))
 
     async def set_amplitude(self, value: float) -> None:
         if self._device is None:
-            raise RuntimeError("Not connected")
+            raise NotConnectedError(f"{self._name} is not connected", device=self._name)
         await self._to_thread(self._device.set_amplitude, float(value))
 
     async def set_offset(self, value: float) -> None:
         if self._device is None:
-            raise RuntimeError("Not connected")
+            raise NotConnectedError(f"{self._name} is not connected", device=self._name)
         await self._to_thread(self._device.set_offset, float(value))
 
     async def set_enabled(self, value: bool) -> None:
         if self._device is None:
-            raise RuntimeError("Not connected")
+            raise NotConnectedError(f"{self._name} is not connected", device=self._name)
         await self._to_thread(self._device.enable_output, bool(value))

@@ -14,6 +14,7 @@ This enables:
 from __future__ import annotations
 
 import functools
+import inspect
 import threading
 from abc import abstractmethod
 from typing import Any
@@ -22,8 +23,56 @@ import anyio
 
 from labpilot.core.device.protocols import Readable
 from labpilot.core.device.schema import DeviceSchema
+from labpilot.core.errors import (
+    NotSettableError,
+    UnsupportedOperationError,
+)
 
 __all__ = ["AdapterBase", "adapter_registry"]
+
+
+# Placeholder values for a probe construction, by parameter annotation.
+# Only ever reach a disconnected object that is thrown away — see
+# `AdapterBase.describe`.
+_PLACEHOLDERS: dict[Any, Any] = {
+    str: "", int: 0, float: 0.0, bool: False,
+}
+
+
+def _placeholder_kwargs(cls: type) -> dict[str, Any]:
+    """Arguments that let `cls` be constructed for schema introspection.
+
+    Every required parameter of `__init__` gets a value inferred from its
+    annotation (`resource: str` -> `""`), defaulting to `""` — which is
+    what an unannotated `resource` in a hand-written adapter almost always
+    wants. Parameters with defaults are left alone so the adapter's own
+    defaults (notably `name`) are what shows up in the schema.
+    """
+    try:
+        signature = inspect.signature(cls.__init__)
+    except (TypeError, ValueError):
+        return {}
+
+    kwargs: dict[str, Any] = {}
+    for name, parameter in signature.parameters.items():
+        if name == "self" or parameter.kind in (
+            inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD
+        ):
+            continue
+        if parameter.default is not inspect.Parameter.empty:
+            continue
+        annotation = parameter.annotation
+        if isinstance(annotation, str):
+            # `from __future__ import annotations` is in force across the
+            # adapter tree, so annotations arrive as source text. Matching
+            # the few scalar spellings by name avoids resolving them, which
+            # would need each adapter module's globals and could import
+            # driver types that are not installed.
+            annotation = {"str": str, "int": int, "float": float, "bool": bool}.get(
+                annotation.strip(), str
+            )
+        kwargs[name] = _PLACEHOLDERS.get(annotation, "")
+    return kwargs
 
 
 class AdapterBase(Readable):
@@ -104,6 +153,41 @@ class AdapterBase(Readable):
         """
         ...
 
+    @classmethod
+    def describe(cls) -> DeviceSchema | None:
+        """This adapter's schema without a live instance, or None.
+
+        `adapter_registry.list_with_schemas()` used to call `cls()` with no
+        arguments inside a bare try/except, so it saw the schema of **90 of
+        301 adapters** — every adapter needing a `resource=` argument (i.e.
+        every VISA instrument) simply vanished, and `search(tags=)`, which
+        is built on it, structurally could not find one.
+
+        The fix is to supply placeholder arguments rather than none.
+        Adapters in this repo follow a strict rule: `__init__` records its
+        arguments and `_connect_sync` opens the connection, so constructing
+        one touches no hardware and a nonsense resource string is
+        harmless — the object is discarded without ever being connected.
+        `tests/test_adapter_contracts.py` asserts that holds for every
+        registered adapter.
+
+        Override this in an adapter whose schema genuinely cannot be known
+        without hardware; returning None means "not describable offline"
+        and the caller will simply omit it.
+        """
+        cached = cls.__dict__.get("_described_schema")
+        if cached is not None:
+            return cached[0]
+        try:
+            schema = cls(**_placeholder_kwargs(cls)).schema
+        except Exception:
+            schema = None
+        # Cached on the class itself (not an inherited attribute) — one
+        # probe construction per adapter class, not per listing call, and
+        # the listing is on the instrument-browser path.
+        cls._described_schema = (schema,)
+        return schema
+
     async def connect(self) -> None:
         """Establish hardware connection (async wrapper).
 
@@ -135,34 +219,73 @@ class AdapterBase(Readable):
         """
         return await self._to_thread(self._read_sync)
 
+    def validate_write(self, values: dict[str, Any]) -> dict[str, Any]:
+        """Check a write against this device's schema; return it coerced.
+
+        Every value is checked against its own `Parameter` — that the
+        parameter exists, that it is settable, that the value is of the
+        right type, within `limits`, and among `choices` — and returned
+        converted to the declared element type (so the integer `5`
+        arriving from JSON for a float parameter becomes `5.0`).
+
+        Nothing enforced limits before this. `DeviceSchema.limits` was
+        declared by a number of adapters and checked by exactly two mock
+        ones, by hand; a real adapter would forward an out-of-range
+        setpoint straight to hardware. Validating here rather than in each
+        `set_<key>` means every adapter gets it, including the 209 that
+        are generated.
+
+        Subclasses that override `write()` (because their settings API
+        doesn't fit the `set_<key>` convention) should call this first —
+        it is public for exactly that reason.
+
+        Raises:
+            UnknownParameterError: no parameter of that name.
+            NotSettableError: the parameter is read-only.
+            LimitError / ChoiceError / ParameterError: bad value.
+        """
+        schema = self.schema
+        checked: dict[str, Any] = {}
+        for key, value in values.items():
+            parameter = schema.require(key)
+            if not parameter.settable:
+                raise NotSettableError(
+                    f"{key!r} on {schema.name!r} is read-only",
+                    device=schema.name, parameter=key,
+                )
+            checked[key] = parameter.validate(value, device=schema.name)
+        return checked
+
     async def write(self, values: dict[str, Any]) -> None:
         """Write one or more settable parameters (async wrapper).
 
-        Default implementation: dispatches each key to a same-named
-        `set_<key>(value)` coroutine method on this adapter, if one is
-        defined — the convention every adapter in
-        instruments/test_fixtures.py and instruments/mock/ already follows
-        for its schema.settable keys (e.g. a schema declaring
-        `settable={"position": ...}` pairs with an `async def
-        set_position(self, value)`). Subclasses whose settings API doesn't
-        fit this convention (e.g. wrapping a third-party object with a
-        different settings API, or preferring the narrower `Movable.set()`
-        protocol instead) should override this method entirely.
+        Validates via `validate_write()`, then dispatches each key to a
+        same-named `set_<key>(value)` coroutine method on this adapter —
+        the convention every adapter in instruments/test_fixtures.py and
+        instruments/mock/ already follows for its schema.settable keys
+        (e.g. a schema declaring `settable={"position": ...}` pairs with an
+        `async def set_position(self, value)`). Subclasses whose settings
+        API doesn't fit this convention (e.g. wrapping a third-party object
+        with a different settings API, or preferring the narrower
+        `Movable.set()` protocol instead) should override this method
+        entirely — and call `validate_write()` themselves.
 
         Args:
-            values: Dict mapping parameter names (must be keys in
-                schema.settable) to their new values.
+            values: Dict mapping parameter names (must be settable in
+                this device's schema) to their new values.
 
         Raises:
-            NotImplementedError: If this adapter defines no matching
+            ParameterError: See `validate_write()`.
+            UnsupportedOperationError: If this adapter defines no matching
                 `set_<key>` method for one of `values`' keys.
         """
-        for key, value in values.items():
+        for key, value in self.validate_write(values).items():
             setter = getattr(self, f"set_{key}", None)
             if setter is None:
-                raise NotImplementedError(
+                raise UnsupportedOperationError(
                     f"{type(self).__name__} has no set_{key}() method — "
-                    f"cannot write '{key}' generically"
+                    f"cannot write '{key}' generically",
+                    device=self.schema.name,
                 )
             await setter(value)
 
@@ -346,21 +469,18 @@ class AdapterRegistry:
         """List all adapters with their schemas.
 
         Returns:
-            Dict mapping adapter keys to DeviceSchema instances.
+            Dict mapping adapter keys to DeviceSchema instances. Adapters
+            whose schema cannot be determined without hardware are omitted.
 
         Note:
-            Creates temporary instances to get schemas. Does not connect.
+            Creates temporary, never-connected instances — see
+            `AdapterBase.describe`, which also caches per class.
         """
         schemas = {}
         for key, adapter_cls in self._registry.items():
-            # Instantiate with no args - adapters must have no-arg __init__
-            # or handle missing args gracefully for schema introspection
-            try:
-                instance = adapter_cls()
-                schemas[key] = instance.schema
-            except Exception:
-                # Skip adapters that can't be instantiated without args
-                continue
+            schema = adapter_cls.describe()
+            if schema is not None:
+                schemas[key] = schema
         return schemas
 
     def search(self, tags: list[str]) -> dict[str, DeviceSchema]:
