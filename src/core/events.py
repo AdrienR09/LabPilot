@@ -8,6 +8,7 @@ future ZMQ-based remote GUI support.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -87,30 +88,61 @@ class EventBus:
 
     def __init__(self) -> None:
         """Initialize empty event bus."""
-        self._subscribers: list[tuple[asyncio.Queue[Event], set[EventKind]]] = []
-        self._lock = asyncio.Lock()
+        # (queue, filters, owning loop). The loop is recorded per subscriber
+        # because publishers and subscribers no longer necessarily share one:
+        # workflows run on their own loop (core/workflow/engine.py) while the
+        # HTTP and WebSocket subscribers live on the server's.
+        self._subscribers: list[tuple[asyncio.Queue[Event], set[EventKind], asyncio.AbstractEventLoop]] = []
+        # A threading.Lock, not asyncio.Lock: it guards a plain list, is held
+        # only for a copy, and must be usable from any loop or thread.
+        self._lock = threading.Lock()
 
     async def emit(self, event: Event) -> None:
         """Broadcast event to all matching subscribers.
 
-        Thread-safe: may be called from anyio.to_thread.run_sync contexts.
+        Safe to call from a loop other than the one a subscriber registered
+        on: delivery is marshalled onto that subscriber's own loop. Feeding a
+        queue directly across loops would set a result on a foreign loop's
+        future, which does not reliably wake the waiting task.
 
         Args:
             event: Event to broadcast.
         """
-        async with self._lock:
+        with self._lock:
             # Copy subscriber list to avoid modification during iteration
             subscribers = self._subscribers.copy()
 
-        for queue, filters in subscribers:
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        for queue, filters, loop in subscribers:
             # If no filters specified, subscriber gets all events
-            if not filters or event.kind in filters:
+            if filters and event.kind not in filters:
+                continue
+            if loop is current_loop:
                 try:
                     queue.put_nowait(event)
                 except asyncio.QueueFull:
-                    # Log or handle full queue - for now, skip
-                    # In production, might want configurable backpressure strategy
+                    # Drop rather than block the producer. Clients re-sync
+                    # from REST state, so a dropped frame is recoverable.
                     pass
+            else:
+                try:
+                    loop.call_soon_threadsafe(self._offer, queue, event)
+                except RuntimeError:
+                    # Subscriber's loop has shut down; it will be removed by
+                    # its own subscribe() cleanup.
+                    pass
+
+    @staticmethod
+    def _offer(queue: asyncio.Queue[Event], event: Event) -> None:
+        """Enqueue on the subscriber's own loop, dropping if it is full."""
+        try:
+            queue.put_nowait(event)
+        except asyncio.QueueFull:
+            pass
 
     async def subscribe(self, *kinds: EventKind) -> AsyncIterator[Event]:
         """Subscribe to events matching specified kinds.
@@ -131,9 +163,10 @@ class EventBus:
         """
         queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=1000)
         filters = set(kinds) if kinds else set()
+        loop = asyncio.get_running_loop()
 
-        async with self._lock:
-            self._subscribers.append((queue, filters))
+        with self._lock:
+            self._subscribers.append((queue, filters, loop))
 
         try:
             while True:
@@ -141,9 +174,9 @@ class EventBus:
                 yield event
         finally:
             # Clean up subscriber on exit (even if cancelled)
-            async with self._lock:
+            with self._lock:
                 try:
-                    self._subscribers.remove((queue, filters))
+                    self._subscribers.remove((queue, filters, loop))
                 except ValueError:
                     # Already removed, ignore
                     pass

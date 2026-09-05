@@ -17,8 +17,10 @@ writes, and it carries the instrument bindings.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import contextlib
 import importlib.util
-import time
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -34,6 +36,46 @@ __all__ = ["WorkflowEngine", "WorkflowExecutionError"]
 
 class WorkflowExecutionError(Exception):
     """Raised when workflow execution fails."""
+
+
+class _WorkflowRunner:
+    """A dedicated thread running its own asyncio loop, for workflow scripts.
+
+    Workflows used to run as tasks on the server's own event loop, so any
+    blocking call inside a template — a sync numpy or scipy call, a driver
+    that bypassed AdapterBase._to_thread, a bare time.sleep — froze every HTTP
+    request and every WebSocket for its duration. Templates are ordinary user
+    Python and cannot be assumed non-blocking, so they get their own loop.
+
+    Events still reach the server's subscribers: EventBus records the loop each
+    subscriber registered on and marshals delivery onto it (core/events.py).
+    """
+
+    def __init__(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        self._ready = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, name="labpilot-workflows", daemon=True
+        )
+        self._thread.start()
+        self._ready.wait()
+
+    def _run(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._loop.call_soon(self._ready.set)
+        self._loop.run_forever()
+
+    def submit(self, coro) -> concurrent.futures.Future:
+        """Schedule `coro` on the workflow loop.
+
+        Cancelling the returned future propagates to the underlying task, so
+        the engine can keep using it as its cancellation handle.
+        """
+        return asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+    def shutdown(self) -> None:
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=5.0)
 
 
 class WorkflowEngine:
@@ -54,7 +96,8 @@ class WorkflowEngine:
         """
         self.session = session
         self.store = store
-        self._running_workflows: dict[str, asyncio.Task] = {}
+        self._running_workflows: dict[str, concurrent.futures.Future] = {}
+        self._runner = _WorkflowRunner()
         self._execution_results: dict[str, dict[str, Any]] = {}
         # Latest session.report_progress(...) payload per workflow_id — kept
         # after completion (only the session's progress *context* is
@@ -101,11 +144,11 @@ class WorkflowEngine:
                 execution_id=execution_id,
             )
 
-            # Start execution task
-            task = asyncio.create_task(
+            # Start execution on the workflow loop, not the server's.
+            future = self._runner.submit(
                 self._execute_workflow(graph, execution_id)
             )
-            self._running_workflows[workflow_id] = task
+            self._running_workflows[workflow_id] = future
 
             # Emit start event
             await self.session.bus.emit(
@@ -135,13 +178,13 @@ class WorkflowEngine:
         if workflow_id not in self._running_workflows:
             return
 
-        task = self._running_workflows[workflow_id]
-        task.cancel()
+        future = self._running_workflows[workflow_id]
+        future.cancel()
 
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        # wrap_future bridges the workflow loop's completion back to this one
+        # without blocking the server loop while cancellation lands.
+        with contextlib.suppress(asyncio.CancelledError, concurrent.futures.CancelledError):
+            await asyncio.wrap_future(future)
 
         # discard, not del: awaiting the cancelled task runs its own finally
         # block, which already removes this entry. A plain `del` therefore

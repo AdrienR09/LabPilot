@@ -13,8 +13,8 @@ This enables:
 
 from __future__ import annotations
 
-import asyncio
 import functools
+import threading
 from abc import abstractmethod
 from typing import Any
 
@@ -85,15 +85,14 @@ class AdapterBase(Readable):
         # and a workflow, say — could interleave a write and a read on the
         # same connection. One lock per adapter instance makes each device's
         # traffic sequential while leaving different devices fully parallel.
-        # Created lazily: adapters are constructed outside the event loop
-        # (adapter_registry introspection, the catalogue), where asyncio.Lock()
-        # has no loop to bind to.
-        self._io_lock: asyncio.Lock | None = None
-
-    def _lock(self) -> asyncio.Lock:
-        if self._io_lock is None:
-            self._io_lock = asyncio.Lock()
-        return self._io_lock
+        #
+        # A threading.Lock, taken *inside* the worker thread, rather than an
+        # asyncio.Lock around the await: asyncio primitives are bound to the
+        # loop that first awaits them, and an adapter is legitimately reached
+        # from more than one loop (the server's, and the workflow runner's own
+        # — see core/workflow/engine.py). Holding it on the worker thread also
+        # means a queued call never blocks an event loop.
+        self._io_lock = threading.Lock()
 
     @property
     @abstractmethod
@@ -263,8 +262,14 @@ class AdapterBase(Readable):
         # they reach the intended function instead.
         if kwargs:
             func = functools.partial(func, **kwargs)
-        async with self._lock():
-            return await anyio.to_thread.run_sync(func, *args)
+
+        lock = self._io_lock
+
+        def _locked_call(*call_args):
+            with lock:
+                return func(*call_args)
+
+        return await anyio.to_thread.run_sync(_locked_call, *args)
 
     @property
     def connected(self) -> bool:
