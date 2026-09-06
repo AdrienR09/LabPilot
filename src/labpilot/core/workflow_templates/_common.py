@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from labpilot.core.data.dataset import Dataset
 from labpilot.core.device.motion import move_and_settle, move_and_settle_by_moving_flag
 from labpilot.core.device.parameter import ParamRole
 from labpilot.core.device.schema import DeviceSchema
@@ -45,24 +46,17 @@ def integration_time_key(detector) -> str | None:
 
 
 def spectrum_key(detector) -> str:
-    """This 1D detector's value-array readable key name.
+    """This detector's value-array readable key name.
 
-    Prefers what the adapter declares: a readable parameter that is not an
-    axis. Falls back to the old rule — everything except a key containing
-    "wavelength" — for an adapter that declares no roles, which is why a
-    Raman spectrometer reporting `shift`/`intensity` used to return its
-    *shift axis* as the spectrum.
+    Now one question asked of the schema (`DeviceSchema.primary`) rather
+    than a rule about names. The old rule — everything except a key
+    containing "wavelength", take the first — returned the *axis* for a
+    Raman spectrometer reporting `shift`/`intensity`.
     """
-    schema = detector.schema
-    declared = [
-        p.name for p in schema.parameters
-        if p.readable and p.role is not ParamRole.AXIS and p.is_array
-    ]
-    if declared:
-        return declared[0]
-    readable = schema.readable
-    candidates = [k for k in readable if "wavelength" not in k.lower()]
-    return candidates[0] if candidates else next(iter(readable))
+    primary = detector.schema.primary
+    if primary is not None:
+        return primary.name
+    return next(iter(detector.schema.readable))
 
 
 def detector_axes(readable, sample_reading: dict) -> tuple[str, list[str], list[list[float]]]:
@@ -92,10 +86,21 @@ def detector_axes(readable, sample_reading: dict) -> tuple[str, list[str], list[
     "wavelengths" alongside "spectrum"), its real per-sample values — a
     schema alone only declares dtypes, not sizes.
     """
-    # `readable` is a DeviceSchema (which declares which parameter is an
-    # axis) or, from a workflow instance saved before this existed, the
-    # legacy `schema.readable` dict. Only the first can answer the
-    # question outright; the second falls back to the name hints below.
+    # A reading is a `Dataset` now (core/data/dataset.py) and answers this
+    # outright — which array is the measurement, which axes index it, in
+    # what units — so nothing below runs for a live detector. The rest is
+    # the compatibility path for a workflow instance saved as source
+    # before `Dataset` existed, which passes the legacy `schema.readable`
+    # dict and a plain dict reading.
+    if isinstance(sample_reading, Dataset):
+        primary = sample_reading.primary()
+        axes = sample_reading.axes()
+        return (
+            primary.name,
+            [axis.name for axis in axes],
+            [[float(v) for v in axis.values] for axis in axes],
+        )
+
     schema = readable if isinstance(readable, DeviceSchema) else None
     declared_axis = None
     if schema is not None:

@@ -99,3 +99,22 @@ def test_no_unexpected_adapter_discovery_failures():
     assert not errors, "adapter modules failed to import: " + "; ".join(
         f"{f.module}: {f.error}" for f in errors
     )
+
+
+def test_no_adapter_bypasses_the_dataset_lift():
+    """`AdapterBase.read()` is the single place a plain reading becomes a
+    self-describing `Dataset` (`core/data/dataset.py`), which is what lets
+    301 adapters gain axes and units without any of them changing. An
+    adapter overriding `read()` opts itself out silently — its readings
+    stay bare dicts and every downstream view falls back to guessing.
+
+    `fake_tunable_laser` did exactly that, with an override that duplicated
+    its own `_read_sync()` verbatim and so also bypassed the thread pool.
+    """
+    from labpilot.instruments._base import AdapterBase
+
+    bypassing = sorted(
+        key for key, adapter_cls in adapter_registry.list().items()
+        if adapter_cls.read is not AdapterBase.read
+    )
+    assert bypassing == []

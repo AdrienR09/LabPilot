@@ -272,6 +272,25 @@ class DeviceSchema(BaseModel):
         return self.first(settable=True, tags={INTEGRATION_TIME})
 
     @property
+    def primary(self) -> Parameter | None:
+        """The parameter this device is *about* — its measurement.
+
+        The highest-rank readable parameter that is not itself an axis,
+        earliest declaration winning a tie. The schema-level counterpart of
+        `Dataset.primary()`, for a caller that must choose before taking a
+        reading; it replaces `spectrum_key()`, which excluded any key
+        containing "wavelength" and took whatever was left, and so returned
+        the *axis* for a Raman spectrometer reporting `shift`/`intensity`.
+        """
+        candidates = [
+            p for p in self.parameters
+            if p.readable and p.role is not ParamRole.AXIS
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda p: p.ndim)
+
+    @property
     def position_axes(self) -> tuple[str, ...]:
         """Names of the continuous, commandable axes — what a move control
         should offer. Previously recomputed by name/dtype inspection in

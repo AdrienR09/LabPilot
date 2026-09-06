@@ -81,14 +81,6 @@ class TunableLaserMotorAdapter(AdapterBase):
             "units": "nm"
         }
 
-    async def read(self) -> dict[str, Any]:
-        """Read current wavelength."""
-        return {
-            "wavelength_nm": self._wavelength,
-            "position": self._wavelength,  # For motor interface compatibility
-            "units": "nm"
-        }
-
     async def set(self, **kwargs) -> None:
         """Set laser wavelength."""
         if "wavelength_nm" in kwargs:

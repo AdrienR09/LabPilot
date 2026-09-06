@@ -21,6 +21,7 @@ from typing import Any
 
 import anyio
 
+from labpilot.core.data.dataset import Dataset
 from labpilot.core.device.protocols import Readable
 from labpilot.core.device.schema import DeviceSchema
 from labpilot.core.errors import (
@@ -211,13 +212,17 @@ class AdapterBase(Readable):
             await self._to_thread(self._disconnect_sync)
             self._connected = False
 
-    async def read(self) -> dict[str, Any]:
+    async def read(self) -> Dataset:
         """Read current device state (async wrapper).
 
-        Returns:
-            Dict mapping axis names to values. Keys must match schema.readable.
+        Returns a `Dataset` (`core/data/dataset.py`) — which *is* the dict
+        this always returned, with the same keys and the same values, plus
+        the structure `_read_sync()` cannot express: which array is an axis
+        of which, in what units, from which device. Adapters keep
+        implementing `_read_sync()` as a plain dict; lifting happens here,
+        once, for all 301 of them.
         """
-        return await self._to_thread(self._read_sync)
+        return Dataset.from_reading(self.schema, await self._to_thread(self._read_sync))
 
     def validate_write(self, values: dict[str, Any]) -> dict[str, Any]:
         """Check a write against this device's schema; return it coerced.
