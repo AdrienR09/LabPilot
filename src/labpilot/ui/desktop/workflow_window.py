@@ -389,6 +389,10 @@ class WorkflowWindow(QMainWindow):
 
         self.result_view = None
         self._result_view_adapter: Optional[type] = None
+        # Kept so a template that declares no RESULT_UI can still get a
+        # view once its first data arrives — see _ensure_result_view.
+        self._graph = graph
+        self._declared_result_ui = bool(result_ui)
         if result_ui:
             self._add_result_view(result_ui)
             crosshair = result_ui.get("crosshair")
@@ -1312,12 +1316,14 @@ class WorkflowWindow(QMainWindow):
             # progress while a run is active.
             self._axes_control_dock.setVisible(not running)
 
-        if self.result_view is None:
-            return
         # While running: the in-progress frame. Once finished: fall back to
         # the last completed run's full result, so the view doesn't go
         # blank the moment the poller's live-progress entry stops updating.
         source = state.get("progress") if running else (state.get("last_results") or {})
+        if self.result_view is None:
+            self._ensure_result_view(source)
+        if self.result_view is None:
+            return
         if source and self._result_view_adapter is not None:
             self._result_view_adapter.update(self.result_view, self._result_ui_spec, source)
             if self._result_view_adapter is OdmrResultViewAdapter:
@@ -1343,6 +1349,33 @@ class WorkflowWindow(QMainWindow):
             self.result_view.hide_crosshair()
         else:
             self.result_view.show_crosshair()
+
+    def _ensure_result_view(self, source: dict | None) -> None:
+        """Build a result view from the data, for a template that declares
+        no `RESULT_UI`.
+
+        Such a template used to get no result view at all — the window
+        opened with the toolbar and the parameter dock and nothing to look
+        at, because the view is chosen from the script's static text
+        before any data exists. `core/workflow/view.py::pick_view` chooses
+        from the result itself, which is only possible now that a result
+        describes itself; it can therefore only run once the first frame
+        arrives, which is what this is.
+
+        A declared `RESULT_UI` always wins and is never overridden here.
+        """
+        if self._declared_result_ui or not source:
+            return
+        from labpilot.core.workflow.view import pick_view
+
+        spec = pick_view(source)
+        if not spec:
+            return
+        self._add_result_view(spec)
+        crosshair = spec.get("crosshair")
+        if crosshair and self.result_view is not None:
+            self._wire_crosshair(self._graph, crosshair)
+            self._add_optimizer_dock(crosshair)
 
     def _wire_crosshair(self, graph: dict[str, Any], crosshair: dict) -> None:
         """Attaches a crosshair (see Image2DResultView.add_crosshair /
