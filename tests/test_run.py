@@ -327,6 +327,65 @@ async def test_an_aborted_scan_still_unstages_the_detector():
     assert not getattr(detector, "_staged", False)
 
 
+# --- The template that was rewritten onto a plan --------------------------
+
+
+async def _run_omniscan(**roles: str) -> tuple[dict, dict]:
+    """omniscan on a 2x3 grid, returning its result and its last frame."""
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "src/labpilot/core/workflow_templates/omniscan.py"
+    )
+    spec = importlib.util.spec_from_file_location("omniscan_under_test", path)
+    template = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(template)
+    template.SCAN_AXES = ["x", "y"]
+    template.AXIS_RANGES = {"x": (-1.0, 1.0, 2), "y": (-1.0, 1.0, 3)}
+
+    session = await _session(**roles)
+    sink: dict = {}
+    session.set_progress_context("wf", "exec", sink)
+    result = await template.run(session)
+    return result, sink.get("wf", {})
+
+
+async def test_omniscan_on_a_plan_returns_what_it_returned_before():
+    """The template lost ~100 executable statements — the block that
+    discovered its own result's size on the first callback and allocated
+    mid-flight. What it returns is unchanged, which is the whole claim:
+    the Qt views, the React client, `pick_view` and the HDF5 writer see
+    exactly what they saw."""
+    result, frame = await _run_omniscan(
+        actuator="mock_basic_actuator_nd", detector="mock_basic_detector_1d"
+    )
+
+    assert result["axis_names"][:2] == ["x", "y"]
+    assert result["shape"][:2] == [2, 3]
+    assert result["actuator_axis_count"] == 2
+    assert result["axis_units"]["x"] == "mm"
+    assert len(result["data"]) == int(np.prod(result["shape"]))
+    assert not any(value is None for value in result["data"])
+    # The roles that produced it still travel with the result, for the
+    # provenance recorded in the saved file.
+    assert result["actuator"] == "actuator"
+    assert set(frame) >= {"data", "shape", "axis_names", "completed", "total"}
+
+
+async def test_omniscans_hardware_timed_path_still_works_and_now_streams():
+    """The scanner path used to re-publish the whole accumulated frame on
+    every poll. It yields the samples that arrived since the last one."""
+    result, frame = await _run_omniscan(scanner="mock_ni_scanner")
+
+    assert result["shape"] == [2, 3]
+    assert result["axis_names"] == ["x", "y"]
+    assert result["scanner"] == "scanner"
+    assert not any(value is None for value in result["data"])
+    assert frame["completed"] == frame["total"] == 6
+
+
 # --- Refusing an impossible run -------------------------------------------
 
 

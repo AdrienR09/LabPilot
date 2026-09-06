@@ -69,6 +69,7 @@ class Run:
         self.state = ScanState.idle()
         self.data: list[Any] = descriptor.allocate()
         self.completed = 0
+        self._filled = 0
         self.started_at: float | None = None
         self.finished_at: float | None = None
 
@@ -137,9 +138,15 @@ class Run:
         total = self.descriptor.points
 
         try:
+            per_point = max(1, self.descriptor.per_point)
             async for patch in points:
                 patch.apply(self.data)
-                self.completed += 1
+                # Progress is measured in values delivered, not in patches
+                # received: a per-point plan yields one point per patch, but
+                # a hardware-timed scanner delivers whatever arrived since
+                # the last poll, which is a burst of samples.
+                self._filled += patch.size
+                self.completed = min(total, self._filled // per_point)
                 await self._publish(patch, total)
 
                 # The point boundary: the one place a scan can be paused or

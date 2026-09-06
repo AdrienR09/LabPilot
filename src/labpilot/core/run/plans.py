@@ -238,6 +238,92 @@ class ScanPlan:
 
 
 @dataclass
+class HardwareTimedScanPlan:
+    """A whole frame clocked by one device, rather than a software loop.
+
+    A scanner that drives its own position waveform and detector readback
+    off one hardware clock (`instruments/hardware_scan_mixin.py`) returns
+    samples in bursts, not per point. It is polled, and each poll yields a
+    patch covering only the samples that arrived since the last one — so
+    the wire carries the new samples rather than the whole accumulated
+    frame, which is what the capability class this replaces re-sent on
+    every poll.
+
+    Axes are declared first-slowest, like every other plan here.
+    `build_scan_waveform` uses the opposite convention (fast axis first),
+    so the reversal lives here — one place, rather than in each template
+    that drives a scanner.
+    """
+
+    axes: list[ScanAxis]
+    scanner: str = "scanner"
+    frequency: float = 5000.0
+    poll_interval: float = 0.1
+    name: str = "hardware_timed_scan"
+    params: dict[str, Any] = field(default_factory=dict)
+
+    async def describe(self, session: Session) -> RunDescriptor:
+        if not 1 <= len(self.axes) <= 2:
+            raise ValueError(
+                f"A hardware-timed scan drives 1 or 2 axes (only the fast axis is "
+                f"genuinely hardware-clocked on this class of device), but "
+                f"{len(self.axes)} were given: {[a.name for a in self.axes]}. "
+                f"Use a per-point ScanPlan for a 3+ axis scan."
+            )
+        scanner = session.get(self.scanner)
+        axes = tuple(
+            Axis(
+                name=axis.name, values=axis.values,
+                unit=axis.unit or _unit_of(session, self.scanner, axis.name),
+                kind="actuator", device=self.scanner, param=axis.name,
+            )
+            for axis in self.axes
+        )
+        return RunDescriptor(
+            run_uid=str(uuid.uuid4()),
+            plan_name=self.name,
+            axes=axes,
+            scan_axis_count=len(axes),
+            value_name="data",
+            value_unit=_unit_of(session, self.scanner, "data"),
+            devices={self.scanner: scanner.schema.model_dump(mode="json")},
+            params=dict(self.params),
+        )
+
+    async def points(
+        self, session: Session, descriptor: RunDescriptor
+    ) -> AsyncIterator[DatasetPatch]:
+        import asyncio
+
+        scanner = session.get(self.scanner)
+        names = [axis.name for axis in self.axes]
+        ranges = {axis.name: (axis.start, axis.stop) for axis in self.axes}
+        resolution = {axis.name: int(axis.points) for axis in self.axes}
+
+        await scanner.configure_scan(list(reversed(names)), ranges, resolution, self.frequency)
+        await scanner.start_scan()
+        delivered = 0
+        try:
+            while True:
+                chunk = await scanner.get_scan_data()
+                arrived = int(chunk["completed"])
+                if arrived > delivered:
+                    yield DatasetPatch(
+                        array=descriptor.value_name,
+                        index=delivered,
+                        values=np.asarray(chunk["data"][delivered:arrived], dtype=float),
+                        run_uid=descriptor.run_uid,
+                        seq=arrived,
+                    )
+                    delivered = arrived
+                if chunk["done"]:
+                    break
+                await asyncio.sleep(self.poll_interval)
+        finally:
+            await scanner.stop_scan()
+
+
+@dataclass
 class TimeSeriesPlan:
     """Read one detector repeatedly, on a fixed interval.
 
