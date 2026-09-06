@@ -184,6 +184,11 @@ class Motor(Instrument):
         device's current position."""
         return self._move(args, kwargs, tolerance, max_polls, relative=True)
 
+    def stop(self) -> None:
+        """Stop where it is — what to reach for when a move is running long
+        or a scan is going somewhere it should not."""
+        self._client.stop(self.id)
+
     def _move(self, args: tuple, kwargs: dict, tolerance: float, max_polls: int,
               *, relative: bool = False) -> float | dict[str, float]:
         targets = resolve_targets(args, kwargs, self.axes, self.id)

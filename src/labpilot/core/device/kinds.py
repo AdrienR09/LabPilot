@@ -172,6 +172,55 @@ class Motor(_InstrumentWrapper):
             return float(position[axis])
         return {ax: float(position[ax]) for ax in targets}
 
+    async def stop(self) -> None:
+        """Stop moving, as soon as this device can.
+
+        The missing half of aborting a scan. Cancelling the task that runs
+        a scan ends the *software* loop, but a stage already commanded to a
+        position keeps travelling there — so "abort" left the sample moving
+        after the run was reported stopped.
+
+        Three ways down, in order of how directly they reach the hardware:
+
+        1. the adapter's own `stop()`/`halt()`/`abort()`, if it has one —
+           measured across the registry, essentially none do today, which
+           is why the fallback matters and why this is worth declaring as a
+           contract an adapter can now opt into;
+        2. a declared `stop`-like action (`schema.actions`);
+        3. commanding the device to the position it is currently at, which
+           is how a controller with no halt command is stopped: the new
+           setpoint supersedes the one in flight.
+
+        Never raises. An abort must stop as many axes as it can and still
+        report the run as aborted rather than failed.
+        """
+        adapter = self._adapter
+        for name in ("stop", "halt", "abort"):
+            method = getattr(adapter, name, None)
+            if callable(method):
+                result = method()
+                if hasattr(result, "__await__"):
+                    await result
+                return
+
+        actions = dict(getattr(adapter.schema, "actions", {}) or {})
+        for name in actions:
+            if name.lower() in {"stop", "halt", "abort", "stop_motion"}:
+                method = getattr(adapter, name, None)
+                if callable(method):
+                    result = method()
+                    if hasattr(result, "__await__"):
+                        await result
+                    return
+
+        # Nothing to halt with: hold position by re-commanding where the
+        # device already is.
+        axes = self.axes
+        if not axes:
+            return
+        position = await adapter.read()
+        await adapter.write({axis: float(position[axis]) for axis in axes if axis in position})
+
     def _resolve_targets(self, args: tuple, kwargs: dict) -> dict[str, float]:
         return resolve_targets(args, kwargs, self.axes, self._adapter.schema.name)
 

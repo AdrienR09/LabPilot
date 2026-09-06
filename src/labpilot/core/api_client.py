@@ -154,6 +154,14 @@ class LabPilotClient:
         resp = self._client.post(f"/api/dashboard/instruments/{instrument_id}/unstage")
         _check(resp)
 
+    def stop(self, instrument_id: str) -> None:
+        """Stop a moving instrument where it is. See `Motor.stop()` — the
+        decision of *how* to stop (a halt command, a declared action, or
+        holding position) is made server-side, so the console stops a
+        device exactly as a workflow does."""
+        resp = self._client.post(f"/api/dashboard/instruments/{instrument_id}/stop")
+        _check(resp)
+
     def get_ui_prefs(self, instrument_id: str) -> dict[str, Any]:
         """This instrument's native-UI display preferences (set via its
         Settings modal in the React Instruments tab — see

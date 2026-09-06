@@ -27,6 +27,7 @@ from labpilot.core.config.instrument_ui_prefs import (
     get_instrument_ui_prefs,
     set_instrument_ui_prefs,
 )
+from labpilot.core.device.kinds import wrap as wrap_instrument
 from labpilot.core.errors import (
     NotConnectedError,
     ParameterError,
@@ -437,6 +438,34 @@ class DashboardManager:
         await (adapter.stage() if staged else adapter.unstage())
         return self.get_instrument_status(instrument_id)
 
+    async def stop_instrument(self, instrument_id: str) -> InstrumentStatus:
+        """Stop a moving instrument where it is (`Motor.stop()`).
+
+        The half of "abort" that reaches hardware: ending the loop that
+        commands a stage does not stop the stage, which keeps travelling to
+        the position last commanded. Routed rather than reimplemented for
+        the console, so the remote handle and the in-process wrapper stop a
+        device the same way — including the fallback for the (measured:
+        nearly all) adapters that declare no halt command of their own.
+        """
+        if instrument_id not in self.instruments:
+            raise ValueError(f"Instrument {instrument_id} not found")
+
+        adapter = self.instruments[instrument_id]["adapter"]
+        if not adapter.connected:
+            raise NotConnectedError(
+                f"{instrument_id} is not connected", device=instrument_id
+            )
+        device = wrap_instrument(adapter)
+        stop = getattr(device, "stop", None)
+        if stop is None:
+            raise UnsupportedOperationError(
+                f"{instrument_id} is not something that moves, so it cannot be stopped",
+                device=instrument_id,
+            )
+        await stop()
+        return self.get_instrument_status(instrument_id)
+
     async def call_instrument_action(self, instrument_id: str, action_name: str) -> InstrumentStatus:
         """Invoke one of an instrument's declared `DeviceSchema.actions` —
         a zero-argument adapter method that isn't a settable-parameter
@@ -714,6 +743,23 @@ async def _set_staged(instrument_id: str, staged: bool):
     except Exception as e:
         verb = "Stage" if staged else "Unstage"
         raise HTTPException(status_code=502, detail=f"{verb} failed: {e}") from e
+
+
+@router.post("/instruments/{instrument_id}/stop")
+async def stop_instrument(instrument_id: str):
+    """Stop a moving instrument where it is (see `Motor.stop()`)."""
+    manager = get_dashboard_manager()
+    try:
+        status = await manager.stop_instrument(instrument_id)
+        return {"success": True, "data": status.model_dump()}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except NotConnectedError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except UnsupportedOperationError as e:
+        raise HTTPException(status_code=501, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Stop failed: {e}") from e
 
 
 @router.post("/instruments/{instrument_id}/actions/{action_name}")

@@ -78,6 +78,19 @@ def test_move_rel_is_relative_to_where_it_is(lab):
     assert stage.get_position("x") == pytest.approx(3.0, abs=0.05)
 
 
+def test_a_stage_can_be_stopped_from_the_console(lab):
+    """The console could read and write, so the only way to stop a stage
+    running away was to kill the process. `stop()` decides how to stop
+    server-side — a halt command, a declared action, or holding position —
+    so the console and a workflow stop a device by the same rule."""
+    stage = lab[ACTUATOR]
+    stage.move_abs(x=2.0)
+
+    stage.stop()
+
+    assert stage.get_position("x") == pytest.approx(2.0, abs=0.05)
+
+
 def test_axes_exclude_settings_that_are_not_positions(lab):
     """The ND mock declares a velocity alongside x/y/z. Offering it as a
     fourth axis is how `move_abs(5.0)` ends up refusing to work on a
