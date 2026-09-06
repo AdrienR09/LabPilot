@@ -22,8 +22,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from labpilot.core.config.paths import labpilot_home
-from labpilot.core.session import Session
-from labpilot.core.workflow.store import WorkflowSummary
+
+# `Session` and `WorkflowSummary` used to be imported here and were used by
+# nothing. They made the config layer — which everything else loads early,
+# including the storage paths — depend on the session and the whole
+# workflow engine, so importing `core.storage` first produced a genuine
+# import cycle (storage -> config -> workflow -> engine -> storage).
 
 __all__ = [
     "ConfigError",

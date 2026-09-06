@@ -212,6 +212,7 @@ async def _run_hardware_timed(session: Session) -> dict:
             "total": chunk["total"],
         })
 
+    axis_units = {name: scanner.schema.units.get(name, "") for name in active_axes}
     scan = HardwareTimedScanCapability(scanner)
     result = await scan.run_scan(waveform_axes, ranges, resolution, SCAN_FREQUENCY, on_progress=on_progress)
     axis_positions = [list(p) for p in reversed(result["positions"])]
@@ -222,6 +223,7 @@ async def _run_hardware_timed(session: Session) -> dict:
         "axis_names": active_axes,
         "axis_positions": axis_positions,
         "actuator_axis_count": len(active_axes),
+        "axis_units": axis_units,
         "shape": shape,
         "data": result["data"],  # flat, row-major (last axis varies fastest) — reshape to `shape` to use
     }
@@ -290,7 +292,17 @@ async def _run_per_point(session: Session) -> dict:
                     f"limit. Reduce AXIS_RANGES' point counts or the detector's own "
                     f"resolution."
                 )
+            primary = readings[0].primary() if hasattr(readings[0], "primary") else None
             state.update({
+                # Units travel with the result so the saved HDF5 (and any
+                # view) can label the axes — see core/storage/runs.py.
+                "value_unit": primary.unit if primary is not None else "",
+                "axis_units": {
+                    name: actuator.schema.units.get(name, "") for name in active_axes
+                } | {
+                    axis.name: axis.unit
+                    for axis in (readings[0].axes() if hasattr(readings[0], "axes") else ())
+                },
                 "value_key": value_key,
                 "per_point": per_point,
                 "shape": actuator_shape + detector_shape,
@@ -313,6 +325,8 @@ async def _run_per_point(session: Session) -> dict:
             "axis_names": state["axis_names"],
             "axis_positions": state["axis_positions"],
             "actuator_axis_count": len(active_axes),
+            "value_unit": state["value_unit"],
+            "axis_units": state["axis_units"],
             "completed": completed,
             "total": grid_progress["total"],
         })
@@ -341,6 +355,8 @@ async def _run_per_point(session: Session) -> dict:
         "axis_names": state["axis_names"],
         "axis_positions": state["axis_positions"],
         "actuator_axis_count": len(active_axes),
+        "value_unit": state["value_unit"],
+        "axis_units": state["axis_units"],
         "shape": state["shape"],
         "data": state["data"],  # flat, row-major (last axis varies fastest) — reshape to `shape` to use
     }

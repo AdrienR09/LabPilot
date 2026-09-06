@@ -409,6 +409,21 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         """Health check endpoint."""
         return ApiResponse(success=True, data={"status": "healthy"})
 
+    @app.get("/api/runs", response_model=ApiResponse)
+    async def list_runs(limit: int = 50, server: LabPilotServer = Depends(get_server)):
+        """Every saved run, newest first.
+
+        Runs are now written to HDF5 and indexed automatically as they
+        finish (see core/storage/runs.py). Without a route to read the
+        index back, the provenance catalogue would be as unreachable as it
+        was when nothing constructed it at all.
+        """
+        try:
+            runs = await server.workflow_engine.runs.list_runs(limit=limit)
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Run catalogue unavailable: {e}") from e
+        return ApiResponse(success=True, data=runs)
+
     @app.get("/api/session/status", response_model=ApiResponse)
     async def get_session_status(server: LabPilotServer = Depends(get_server)):
         """Get current session status."""

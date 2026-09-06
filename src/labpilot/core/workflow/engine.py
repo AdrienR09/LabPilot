@@ -20,15 +20,21 @@ import asyncio
 import concurrent.futures
 import contextlib
 import importlib.util
+import re
 import threading
 import uuid
 from pathlib import Path
 from typing import Any
 
+from labpilot.core.data.dataset import Dataset, RunMeta
 from labpilot.core.events import Event, EventKind
 from labpilot.core.session import Session
+from labpilot.core.storage.runs import RunStore
 from labpilot.core.workflow.graph import WorkflowGraph
-from labpilot.core.workflow.instrument_roles import read_required_instruments_from_file
+from labpilot.core.workflow.instrument_roles import (
+    read_required_instruments_from_file,
+    read_result_ui_from_file,
+)
 from labpilot.core.workflow.store import WorkflowStore
 
 __all__ = ["WorkflowEngine", "WorkflowExecutionError"]
@@ -104,6 +110,11 @@ class WorkflowEngine:
         # cleared, see _execute_workflow's finally block) so a poller sees
         # the last frame rather than nothing once a run finishes.
         self._live_progress: dict[str, dict] = {}
+        # Every run is written to HDF5 and indexed — see
+        # core/storage/runs.py. Until this existed the only persistence was
+        # a File->Save button inside the Qt app, so a scan run from the web
+        # UI, the console or a headless server left nothing on disk.
+        self.runs = RunStore()
 
     def get_live_progress(self, workflow_id: str) -> dict | None:
         return self._live_progress.get(workflow_id)
@@ -298,6 +309,8 @@ class WorkflowEngine:
                 )
             node_results.update(await self._execute_script(script_path))
 
+            await self._save_run(graph, execution_id, node_results, "completed")
+
             # Workflow completed successfully
             self.store.log_execution(
                 workflow_id,
@@ -319,7 +332,11 @@ class WorkflowEngine:
             )
 
         except asyncio.CancelledError:
-            # Workflow was cancelled
+            # Stopping a scan must not throw away what it already measured:
+            # save the last progress frame, with its untaken points as NaN.
+            await self._save_run(
+                graph, execution_id, self._live_progress.get(workflow_id) or {}, "cancelled"
+            )
             self.store.log_execution(
                 workflow_id,
                 graph.metadata.get("version", 1),
@@ -329,7 +346,11 @@ class WorkflowEngine:
             raise
 
         except Exception as e:
-            # Workflow failed
+            # Same reasoning as cancellation above — a scan that failed at
+            # point 900 of 1000 still measured 900 points.
+            await self._save_run(
+                graph, execution_id, self._live_progress.get(workflow_id) or {}, "failed"
+            )
             self.store.log_execution(
                 workflow_id,
                 graph.metadata.get("version", 1),
@@ -360,6 +381,49 @@ class WorkflowEngine:
             self.session.clear_progress_context()
             if workflow_id in self._running_workflows:
                 del self._running_workflows[workflow_id]
+
+    async def _save_run(
+        self, graph: WorkflowGraph, execution_id: str,
+        result: dict[str, Any], status: str,
+    ) -> None:
+        """Write this run to HDF5 and index it.
+
+        Never raises: a scan that acquired real data must not be reported
+        as failed because the disk was full, and a save failure must not
+        mask the original error on the failure path. `RunStore` reports and
+        records; this only guards against something unexpected above it.
+        """
+        if not result:
+            return
+        try:
+            script_path = graph.metadata.get("script_path")
+            # A saved workflow instance's file is `<template>_<epoch>.py`;
+            # the template name is what identifies the run to a person.
+            stem = Path(script_path).stem if script_path else graph.id
+            plan_name = re.sub(r"_\d{9,}$", "", stem)
+            meta = RunMeta(
+                # The execution id is already a uuid4 and already appears
+                # in every lifecycle event and the store's execution log, so
+                # it is the run's identity everywhere rather than a second
+                # one invented here.
+                run_uid=execution_id,
+                plan_name=plan_name,
+                devices={
+                    role: self.session.get_raw(name).schema.model_dump(mode="json")
+                    for role, name in (graph.metadata.get("instrument_bindings") or {}).items()
+                    if name and name in self.session.devices
+                },
+            )
+            result_ui = read_result_ui_from_file(script_path) if script_path else {}
+            dataset = Dataset.from_result(result, meta, result_ui)
+            if not dataset.arrays:
+                return  # nothing numeric to store (e.g. a pure-action workflow)
+            await self.runs.save(
+                dataset, status=status,
+                metadata={"workflow_id": graph.id, "execution_id": execution_id},
+            )
+        except Exception as e:
+            print(f"⚠️  Could not persist run for workflow {graph.id}: {e}")
 
     def get_running_workflows(self) -> list[str]:
         """Get list of currently running workflow IDs."""

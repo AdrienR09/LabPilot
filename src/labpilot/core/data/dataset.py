@@ -313,6 +313,55 @@ class Dataset(dict):
 
         return cls(arrays, meta, raw=reading)
 
+    # --- Construction from a workflow result ------------------------------
+
+    @classmethod
+    def from_result(
+        cls,
+        result: Mapping[str, Any],
+        meta: RunMeta | None = None,
+        result_ui: Mapping[str, Any] | None = None,
+    ) -> Dataset:
+        """Lift a workflow template's returned dict into a `Dataset`.
+
+        Templates return plain dicts and will keep doing so — a workflow is
+        a `.py` file with `async def run(session) -> dict`, and that is the
+        best thing in this codebase for scripting. This is the seam that
+        lets those dicts be *stored* without every template having to learn
+        a new return type.
+
+        Two shapes are recognised, both of which the existing templates
+        already produce:
+
+        - the N-D scan convention (`data` flat + `shape` + `axis_names` +
+          `axis_positions`, optionally `actuator_axis_count`,
+          `value_unit` and `axis_units`), which
+          `omniscan` and the scanners emit — reshaped into one array with
+          real coordinates, and the leading `actuator_axis_count` axes
+          marked movable;
+        - anything else: each array-valued key becomes its own array. When
+          the template declares a `RESULT_UI`, its `x_key`/`value_key`
+          pairing says which of those is a coordinate; without one, arrays
+          simply carry index axes.
+
+        Scalars never become arrays — they go to `meta.params`, which is
+        where a fit centre or a repeat count belongs.
+        """
+        meta = meta or RunMeta()
+        scalars = {
+            key: value for key, value in result.items()
+            if not isinstance(value, (list, tuple, np.ndarray))
+        }
+        if scalars:
+            meta = RunMeta(
+                run_uid=meta.run_uid, plan_name=meta.plan_name,
+                timestamp=meta.timestamp, device=meta.device,
+                devices=meta.devices, params={**dict(meta.params), **scalars},
+            )
+
+        arrays = _scan_arrays(result) or _loose_arrays(result, result_ui)
+        return cls(arrays, meta)
+
     # --- Storage ----------------------------------------------------------
 
     def to_hdf5(self, group: Any) -> None:
@@ -387,6 +436,102 @@ def _axes_for(
 # Conventional names for index axes, matching what the existing result
 # views already expect for a 1-D trace and a 2-D image.
 _INDEX_NAMES = {(1, 0): "sample", (2, 0): "row", (2, 1): "col"}
+
+# Keys the N-D scan convention uses. Every scanning template emits these
+# (see core/workflow_templates/omniscan.py); `actuator_axis_count` says how
+# many of the LEADING axes belong to the actuator and can therefore be
+# driven, which is exactly `Axis.movable`.
+_SCAN_KEYS = ("data", "shape", "axis_names", "axis_positions")
+
+
+def _scan_arrays(result: Mapping[str, Any]) -> dict[str, DataArray]:
+    """The N-D scan convention, as one array with real coordinates."""
+    if not all(key in result for key in _SCAN_KEYS):
+        return {}
+    shape = tuple(int(n) for n in result["shape"])
+    names = list(result["axis_names"])
+    positions = list(result["axis_positions"])
+    if len(names) != len(shape) or len(positions) != len(shape):
+        return {}
+
+    # An unfinished or aborted scan leaves `None` where a point was never
+    # taken; NaN is what that means to every reader of the file.
+    flat = np.array(
+        [np.nan if v is None else v for v in result["data"]], dtype=float
+    )
+    if flat.size != int(np.prod(shape)):
+        return {}
+
+    movable = int(result.get("actuator_axis_count") or 0)
+    device = result.get("actuator") or result.get("scanner")
+    units = dict(result.get("axis_units") or {})
+    axes = tuple(
+        Axis(
+            name=name,
+            values=np.asarray(coordinates, dtype=float),
+            unit=units.get(name, ""),
+            kind="actuator" if index < movable else "detector",
+            device=device if index < movable else None,
+            param=name if index < movable else None,
+        )
+        for index, (name, coordinates) in enumerate(zip(names, positions, strict=False))
+    )
+    return {
+        "data": DataArray(
+            name="data", values=flat.reshape(shape),
+            unit=str(result.get("value_unit") or ""), axes=axes,
+        )
+    }
+
+
+def _loose_arrays(
+    result: Mapping[str, Any], result_ui: Mapping[str, Any] | None
+) -> dict[str, DataArray]:
+    """Every array-valued key as its own array.
+
+    A `RESULT_UI` naming an `x_key` tells us that array is a coordinate of
+    the value it is paired with — the one useful thing that map knows that
+    a bare dict does not, borrowed here while it still exists.
+    """
+    ui = dict(result_ui or {})
+    axis_names = {ui.get(key) for key in ("x_key", "fit_x_key")} - {None}
+    value_names = {ui.get(key) for key in ("y_key", "value_key", "matrix_key")} - {None}
+
+    coordinates: dict[str, Axis] = {}
+    for name in axis_names:
+        value = result.get(name)
+        if isinstance(value, (list, tuple, np.ndarray)) and len(value):
+            coordinates[name] = Axis(name=name, values=np.asarray(value, dtype=float))
+
+    arrays: dict[str, DataArray] = {}
+    for name, value in result.items():
+        if not isinstance(value, (list, tuple, np.ndarray)):
+            continue
+        values = np.asarray(
+            [np.nan if v is None else v for v in value]
+            if isinstance(value, (list, tuple)) else value
+        )
+        if name in coordinates:
+            axis = coordinates[name]
+            arrays[name] = DataArray(name, axis.values, axes=(axis,))
+            continue
+        axes: tuple[Axis, ...] = ()
+        if name in value_names and values.ndim >= 1:
+            paired = next(
+                (a for a in coordinates.values() if len(a) == values.shape[-1]), None
+            )
+            if paired is not None:
+                axes = (paired,) if values.ndim == 1 else (
+                    Axis.index("row", values.shape[0]), paired
+                )
+        arrays[name] = DataArray(
+            name, values,
+            axes=axes or tuple(
+                Axis.index(_INDEX_NAMES.get((values.ndim, i), f"dim{i}"), values.shape[i])
+                for i in range(values.ndim)
+            ),
+        )
+    return arrays
 
 
 @dataclass(frozen=True, slots=True, eq=False)
