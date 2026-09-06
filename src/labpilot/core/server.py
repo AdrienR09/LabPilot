@@ -134,67 +134,6 @@ class QtLaunchRequest(BaseModel):
     instrument_type: str
     dimensionality: str
 
-
-# Any single WORKFLOW_PROGRESS field with more elements than this is
-# dropped from the WebSocket broadcast (see LabPilotServer._event_broadcaster)
-# — large enough that a live 1D scan/spectrum curve still broadcasts in
-# full, small enough that a 2D image or ND scan's flat data array (which
-# can reach millions of elements) doesn't get re-serialized every point.
-_PROGRESS_BROADCAST_LIMIT = 4096
-
-
-def _flat_len(value: Any, _depth: int = 0) -> int:
-    """Element count of `value`, flattening one level of list-of-lists
-    (image-style 2D payloads) so e.g. a 100x100 image reports 10000, not
-    100. Non-list values (scalars, dicts, None) count as 0 — only list
-    payloads are ever large enough to matter here."""
-    if not isinstance(value, list):
-        return 0
-    if _depth == 0 and value and isinstance(value[0], list):
-        return sum(_flat_len(row, _depth + 1) for row in value)
-    return len(value)
-
-
-def _strip_oversized_fields(data: dict) -> dict:
-    """Recursively drops any list value whose flattened element count
-    exceeds `_PROGRESS_BROADCAST_LIMIT`, at any nesting depth reached
-    through dicts — not just `data`'s own top-level fields.
-
-    A purely top-level filter (this function's earlier shape) missed
-    WORKFLOW_COMPLETED entirely: its `data` is `{"workflow_id":...,
-    "execution_id":..., "results": {...}}` (engine.py's
-    _execute_workflow) — the template's whole return value (e.g.
-    omniscan's own bulky "data" array) lives one level deeper, inside
-    that "results" dict, not as one of `data`'s own top-level values. A
-    top-level-only check sees "results" itself (a dict, not a list) and
-    lets the whole thing through unexamined — measured: a single
-    un-thinned WORKFLOW_COMPLETED for one modest 30x30 2D-detector scan
-    produced a ~70MB WebSocket frame, ~65x over that protocol's own 1MB
-    limit, killing the connection outright rather than just being slow.
-    Recursing into dict values (but not lists — a list's own elements
-    are never themselves oversized dicts/lists in anything this project
-    produces) catches "results.data" the same way it catches
-    WORKFLOW_PROGRESS's own top-level "data"."""
-    result: dict = {}
-    for key, value in data.items():
-        if isinstance(value, dict):
-            result[key] = _strip_oversized_fields(value)
-        elif isinstance(value, list):
-            # Strict "<": a 64x64 camera frame (a common real detector
-            # resolution) is exactly 4096 elements — with "<=" here that
-            # coincidence let every READING event for that exact size
-            # sail through un-thinned (900 points x ~81KB each = ~72MB of
-            # otherwise-avoidable per-point broadcast traffic, measured).
-            if _flat_len(value) < _PROGRESS_BROADCAST_LIMIT:
-                result[key] = value
-            # else: omit — client re-fetches the full value via REST
-            # (off the GUI thread — see WorkflowStatePoller in the
-            # desktop app) instead of receiving it over the socket.
-        else:
-            result[key] = value
-    return result
-
-
 # WebSocket Manager
 class WebSocketManager:
     """Manages WebSocket connections for real-time communication."""
@@ -299,54 +238,30 @@ class LabPilotServer:
         """Broadcast LabPilot events to WebSocket clients."""
         try:
             async for event in self.session.bus.subscribe():
-                # A WORKFLOW_PROGRESS event's data includes the scan's full
-                # accumulated flat array (session.report_progress() sends
-                # the whole thing, not a delta) — for an ND scan that's up
-                # to millions of floats, growing every point. json.dumps-ing
-                # that on EVERY reported point, unconditionally, is pure
-                # waste with zero WebSocket clients connected (the common
-                # case today) and was competing for the same asyncio event
-                # loop the workflow script itself runs on — a real
-                # contributor to "scan acquisition takes a long time".
-                # Skip the serialize+broadcast entirely when nobody's
-                # listening.
+                # Skip the serialize+broadcast entirely when nobody is
+                # listening: json.dumps on every reported point competes
+                # for the same event loop the workflow runs on, and with
+                # zero WebSocket clients connected (the common case) it is
+                # pure waste.
                 if not self.websocket_manager.active_connections:
                     continue
                 event_dict = event.to_dict()
-                # Applies to EVERY event kind, not just WORKFLOW_PROGRESS
-                # (a narrower version of this check used to only cover
-                # that one kind — but WORKFLOW_COMPLETED's own data
-                # carries the FULL final `results` dict (engine.py's
-                # _execute_workflow, "results": node_results — the whole
-                # return value of the template's run(), e.g. omniscan's
-                # complete flat "data" array), and READING's own "values"
-                # is only small for a 0D/1D detector — for a 2D/ND one,
-                # "small" means per-point-array-sized (4096+ elements for
-                # a 64x64 camera, 65536+ for a hyperspectral cube), sent
-                # on EVERY point. Measured: an un-thinned WORKFLOW_COMPLETED
-                # for one modest 30x30 2D-detector scan produced a single
-                # ~15MB WebSocket text frame — over that protocol's own
-                # 1MB frame limit, which outright KILLED the connection
-                # (websockets.exceptions.ConnectionClosedError: "message
-                # too big"), not just a slow one. Broadcasting the full
-                # array on every single point/every completion also
-                # reintroduces the same O(size) cost per tick, now
-                # permanently (a workflow window is always listening
-                # while open). The WS push only needs to tell the client
-                # "something changed and here's the shape of it" — the
-                # client re-fetches the actual full snapshot via GET
-                # execution_state (off the GUI thread — see
-                # WorkflowStatePoller._request_snapshot in the desktop
-                # app) whenever a kind it cares about arrives with a field
-                # missing. Every RESULT_UI-producing template names its
-                # bulky array differently (omniscan's "data",
-                # generic_2d_scan/confocal_scanner/hyperspectral_imaging's
-                # "image"/"live_image", ...), so this drops by estimated
-                # size, not by name — any field whose total element count
-                # (flattening one level of nesting for image-style
-                # list-of-lists) is past the threshold.
-                event_dict = dict(event_dict)
-                event_dict["data"] = _strip_oversized_fields(event_dict["data"])
+                # No thinning here any more. Producers publish a summary
+                # plus per-point `DatasetPatch`es (see
+                # Session.report_progress/report_reading and
+                # core/data/dataset.py::summarise_arrays), so the bus
+                # carries no bulk arrays to strip. This used to be
+                # `_strip_oversized_fields`, which walked every outgoing
+                # event and dropped any list past 4096 flattened
+                # elements — necessary at the time, because one un-thinned
+                # completion frame for a 30x30 scan produced a ~70 MB
+                # frame and killed the connection outright, but it was
+                # guessing at the socket, by size, about payloads whose
+                # meaning it did not know. Its own history records the
+                # cost: a first version that looked only at top-level
+                # fields missed WORKFLOW_COMPLETED entirely, and a `<=`
+                # where a `<` belonged let every 64x64 camera frame —
+                # exactly 4096 elements — through un-thinned.
                 event_data = {
                     "type": "event",
                     "event": event_dict,

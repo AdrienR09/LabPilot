@@ -14,7 +14,9 @@ from __future__ import annotations
 import contextvars
 import tomllib
 from pathlib import Path
+from typing import Any
 
+from labpilot.core.data.dataset import DatasetPatch, summarise_arrays
 from labpilot.core.device.kinds import wrap as _wrap_instrument
 from labpilot.core.device.protocols import Readable
 from labpilot.core.events import Event, EventBus, EventKind
@@ -176,23 +178,29 @@ class Session:
         _progress_context_var.set(None)
 
     async def report_progress(self, data: dict) -> None:
-        """Publish incremental progress from inside a running workflow
-        script — e.g. one more pixel of a scan. Stored for REST polling
-        (WorkflowEngine.get_live_progress) and emitted on the bus for any
-        subscriber. A no-op outside of a workflow execution, so scripts can
-        call it unconditionally without checking context first.
+        """Publish the full accumulated result so far from inside a running
+        workflow script — e.g. the whole scan array to date.
 
-        `data` is expected to carry the FULL accumulated result so far
-        (e.g. an ND scan's whole flat data array to date) — cheap to store
-        here (a dict/list reference, not a copy), but server.py's
-        _event_broadcaster deliberately strips oversized fields before
-        broadcasting this on the bus's WebSocket-facing side, since
-        resending the whole, ever-growing array on every call would be
-        broadcast to any subscriber every time. A script producing point-
-        by-point data at a rate where that matters (e.g. omniscan.py)
-        should ALSO call report_reading() below for each new point — a
-        deliberately small, bounded-size companion built for exactly that
-        live per-point path."""
+        `data` is stored verbatim for REST polling
+        (`WorkflowEngine.get_live_progress`), which is cheap: a dict
+        reference, not a copy. What goes **on the bus** is
+        `summarise_arrays(data)` — every array replaced by its length.
+
+        The bus reaches every connected client on every tick, so a growing
+        result array does not belong on it. That used to be enforced at the
+        socket by `server.py::_strip_oversized_fields`, which dropped any
+        list longer than 4096 elements from every outgoing event; it
+        existed because one un-thinned completion frame for a 30x30 scan
+        produced a ~70 MB frame and killed the WebSocket. Deciding here
+        instead makes it a rule rather than a threshold, and puts it where
+        the meaning of each field is known.
+
+        Clients already work this way — a progress event is a "something
+        changed" signal, and the data arrives either as a `DatasetPatch`
+        per point (see `report_reading`) or by re-fetching the snapshot
+        over REST. A no-op outside a workflow execution, so scripts can
+        call it unconditionally.
+        """
         ctx = _progress_context_var.get()
         if ctx is None:
             return
@@ -202,38 +210,52 @@ class Session:
         await self.bus.emit(
             Event(
                 kind=EventKind.WORKFLOW_PROGRESS,
-                data={"workflow_id": workflow_id, "execution_id": execution_id, **data},
+                data={
+                    "workflow_id": workflow_id,
+                    "execution_id": execution_id,
+                    **summarise_arrays(data),
+                },
             )
         )
 
-    async def report_reading(self, data: dict) -> None:
-        """Publish ONE new data point from inside a running workflow
-        script — e.g. one grid point of a scan, as it's acquired.
+    async def report_reading(
+        self, patch: DatasetPatch | dict, **meta: Any
+    ) -> None:
+        """Publish ONE new data point as it is acquired.
 
-        Unlike report_progress() above, `data` here is expected to be
-        small and the SAME size on every call (this one point's own
-        contribution, not the growing whole) — mirrors how qudi's
-        ScanningProbeLogic and pyMoDAQ's DAQ_Viewer push live updates via
-        Qt signals carrying just the new data, and this codebase's own
-        EventKind.READING ("one data point from detector(s)"), which
-        existed but wasn't wired to anything until this. Because each
-        call is bounded in size regardless of how far the scan has
-        progressed, a listener (see backend_client.py's
-        WorkflowStatePoller) can genuinely apply every single one — no
-        throttling, no refetching a snapshot — the way report_progress()
-        needs server-side thinning + client-side debounced refetching to
-        stay cheap. Not stored anywhere (report_progress already owns the
-        durable/REST-facing accumulated state) — purely a live broadcast.
-        A no-op outside of a workflow execution, matching report_progress().
+        A `DatasetPatch` is the whole point: it is the size of the new
+        data, not of the scan so far, so a listener can apply every single
+        one without throttling however far the scan has progressed —
+        unlike `report_progress`, whose payload grows. This mirrors how
+        qudi's `ScanningProbeLogic` and pyMoDAQ's `DAQ_Viewer` push live
+        updates carrying just the new values.
+
+        `meta` is the run-level description a client needs in order to
+        place the patch (shape, axis names, axis positions). Send it on the
+        first reading of a run and omit it afterwards: repeating it costs
+        an axis array per point, which for a 1800-channel spectrometer is
+        most of the traffic the patch was introduced to avoid. Clients
+        merge whatever is present and keep the rest.
+
+        A plain dict is still accepted, for a workflow instance saved as
+        source before `DatasetPatch` existed. Not stored anywhere —
+        `report_progress` already owns the durable, REST-facing state.
+        A no-op outside a workflow execution.
         """
         ctx = _progress_context_var.get()
         if ctx is None:
             return
         workflow_id, execution_id, _sink = ctx
+        payload = patch.to_wire() if isinstance(patch, DatasetPatch) else dict(patch)
         await self.bus.emit(
             Event(
                 kind=EventKind.READING,
-                data={"workflow_id": workflow_id, "execution_id": execution_id, **data},
+                data={
+                    "workflow_id": workflow_id,
+                    "execution_id": execution_id,
+                    **payload,
+                    **meta,
+                },
             )
         )
 

@@ -223,3 +223,41 @@ def test_a_patch_on_the_wire_is_the_size_of_the_new_data():
     assert wire == {"array": "data", "index": 1000, "values": [0.0, 1.0, 2.0, 3.0],
                     "run_uid": "r", "seq": 7}
     assert len(json.dumps(wire)) < 120
+
+
+# --- What goes on the bus -------------------------------------------------
+
+
+def test_summarise_replaces_arrays_with_their_lengths():
+    """The rule that replaced `server.py::_strip_oversized_fields`, which
+    dropped any list past 4096 flattened elements at the socket. Deciding
+    at the producer needs no threshold — and the one that existed had
+    already been wrong twice, missing `WORKFLOW_COMPLETED` entirely in its
+    first version and letting every 64x64 camera frame through on a `<=`."""
+    from labpilot.core.data.dataset import summarise_arrays
+
+    summary = summarise_arrays(
+        {"completed": 3, "total": 10, "data": [1.0] * 5000, "shape": [50, 100]}
+    )
+    assert summary == {
+        "completed": 3, "total": 10, "arrays": {"data": 5000, "shape": 2},
+    }
+
+
+def test_a_small_array_is_summarised_too_not_just_a_big_one():
+    """No threshold means no edge to get wrong: the caller learns what was
+    omitted and re-fetches or applies patches, whatever the size."""
+    from labpilot.core.data.dataset import summarise_arrays
+
+    assert summarise_arrays({"xs": [1, 2]}) == {"arrays": {"xs": 2}}
+
+
+def test_summarise_reaches_arrays_nested_in_a_dict():
+    """`WORKFLOW_COMPLETED`'s payload is `{"results": {...}}`, so a
+    top-level-only rule misses the one event that carries the whole final
+    array — which is exactly what the first version of the function this
+    replaces did."""
+    from labpilot.core.data.dataset import summarise_arrays
+
+    summary = summarise_arrays({"results": {"data": [1.0] * 100, "peak": 3.0}})
+    assert summary == {"results": {"peak": 3.0, "arrays": {"data": 100}}}

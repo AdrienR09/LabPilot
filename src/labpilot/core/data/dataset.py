@@ -51,6 +51,7 @@ __all__ = [
     "Dataset",
     "DatasetPatch",
     "RunMeta",
+    "summarise_arrays",
 ]
 
 AxisKind = Literal["actuator", "detector", "time", "repeat", "index"]
@@ -590,3 +591,44 @@ class DatasetPatch:
             "run_uid": self.run_uid,
             "seq": self.seq,
         }
+
+
+def summarise_arrays(data: Mapping[str, Any]) -> dict[str, Any]:
+    """`data` with its bulk arrays replaced by their sizes.
+
+    What goes on the event bus. The bus is a live-notification channel
+    reaching every connected client on every tick; a growing result array
+    does not belong on it, and the fix for that is a rule, not a
+    threshold.
+
+    The rule this replaces was `server.py::_strip_oversized_fields`, which
+    walked each outgoing event and dropped any list whose flattened length
+    exceeded 4096. It had to exist because a single un-thinned
+    `WORKFLOW_COMPLETED` for one 30x30 scan produced a ~70 MB frame and
+    killed the WebSocket outright — but it guessed at the socket, from
+    size, about payloads whose meaning it did not know, and its own
+    comments record the cost: a first version that only looked at
+    top-level fields missed `WORKFLOW_COMPLETED` entirely, and a `<=`
+    where a `<` belonged let every 64x64 camera frame — exactly 4096
+    elements — through un-thinned, measured at ~72 MB of avoidable
+    traffic for one scan.
+
+    Deciding here instead means the producer, which knows what each field
+    *is*, states it once. Clients already work this way: they treat a
+    progress event as "something changed" and either splice in the
+    `DatasetPatch` they get per point or re-fetch the snapshot over REST.
+    Naming the omitted arrays and their lengths, rather than dropping them
+    silently, is what tells a client which of the two it needs.
+    """
+    summary: dict[str, Any] = {}
+    arrays: dict[str, int] = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            summary[key] = summarise_arrays(value)
+        elif isinstance(value, (list, tuple, np.ndarray)):
+            arrays[key] = int(np.asarray(value, dtype=object).size)
+        else:
+            summary[key] = value
+    if arrays:
+        summary["arrays"] = arrays
+    return summary

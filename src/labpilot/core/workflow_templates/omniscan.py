@@ -41,6 +41,7 @@ actuator or wait for it to settle.
 
 import numpy as np
 
+from labpilot.core.data.dataset import DatasetPatch
 from labpilot.core.session import Session
 from labpilot.core.workflow.capabilities import (
     HardwareTimedScanCapability,
@@ -330,21 +331,27 @@ async def _run_per_point(session: Session) -> dict:
             "completed": completed,
             "total": grid_progress["total"],
         })
-        # A bounded-size (always `per_point` values, however big the scan
-        # gets) companion to the report_progress() call above — see
-        # Session.report_reading()'s docstring. Drives the desktop app's
-        # live per-point view without it needing to refetch the whole
-        # (potentially multi-million-element) array on every point.
-        await session.report_reading({
-            "index": start,
-            "values": flat_values,
+        # The live per-point path: one `DatasetPatch`, whose size is this
+        # point's own contribution however far the scan has progressed —
+        # see Session.report_reading(). The run-level description (shape,
+        # axis names and positions) goes with the FIRST patch only;
+        # repeating it would ship an axis array per point, which for a
+        # 1800-channel spectrometer is most of the traffic the patch
+        # exists to avoid. Clients merge what is present and keep the rest.
+        description = {} if completed > 1 else {
             "shape": state["shape"],
             "axis_names": state["axis_names"],
             "axis_positions": state["axis_positions"],
             "actuator_axis_count": len(active_axes),
-            "completed": completed,
-            "total": grid_progress["total"],
-        })
+            "value_unit": state["value_unit"],
+            "axis_units": state["axis_units"],
+        }
+        await session.report_reading(
+            DatasetPatch("data", start, flat_values, seq=completed),
+            completed=completed,
+            total=grid_progress["total"],
+            **description,
+        )
 
     scan = ScanCapability(actuator, detector, SETTLE_TOLERANCE, MAX_SETTLE_POLLS)
     await scan.run_grid(active_axes, AXIS_RANGES, hold_positions=hold_targets or None, on_progress=on_progress)

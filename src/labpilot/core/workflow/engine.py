@@ -26,7 +26,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from labpilot.core.data.dataset import Dataset, RunMeta
+from labpilot.core.data.dataset import Dataset, RunMeta, summarise_arrays
 from labpilot.core.events import Event, EventKind
 from labpilot.core.session import Session
 from labpilot.core.storage.runs import RunStore
@@ -326,7 +326,19 @@ class WorkflowEngine:
                     data={
                         "workflow_id": workflow_id,
                         "execution_id": execution_id,
-                        "results": node_results,
+                        # A summary, not the arrays. `node_results` is the
+                        # template's whole return value — for a scan, the
+                        # complete flat data array. One un-thinned
+                        # completion frame for a 30x30 2-D-detector scan
+                        # measured ~70 MB, over the WebSocket protocol's
+                        # own 1 MB frame limit, which killed the connection
+                        # rather than merely being slow. Clients re-fetch
+                        # the full result over REST
+                        # (GET /workflows/{id}/execution_state), which is
+                        # what they already did once it was stripped at the
+                        # socket; the difference is that the omitted arrays
+                        # are now named, so a client knows what to fetch.
+                        "results": summarise_arrays(node_results),
                     },
                 )
             )

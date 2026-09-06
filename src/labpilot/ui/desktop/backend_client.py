@@ -581,14 +581,15 @@ class WorkflowStatePoller(QObject):
             # reconnect): (re)allocate. None-filled like omniscan.py's own
             # server-side buffer, so unfilled points render as gaps, not 0.
             self._live_data = [None] * total
-        self._live_meta = {
-            "shape": shape,
-            "axis_names": data.get("axis_names"),
-            "axis_positions": data.get("axis_positions"),
-            "actuator_axis_count": data.get("actuator_axis_count"),
-            "completed": data.get("completed"),
-            "total": data.get("total"),
-        }
+        # Merge, don't replace: the run-level description (axis names and
+        # positions) arrives with the FIRST patch only and is omitted
+        # afterwards, since repeating it ships an axis array per point.
+        # Overwriting with .get() would blank it on the second point.
+        self._live_meta["shape"] = shape
+        for key in ("axis_names", "axis_positions", "actuator_axis_count",
+                    "value_unit", "axis_units", "completed", "total"):
+            if key in data:
+                self._live_meta[key] = data[key]
         index = data.get("index")
         values = data.get("values")
         if index is not None and values is not None:
