@@ -21,7 +21,34 @@ if [[ "$CONDA_DEFAULT_ENV" != "$CONDA_ENV" ]]; then
 fi
 
 echo "✅ Conda ready"
+
+# The manager spawns its backend by running the `labpilot` console script by
+# name, so a missing/stale install shows up much later as an opaque "server
+# never became ready". Say so here instead.
+#
+# Actually RUN it rather than just checking PATH: pip bakes the entry point's
+# import into the shim at install time, so a shim generated before the
+# packages were renamed still says `from core.cli import main` and dies with
+# ModuleNotFoundError even though `import labpilot` works fine. `command -v`
+# passes happily in that state.
+if ! command -v labpilot >/dev/null 2>&1; then
+    echo "❌ The 'labpilot' command is not on PATH in $CONDA_ENV"
+    echo "   Install the package first:  pip install -e $PROJECT_ROOT"
+    exit 1
+fi
+if ! labpilot --help >/dev/null 2>&1; then
+    echo "❌ $(command -v labpilot) is stale — it runs, but its import fails:"
+    labpilot --help 2>&1 | tail -3 | sed 's/^/   /'
+    echo "   Reinstall to regenerate it:  pip install -e $PROJECT_ROOT --no-deps"
+    exit 1
+fi
+echo "✅ labpilot: $(command -v labpilot)"
+echo "   Runs are saved automatically to ${LABPILOT_HOME:-$HOME/.labpilot}/data"
 echo ""
+
+FRONTEND_LOG=/tmp/labpilot_frontend.log
+SERVER_LOG="$HOME/.labpilot/logs/manager_server.log"
+FRONTEND_PID=""
 
 # Defensive pre-flight cleanup: a previous run that was killed via a closed
 # window rather than Ctrl-C can leave the backend/frontend running on these
@@ -40,7 +67,14 @@ sleep 1
 cleanup() {
     echo ""
     echo "🛑 Shutting down..."
-    pkill -f "vite" 2>/dev/null || true
+    # Kill the process group we actually started: `npm run dev` forks vite as
+    # a child, so killing the npm PID alone leaves vite holding port 3000 and
+    # the next launch silently serves the old bundle. pkill -f "vite" was the
+    # blunt version of this and also killed unrelated vite projects.
+    if [[ -n "$FRONTEND_PID" ]]; then
+        kill -- "-$FRONTEND_PID" 2>/dev/null || kill "$FRONTEND_PID" 2>/dev/null || true
+    fi
+    lsof -ti :3000 2>/dev/null | xargs kill -9 2>/dev/null || true
     echo "✅ Done"
 }
 
@@ -51,17 +85,35 @@ trap cleanup EXIT INT TERM
 # env, so make sure it's resolvable regardless of which env got activated above.
 echo "⚛️  Starting React Frontend (port 3000)..."
 cd "$PROJECT_ROOT/frontend"
-PATH="/opt/miniconda3/bin:$PATH" /opt/miniconda3/bin/npm run dev > /tmp/labpilot_frontend.log 2>&1 &
+# Own process group, so cleanup() can take vite down with npm.
+set -m
+PATH="/opt/miniconda3/bin:$PATH" /opt/miniconda3/bin/npm run dev > "$FRONTEND_LOG" 2>&1 &
 FRONTEND_PID=$!
+set +m
 echo "  Frontend PID: $FRONTEND_PID"
 
-# Wait for React to be ready
-echo "  Waiting for React to start..."
-sleep 8
+# Wait until it actually answers, rather than for a fixed 8 seconds: a cold
+# `npm install`ed tree takes longer than that, and a warm one is ready in ~1s.
+echo -n "  Waiting for React to start"
+for _ in $(seq 1 60); do
+    if ! kill -0 $FRONTEND_PID 2>/dev/null; then
+        echo ""
+        echo "❌ Frontend exited during startup — last lines of $FRONTEND_LOG:"
+        tail -20 "$FRONTEND_LOG"
+        exit 1
+    fi
+    if curl -sf -o /dev/null http://localhost:3000; then
+        READY=1
+        break
+    fi
+    echo -n "."
+    sleep 1
+done
+echo ""
 
-if ! kill -0 $FRONTEND_PID 2>/dev/null; then
-    echo "❌ Frontend failed to start"
-    tail /tmp/labpilot_frontend.log
+if [[ -z "${READY:-}" ]]; then
+    echo "❌ Frontend never answered on http://localhost:3000 — last lines of $FRONTEND_LOG:"
+    tail -20 "$FRONTEND_LOG"
     exit 1
 fi
 
@@ -77,7 +129,33 @@ echo ""
 # --external-backend here instead if you want to point this at an
 # already-running/remote server rather than let the manager own one.
 echo "🪟 Launching Qt Manager (it will start its own backend server)..."
+echo "   Backend log: $SERVER_LOG"
+# The managed server appends to that log across launches, so note where this
+# launch starts writing — otherwise a failure here tails the PREVIOUS run's
+# traceback, which reads exactly like a live error and is not one.
+LOG_OFFSET=0
+if [[ -f "$SERVER_LOG" ]]; then
+    LOG_OFFSET=$(wc -c < "$SERVER_LOG" | tr -d ' ')
+fi
+# Run from the module's own directory: manager_qt_webview.py imports its
+# siblings flat (`from console_window import ...`), so it needs that directory
+# on sys.path — `python -m labpilot.ui.desktop.manager_qt_webview` from the
+# repo root would fail on those imports.
 cd "$PROJECT_ROOT/src/labpilot/ui/desktop"
-python manager_qt_webview.py "$@"
+# Note the status directly rather than via `if ! ...`, where `$?` is the
+# negation's own result and every failure reports as status 0.
+STATUS=0
+python manager_qt_webview.py "$@" || STATUS=$?
+if [[ $STATUS -ne 0 ]]; then
+    echo ""
+    echo "❌ Manager exited with status $STATUS."
+    # Its most common failure is the backend subprocess it owns failing to
+    # come up, and that process logs to a file rather than to this terminal.
+    if [[ -f "$SERVER_LOG" ]]; then
+        echo "   Backend output from THIS launch ($SERVER_LOG):"
+        tail -c "+$((LOG_OFFSET + 1))" "$SERVER_LOG" | tail -20 | sed 's/^/   /'
+    fi
+    exit $STATUS
+fi
 
 # Cleanup runs on exit

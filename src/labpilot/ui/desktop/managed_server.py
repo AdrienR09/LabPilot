@@ -62,9 +62,18 @@ class ManagedServer:
         except OSError as exc:
             self._start_error = str(exc)
 
-    def wait_until_ready(self, timeout: float = 10.0) -> None:
+    def wait_until_ready(self, timeout: float = 60.0) -> None:
         """Blocks until the spawned server process is actually answering
-        requests — or raises, with a clear reason, if it never does."""
+        requests — or raises, with a clear reason, if it never does.
+
+        The timeout is generous because startup cost is dominated by
+        importing the adapter registry — 301 adapters across pymeasure,
+        pylablib and the hand-written drivers — which is measured at
+        ~12-14s on a cold filesystem cache here. A limit near that figure
+        turns an ordinary slow start into a launch failure; a process
+        that died is detected directly by `poll()` below, on its own
+        timescale, so waiting longer costs nothing in the failure case.
+        """
         if self._start_error is not None:
             raise RuntimeError(f"Could not launch the LabPilot server process: {self._start_error}")
 
