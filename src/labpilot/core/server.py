@@ -973,7 +973,12 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/workflows/{workflow_id}/stop", response_model=ApiResponse)
     async def stop_workflow(workflow_id: str, server: LabPilotServer = Depends(get_server)):
-        """Stop a running workflow."""
+        """Stop a running workflow.
+
+        A workflow running a plan stops at its next point boundary, keeping
+        what it measured and telling its actuators to stop; anything else is
+        cancelled where it stands. See WorkflowEngine.stop_workflow.
+        """
         if not server.workflow_engine:
             raise HTTPException(status_code=503, detail="Workflow engine not available")
         try:
@@ -981,6 +986,35 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
             return ApiResponse(success=True, data={"message": f"Stopped workflow {workflow_id}"})
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
+
+    @app.post("/api/workflows/{workflow_id}/pause", response_model=ApiResponse)
+    async def pause_workflow(workflow_id: str, server: LabPilotServer = Depends(get_server)):
+        """Hold a running scan at its next point boundary, resumable.
+
+        409 when this workflow is not running a plan: a script running its
+        own loop has no boundary to hold at, and reporting a pause that did
+        not happen is what the old FSM-only pause did.
+        """
+        if not server.workflow_engine:
+            raise HTTPException(status_code=503, detail="Workflow engine not available")
+        if not await server.workflow_engine.pause_workflow(workflow_id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Workflow {workflow_id} is not running a pausable plan",
+            )
+        return ApiResponse(success=True, data=server.workflow_engine.run_state(workflow_id))
+
+    @app.post("/api/workflows/{workflow_id}/resume", response_model=ApiResponse)
+    async def resume_workflow(workflow_id: str, server: LabPilotServer = Depends(get_server)):
+        """Continue a paused scan from the point where it stopped."""
+        if not server.workflow_engine:
+            raise HTTPException(status_code=503, detail="Workflow engine not available")
+        if not await server.workflow_engine.resume_workflow(workflow_id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Workflow {workflow_id} is not running a pausable plan",
+            )
+        return ApiResponse(success=True, data=server.workflow_engine.run_state(workflow_id))
 
     @app.delete("/api/workflows/{workflow_id}", response_model=ApiResponse)
     async def unload_workflow(workflow_id: str, server: LabPilotServer = Depends(get_server)):
@@ -1118,6 +1152,10 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         latest = server.workflow_store.get_latest_execution(workflow_id)
         return ApiResponse(success=True, data={
             "running": running,
+            # Present only while a plan is executing: whether it is paused,
+            # and how far through it is, without inferring either from the
+            # size of the last progress frame.
+            "run": server.workflow_engine.run_state(workflow_id),
             "execution_id": latest["execution_id"] if latest else None,
             "progress": progress,
             "last_status": latest["status"] if latest else None,

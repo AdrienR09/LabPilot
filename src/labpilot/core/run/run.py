@@ -48,7 +48,19 @@ if TYPE_CHECKING:
     from labpilot.core.run.descriptor import RunDescriptor
     from labpilot.core.session import Session
 
-__all__ = ["Run", "RunAbortedError"]
+__all__ = ["Run", "RunAbortedError", "active_run"]
+
+# Runs currently executing, by workflow id. A run executes on the workflow
+# loop inside a template's own call stack, so there is otherwise no handle
+# on it from the server loop where a Stop or Pause request arrives — which
+# is why stopping a workflow could only ever cancel the whole task. Keyed
+# by workflow id because that is what the REST routes address.
+_ACTIVE: dict[str, Run] = {}
+
+
+def active_run(workflow_id: str) -> Run | None:
+    """The run this workflow is currently executing, if any."""
+    return _ACTIVE.get(workflow_id)
 
 
 class RunAbortedError(Exception):
@@ -73,6 +85,7 @@ class Run:
         self.started_at: float | None = None
         self.finished_at: float | None = None
 
+        self.workflow_id: str | None = None
         self._abort_requested = False
         self._loop: asyncio.AbstractEventLoop | None = None
         # Set = "keep going". Cleared by pause(), which is what the point
@@ -136,6 +149,13 @@ class Run:
         self.started_at = time.time()
         self.state = ScanState(state=State.RUNNING, message="Running")
         total = self.descriptor.points
+        self.workflow_id = self.session.progress_context_id()
+        if self.workflow_id:
+            # Publish the handle a Stop or Pause request needs. Registered
+            # here rather than by the engine because the engine hands
+            # control to the template, and it is the template that decides
+            # to run a plan.
+            _ACTIVE[self.workflow_id] = self
 
         try:
             per_point = max(1, self.descriptor.per_point)
@@ -168,6 +188,8 @@ class Run:
             self.state = ScanState(state=State.DONE, message="Completed")
         finally:
             self.finished_at = time.time()
+            if self.workflow_id and _ACTIVE.get(self.workflow_id) is self:
+                del _ACTIVE[self.workflow_id]
 
         return self.result()
 

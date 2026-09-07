@@ -177,6 +177,15 @@ class Session:
     def clear_progress_context(self) -> None:
         _progress_context_var.set(None)
 
+    def progress_context_id(self) -> str | None:
+        """The workflow id this task is running under, if any.
+
+        What a `Run` registers itself against so that a Stop or Pause
+        arriving on the server loop can find it (`core/run/run.py`).
+        """
+        ctx = _progress_context_var.get()
+        return ctx[0] if ctx else None
+
     async def report_progress(self, data: dict) -> None:
         """Publish the full accumulated result so far from inside a running
         workflow script — e.g. the whole scan array to date.

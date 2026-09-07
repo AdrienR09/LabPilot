@@ -309,6 +309,32 @@ async def test_a_motor_with_no_halt_command_is_stopped_by_holding_position():
     assert position["x"] == pytest.approx(1.0, abs=0.05)
 
 
+async def test_a_stage_keeps_travelling_when_only_the_loop_is_cancelled():
+    """The counterfactual that makes `stop()` worth having, measured on a
+    stage with a real motion model: a move left in flight covers a further
+    4.5 mm while nothing is driving it, because cancelling the loop that
+    commanded it says nothing to the hardware. Stopping it holds it."""
+    session = await _session(stage="mock_basic_actuator_nd")
+    stage = session.get("stage")
+
+    async def travel_after(*, stop: bool) -> float:
+        await stage.write({"x": 8.0})  # a move in flight, as an abort leaves one
+        await asyncio.sleep(0.05)
+        before = (await stage.read())["x"]
+        if stop:
+            await stage.stop()
+        await asyncio.sleep(0.5)
+        return abs((await stage.read())["x"] - before)
+
+    uncontrolled = await travel_after(stop=False)
+    await stage.write({"x": -8.0})
+    await asyncio.sleep(0.5)
+    stopped = await travel_after(stop=True)
+
+    assert uncontrolled > 1.0, "the mock stage does not model motion; the test proves nothing"
+    assert stopped < 0.1
+
+
 async def test_an_aborted_scan_still_unstages_the_detector():
     """A detector left staged after an abort is an integrating sensor still
     integrating, and the next run inherits it."""

@@ -28,6 +28,7 @@ from typing import Any
 
 from labpilot.core.data.dataset import Dataset, RunMeta, summarise_arrays
 from labpilot.core.events import Event, EventKind
+from labpilot.core.run.run import RunAbortedError, active_run
 from labpilot.core.session import Session
 from labpilot.core.storage.runs import RunStore
 from labpilot.core.workflow.graph import WorkflowGraph
@@ -181,7 +182,15 @@ class WorkflowEngine:
             raise WorkflowExecutionError(f"Failed to start workflow: {e}") from e
 
     async def stop_workflow(self, workflow_id: str) -> None:
-        """Stop running workflow.
+        """Stop a running workflow.
+
+        A workflow executing a `Plan` is asked to stop at its next point
+        boundary: it keeps the points it has measured, unstages the
+        detector and tells the actuators to stop (see `core/run/run.py`).
+        Cancelling the task is the fallback for a script that runs its own
+        loop — it lands wherever the script is awaiting, which is the only
+        thing that was ever possible before and remains right for a
+        template that is not built on a plan.
 
         Args:
             workflow_id: Workflow ID to stop.
@@ -190,7 +199,15 @@ class WorkflowEngine:
             return
 
         future = self._running_workflows[workflow_id]
-        future.cancel()
+        run = active_run(workflow_id)
+        if run is not None:
+            run.abort()
+            # The run raises RunAbortedError at its next boundary, which the
+            # execution's own handler turns into a saved, cancelled run.
+            with contextlib.suppress(Exception):
+                await asyncio.wrap_future(future)
+        else:
+            future.cancel()
 
         # wrap_future bridges the workflow loop's completion back to this one
         # without blocking the server loop while cancellation lands.
@@ -209,6 +226,53 @@ class WorkflowEngine:
             Event(
                 kind=EventKind.WORKFLOW_STOPPED,
                 data={"workflow_id": workflow_id},
+            )
+        )
+
+    async def pause_workflow(self, workflow_id: str) -> bool:
+        """Hold a running scan at its next point boundary.
+
+        Returns False if this workflow is not currently running a plan —
+        pausing a script that runs its own loop is not something the engine
+        can do safely, and saying so is better than reporting a pause that
+        did not happen (which is what `Session.pause` did: it moved the FSM
+        and the scan carried on).
+        """
+        run = active_run(workflow_id)
+        if run is None:
+            return False
+        run.pause()
+        await self._emit_run_state(workflow_id, "paused")
+        return True
+
+    async def resume_workflow(self, workflow_id: str) -> bool:
+        run = active_run(workflow_id)
+        if run is None:
+            return False
+        run.resume()
+        await self._emit_run_state(workflow_id, "running")
+        return True
+
+    def run_state(self, workflow_id: str) -> dict[str, Any] | None:
+        """Live state of the run in progress, if this workflow is running one."""
+        run = active_run(workflow_id)
+        if run is None:
+            return None
+        return {
+            "run_uid": run.descriptor.run_uid,
+            "plan_name": run.descriptor.plan_name,
+            "state": run.state.state.name.lower(),
+            "paused": run.paused,
+            "aborting": run.aborting,
+            "completed": run.completed,
+            "total": run.descriptor.points,
+        }
+
+    async def _emit_run_state(self, workflow_id: str, state: str) -> None:
+        await self.session.bus.emit(
+            Event(
+                kind=EventKind.STATE_CHANGE,
+                data={"workflow_id": workflow_id, "state": state},
             )
         )
 
@@ -356,6 +420,29 @@ class WorkflowEngine:
                 execution_id=execution_id,
             )
             raise
+
+        except RunAbortedError:
+            # A deliberate stop, not a failure: the run already kept its
+            # points, unstaged the detector and stopped the actuators. It is
+            # recorded exactly as a cancellation, because that is what it is
+            # — the difference from the branch above is only that the scan
+            # chose its own stopping point instead of being unwound at an
+            # arbitrary await.
+            await self._save_run(
+                graph, execution_id, self._live_progress.get(workflow_id) or {}, "cancelled"
+            )
+            self.store.log_execution(
+                workflow_id,
+                graph.metadata.get("version", 1),
+                "cancelled",
+                execution_id=execution_id,
+            )
+            await self.session.bus.emit(
+                Event(
+                    kind=EventKind.WORKFLOW_STOPPED,
+                    data={"workflow_id": workflow_id, "execution_id": execution_id},
+                )
+            )
 
         except Exception as e:
             # Same reasoning as cancellation above — a scan that failed at
