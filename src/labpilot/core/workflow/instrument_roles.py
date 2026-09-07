@@ -36,7 +36,6 @@ __all__ = [
     "read_result_ui_from_file",
     "read_capabilities",
     "read_workflow_params",
-    "write_workflow_param",
 ]
 
 # Constant names read_workflow_params never treats as a tunable workflow
@@ -243,58 +242,6 @@ def read_workflow_params(script_text: str) -> dict[str, object]:
         except Exception:
             continue
     return result
-
-
-def write_workflow_param(script_text: str, name: str, value: object) -> str:
-    """Returns `script_text` with the top-level constant `name`'s value
-    replaced by `value` (re-serialized via `repr`) — a precise, targeted
-    edit using the original assignment's exact source span (the AST
-    value node's lineno/col_offset/end_lineno/end_col_offset), not a
-    blind find-and-replace, so it can't accidentally touch an unrelated
-    later occurrence of the same text elsewhere in the script.
-
-    Raises ValueError if `name` isn't a top-level constant assignment in
-    this script (mirrors `read_workflow_params`'s own filtering — this
-    never creates a new constant, only edits an existing one).
-    """
-    try:
-        tree = ast.parse(script_text)
-    except SyntaxError as e:
-        raise ValueError(f"Script has invalid syntax: {e}") from e
-
-    target_node: Optional[ast.expr] = None
-    for stmt in tree.body:
-        if (
-            isinstance(stmt, ast.Assign)
-            and len(stmt.targets) == 1
-            and isinstance(stmt.targets[0], ast.Name)
-            and stmt.targets[0].id == name
-        ):
-            target_node = stmt.value  # last match wins — matches real Python assignment semantics
-        elif (
-            isinstance(stmt, ast.AnnAssign)
-            and isinstance(stmt.target, ast.Name)
-            and stmt.target.id == name
-            and stmt.value is not None
-        ):
-            target_node = stmt.value
-
-    if target_node is None:
-        raise ValueError(f"{name!r} is not a top-level constant assignment in this script")
-
-    lines = script_text.splitlines(keepends=True)
-    start_line, start_col = target_node.lineno - 1, target_node.col_offset
-    end_line, end_col = target_node.end_lineno - 1, target_node.end_col_offset
-    new_repr = repr(value)
-
-    if start_line == end_line:
-        line = lines[start_line]
-        lines[start_line] = line[:start_col] + new_repr + line[end_col:]
-    else:
-        first = lines[start_line][:start_col] + new_repr
-        last = lines[end_line][end_col:]
-        lines[start_line:end_line + 1] = [first + last]
-    return "".join(lines)
 
 
 def read_template_description(script_text: str) -> str:

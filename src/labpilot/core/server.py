@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import subprocess
 import time
 import uuid
@@ -34,6 +35,7 @@ from labpilot.core.api.dashboard import router as dashboard_router
 from labpilot.core.config import (
     ConfigPersistence,
 )
+from labpilot.core.config.paths import user_workflow_dir
 from labpilot.core.config.template_params import TemplateParamPersistence
 from labpilot.core.config.workflow_sets import WorkflowSetPersistence
 from labpilot.core.events import EventKind
@@ -47,7 +49,6 @@ from labpilot.core.workflow.instrument_roles import (
     read_result_ui,
     read_template_description,
     read_workflow_params,
-    write_workflow_param,
 )
 
 __all__ = ["LabPilotServer", "create_app"]
@@ -205,16 +206,15 @@ class LabPilotServer:
         # (e.g. leftover empty test graphs) is naturally excluded rather
         # than needing explicit cleanup.
         if self.workflow_set_store.get_active_name() is None:
-            seeded_paths = []
+            seeded = []
             for summary in self.workflow_store.list_all():
                 try:
                     graph = self.workflow_store.load(summary.id)
                 except Exception:
                     continue
-                script_path = graph.metadata.get("script_path")
-                if script_path:
-                    seeded_paths.append(script_path)
-            self.workflow_set_store.save(WorkflowSetPersistence.DEFAULT_NAME, seeded_paths)
+                if graph.metadata.get("script_path"):
+                    seeded.append(summary.id)
+            self.workflow_set_store.save(WorkflowSetPersistence.DEFAULT_NAME, seeded)
             self.workflow_set_store.set_active_name(WorkflowSetPersistence.DEFAULT_NAME)
 
         # Start event broadcasting
@@ -436,14 +436,32 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
 
         return ApiResponse(success=True, data=status.model_dump())
 
-    def _loaded_script_paths(server: LabPilotServer) -> list[str]:
-        """Script paths in the currently active workflow-set — the
-        Workflows tab only ever shows workflows whose script_path is in
-        this list (see WorkflowSetPersistence)."""
+    def _loaded_workflow_ids(server: LabPilotServer) -> set[str]:
+        """Which workflows the Workflows tab shows (see
+        WorkflowSetPersistence).
+
+        Entries are workflow ids. A config written before that was true
+        lists script paths instead, so those are mapped to the workflows
+        that use them — which also means several instances of one template
+        no longer have to be several copies of its source in order to be
+        told apart.
+        """
         active = server.workflow_set_store.get_active_name()
         if active is None:
-            return []
-        return server.workflow_set_store.load(active)
+            return set()
+        entries = set(server.workflow_set_store.load(active))
+        loaded = set()
+        for summary in server.workflow_store.list_all():
+            if summary.id in entries:
+                loaded.add(summary.id)
+                continue
+            try:
+                graph = server.workflow_store.load(summary.id)
+            except Exception:
+                continue
+            if graph.metadata.get("script_path") in entries:
+                loaded.add(summary.id)
+        return loaded
 
     def _find_by_script_path(server: LabPilotServer, script_path: str) -> str | None:
         """Workflow id already registered under this script_path, if any."""
@@ -463,12 +481,12 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=503, detail="Workflow store not available")
 
         try:
-            loaded_paths = set(_loaded_script_paths(server))
+            loaded = _loaded_workflow_ids(server)
             workflow_data = []
             for wf in server.workflow_store.list_all():
-                graph = server.workflow_store.load(wf.id)
-                if graph.metadata.get("script_path") not in loaded_paths:
+                if wf.id not in loaded:
                     continue
+                graph = server.workflow_store.load(wf.id)
                 running = bool(server.workflow_engine and server.workflow_engine.is_running(wf.id))
                 latest = server.workflow_store.get_latest_execution(wf.id, include_results=False)
                 bindings = graph.metadata.get("instrument_bindings") or {}
@@ -504,7 +522,7 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
             if request.description:
                 workflow.metadata["description"] = request.description
             version = server.workflow_store.save(workflow, "Initial creation")
-            server.workflow_set_store.add_to_active(workflow.metadata["script_path"])
+            server.workflow_set_store.add_to_active(workflow.id)
 
             return ApiResponse(
                 success=True,
@@ -548,57 +566,52 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/workflows/templates/{template_name}/load", response_model=ApiResponse)
     async def load_workflow_template(template_name: str, server: LabPilotServer = Depends(get_server)):
-        """Instantiate a template as a new, loaded workflow — copies its
-        script into workflow_library/ (mirrors WriteWorkflowScriptTool's
-        copy-and-register pattern exactly) with every declared instrument
-        role starting unbound.
+        """Instantiate a template as a new, loaded workflow, with every
+        declared instrument role starting unbound.
 
-        Pre-filled from this template's last-saved parameter values (see
-        core/config/template_params.py), if any exist — carrying forward
-        AXIS_RANGES/SCAN_AXES/HOLD_POSITIONS/etc. from the last time this
-        same template was configured, rather than always resetting to its
-        hardcoded defaults, "so I can come back to those parameters when
-        reloading the workflow"."""
+        The instance is a store row, not a copy of the template's source.
+        Loading used to write a timestamped copy of the `.py` into the
+        installed package directory (`core/workflow_library/`) — which
+        works only on an editable install, mixes user data into the
+        framework's own files, and had accumulated 27 committed scripts,
+        22 of them the same template across three generations. What
+        distinguishes two instances of one template is their parameters and
+        their bindings, and both are rows.
+
+        Parameters start from this template's last-saved values (see
+        core/config/template_params.py) where it still declares them, so
+        reloading a template comes back to how it was last configured
+        rather than to its hardcoded defaults.
+        """
         if not server.workflow_store:
             raise HTTPException(status_code=503, detail="Workflow store not available")
         template_path = _workflow_templates_dir() / f"{template_name}.py"
         if not template_path.exists():
             raise HTTPException(status_code=404, detail=f"No template named {template_name!r}")
 
-        import re
-        import time as time_module
-
-        import labpilot.core.workflow_library as _workflow_library
-
         text = template_path.read_text()
         required = read_required_instruments(text)
-
-        saved_params = server.template_param_store.load(template_name)
-        if saved_params:
-            current_names = set(read_workflow_params(text).keys())
-            for name, value in saved_params.items():
-                if name not in current_names:
-                    continue  # a param this template no longer declares — drop it rather than inject a stale one
-                try:
-                    text = write_workflow_param(text, name, value)
-                except ValueError:
-                    continue
-
-        slug = re.sub(r"[^a-z0-9]+", "_", template_name.lower()).strip("_") or "workflow"
-        script_dir = Path(_workflow_library.__path__[0])
-        script_path = script_dir / f"{slug}_{int(time_module.time())}.py"
-        script_path.write_text(text)
+        declared = read_workflow_params(text)
+        saved_params = server.template_param_store.load(template_name) or {}
 
         graph = WorkflowGraph(name=template_name.replace("_", " ").title())
-        graph.metadata["script_path"] = str(script_path)
+        graph.metadata["script_path"] = str(template_path)
         graph.metadata["template_name"] = template_name
         graph.metadata["externally_authored"] = True
         graph.metadata["description"] = read_template_description(text)
         graph.metadata["instrument_bindings"] = {role: None for role in required}
+        # Only parameters this template still declares — a saved value for
+        # one it has since dropped is stale, not a setting.
+        graph.metadata["params"] = {
+            name: value for name, value in saved_params.items() if name in declared
+        }
         server.workflow_store.save(graph, f"Loaded from template {template_name!r}")
-        server.workflow_set_store.add_to_active(str(script_path))
+        server.workflow_set_store.add_to_active(graph.id)
 
-        return ApiResponse(success=True, data={"workflow_id": graph.id, "script_path": str(script_path)})
+        return ApiResponse(
+            success=True,
+            data={"workflow_id": graph.id, "script_path": str(template_path)},
+        )
 
     @app.get("/api/workflows/{workflow_id}", response_model=ApiResponse)
     async def get_workflow(workflow_id: str, server: LabPilotServer = Depends(get_server)):
@@ -640,8 +653,32 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         script_path = graph.metadata.get("script_path")
         if not script_path:
             raise HTTPException(status_code=404, detail="No script file for this workflow")
+
+        # A template-derived workflow shares the shipped template file, so
+        # editing it takes a copy first — into the user's own workflow
+        # directory, never into the installed package. Otherwise one
+        # instance's edit would rewrite the template every other instance
+        # (and every future load) runs.
+        if _is_shared_template(script_path):
+            target = user_workflow_dir() / f"{_slugify(graph.name)}_{graph.id[:8]}.py"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            script_path = str(target)
+            graph.metadata["script_path"] = script_path
+            # `params` stays: it is this workflow's configuration, and it
+            # still applies to the copy the same way it applied to the
+            # template. Only the file becomes private.
+            server.workflow_store.save(graph, "Edited script (copied from template)")
         Path(script_path).write_text(request.content)
         return ApiResponse(success=True, data={"path": script_path})
+
+    def _is_shared_template(script_path: str) -> bool:
+        try:
+            return Path(script_path).resolve().parent == _workflow_templates_dir().resolve()
+        except OSError:
+            return False
+
+    def _slugify(name: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "workflow"
 
     @app.get("/api/workflows/{workflow_id}/params", response_model=ApiResponse)
     async def get_workflow_params(workflow_id: str, server: LabPilotServer = Depends(get_server)):
@@ -651,46 +688,68 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         desktop window (workflow_window.py) as a settings panel specific
         to *this* workflow, distinct from any bound instrument's own
         settings. See core/workflow/instrument_roles.py's
-        read_workflow_params."""
+        read_workflow_params.
+
+        The script declares the parameters and their defaults; this
+        workflow's own row (`graph.metadata["params"]`) says where it
+        differs. Reading them merged, in the order the template author
+        wrote them, is what a settings form needs.
+        """
         if not server.workflow_store:
             raise HTTPException(status_code=503, detail="Workflow store not available")
         try:
             graph = server.workflow_store.load(workflow_id)
         except Exception as e:
             raise HTTPException(status_code=404, detail=str(e))
+        return ApiResponse(success=True, data=_workflow_params(graph))
+
+    def _workflow_params(graph: WorkflowGraph) -> dict[str, Any]:
+        """A workflow's parameters: the script's declared defaults, with
+        this instance's saved overrides applied."""
         script_path = graph.metadata.get("script_path")
         if not script_path or not Path(script_path).exists():
-            return ApiResponse(success=True, data={})
-        return ApiResponse(success=True, data=read_workflow_params(Path(script_path).read_text()))
+            return {}
+        declared = read_workflow_params(Path(script_path).read_text())
+        for name, value in (graph.metadata.get("params") or {}).items():
+            if name in declared:
+                declared[name] = value
+        return declared
 
     @app.put("/api/workflows/{workflow_id}/params/{param_name}", response_model=ApiResponse)
     async def set_workflow_param(
         workflow_id: str, param_name: str, request: WorkflowParamUpdateRequest,
         server: LabPilotServer = Depends(get_server),
     ):
-        """Changes one of this workflow's own tunable parameters in place
-        — a precise, targeted edit of just that constant's value in the
-        script text (see write_workflow_param), not a full script
-        rewrite.
+        """Change one of this workflow's own tunable parameters.
 
-        If this instance came from a template (`graph.metadata
-        ["template_name"]`, set by load_workflow_template), also persists
-        the complete resulting parameter set to that template's status
-        file (core/config/template_params.py) — so the NEXT time this
-        template is loaded fresh, it starts from these values instead of
-        the template's original hardcoded defaults."""
+        Stored on the workflow (`graph.metadata["params"]`), applied to the
+        template module when the run starts (see
+        `WorkflowEngine._execute_script`). It used to be written into the
+        script: the instance's private copy of the template had that
+        constant's assignment rewritten in place, through an AST span edit.
+        Which meant configuring a workflow rewrote source code, the values
+        could not be read without parsing Python, and a non-editable
+        install could not be configured at all.
+
+        The declared value in the script is still what says a parameter
+        exists and what type it is — a form needs both, and the template
+        author writes them where they are read.
+
+        If this instance came from a template, the resulting set is also
+        persisted to that template's status file
+        (core/config/template_params.py), so the next fresh load of the
+        same template starts from these values rather than the defaults.
+        """
         if not server.workflow_store:
             raise HTTPException(status_code=503, detail="Workflow store not available")
         try:
             graph = server.workflow_store.load(workflow_id)
         except Exception as e:
             raise HTTPException(status_code=404, detail=str(e))
-        script_path = graph.metadata.get("script_path")
-        if not script_path or not Path(script_path).exists():
-            raise HTTPException(status_code=404, detail="No script file for this workflow")
 
-        script_text = Path(script_path).read_text()
-        current = read_workflow_params(script_text)
+        current = _workflow_params(graph)
+        if not current:
+            raise HTTPException(status_code=404, detail="No script file for this workflow")
         if param_name not in current:
             raise HTTPException(status_code=404, detail=f"{param_name!r} is not a tunable parameter of this workflow")
 
@@ -708,15 +767,14 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
                 detail=f"{param_name!r} expects a {expected_type.__name__}, got {type(new_value).__name__}",
             )
 
-        try:
-            new_script = write_workflow_param(script_text, param_name, new_value)
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e))
-        Path(script_path).write_text(new_script)
+        params = dict(graph.metadata.get("params") or {})
+        params[param_name] = new_value
+        graph.metadata["params"] = params
+        server.workflow_store.save(graph, f"Set {param_name}")
 
         template_name = graph.metadata.get("template_name")
         if template_name:
-            server.template_param_store.save(template_name, read_workflow_params(new_script))
+            server.template_param_store.save(template_name, _workflow_params(graph))
 
         return ApiResponse(success=True, data={"name": param_name, "value": new_value})
 
@@ -1018,8 +1076,8 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
 
     @app.delete("/api/workflows/{workflow_id}", response_model=ApiResponse)
     async def unload_workflow(workflow_id: str, server: LabPilotServer = Depends(get_server)):
-        """Unload from the Workflows tab — removes its script_path from the
-        active workflow-set only. The script file and the WorkflowStore row
+        """Unload from the Workflows tab — removes it from the active
+        workflow-set only. The script file and the WorkflowStore row
         (history/versions) are untouched."""
         if not server.workflow_store:
             raise HTTPException(status_code=503, detail="Workflow store not available")
@@ -1028,9 +1086,11 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=404, detail=str(e))
 
-        script_path = graph.metadata.get("script_path")
-        if script_path:
-            server.workflow_set_store.remove_from_active(script_path)
+        # Both forms: a workflow loaded before the set stored ids is listed
+        # by its script path.
+        server.workflow_set_store.remove_from_active(
+            workflow_id, graph.metadata.get("script_path") or ""
+        )
         return ApiResponse(success=True, data={"message": f"Unloaded {workflow_id}"})
 
     @app.post("/api/workflows/load", response_model=ApiResponse)
@@ -1055,7 +1115,7 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
             server.workflow_store.save(graph, "Loaded from external script")
             workflow_id = graph.id
 
-        server.workflow_set_store.add_to_active(script_path)
+        server.workflow_set_store.add_to_active(workflow_id)
         return ApiResponse(success=True, data={"workflow_id": workflow_id, "script_path": script_path})
 
     @app.get("/api/workflows/{workflow_id}/bindings", response_model=ApiResponse)

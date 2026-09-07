@@ -33,3 +33,16 @@ def config_dir() -> Path:
     """The `config/` subdirectory holding instrument sets, workflow sets and
     UI preferences."""
     return labpilot_home() / "config"
+
+
+def user_workflow_dir() -> Path:
+    """Where a user's own workflow scripts live.
+
+    Scripts used to be written into `core/workflow_library/`, i.e. into the
+    *installed package directory* — which works only for an editable
+    install, puts user data under version control with the framework, and
+    accumulated 27 committed files, 22 of them the same template across
+    three generations. A workflow a user authors or edits belongs in their
+    own state directory, next to their instrument sets and their data.
+    """
+    return labpilot_home() / "workflows"

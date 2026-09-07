@@ -1,14 +1,25 @@
 """Named, swappable "loaded workflows" configs.
 
 Mirrors `instrument_sets.py`'s `InstrumentSetPersistence` exactly, for the
-same reason: a lab may want a different set of workflow scripts "loaded"
-(visible in the Workflows tab) per physical setup. Distinct from
-`WorkflowStore` (core/workflow/store.py), which is the actual database of
-workflow graphs/execution history — this only stores *paths* to script
-files, not their content. A script's default home is `core.
-workflow_library`, but a path can point anywhere; unloading a workflow
-(removing its path from here) never touches the script file or the
-WorkflowStore row it came from.
+same reason: a lab may want a different set of workflows "loaded" (visible
+in the Workflows tab) per physical setup. Distinct from `WorkflowStore`
+(core/workflow/store.py), which is the actual database of workflow
+graphs/execution history — this only stores which of them are loaded.
+Unloading a workflow never touches its script file or its WorkflowStore
+row.
+
+## Entries are workflow ids
+
+They used to be script *paths*, which made the path a workflow instance's
+identity — and so two instances of one template had to be two copies of
+its source, written into the installed package under timestamped names.
+Parameters lived in those copies and were edited by rewriting the
+assignment in place. Identifying an instance by its id instead is what
+lets a template be shared and its settings be a row (see the `params`
+entry in `WorkflowGraph.metadata`).
+
+Legacy path entries are still read: a config written before this change
+lists paths, and `server.py` maps each to the workflow it belongs to.
 
 Directory layout — note this lives one level up from instrument configs
 (`server.py` constructs this with `config_dir=ConfigPersistence.config_dir`,
@@ -83,47 +94,54 @@ class WorkflowSetPersistence:
         self._validate_name(name)
         self._active_marker.write_text(name)
 
-    def save(self, name: str, script_paths: list[str]) -> Path:
-        """Write a named config (overwriting if it already exists)."""
+    def save(self, name: str, entries: list[str]) -> Path:
+        """Write a named config (overwriting if it already exists).
+
+        Entries are workflow ids. The key stays `script_paths` so a config
+        written here is still readable by an older build, and because the
+        list is opaque to this class either way.
+        """
         path = self._path(name)
         payload = {
             "name": name,
             "updated_at": time.time(),
-            "script_paths": list(script_paths),
+            "script_paths": list(entries),
         }
         temp_path = path.with_suffix(".cfg.tmp")
         temp_path.write_text(json.dumps(payload, indent=2))
         temp_path.rename(path)
         return path
 
-    def add_to_active(self, script_path: str) -> str:
-        """Add a script path to the active config (creating/activating the
-        default one if none is active yet). Shared by every place a
-        workflow becomes "loaded" — the create/load REST routes
-        (server.py) and the AI's create_workflow/write_workflow_script
-        tools (core/ai/tools/workflow_tools.py) — so they can't drift.
+    def add_to_active(self, entry: str) -> str:
+        """Mark a workflow as loaded in the active config (creating and
+        activating the default one if none is active yet). Shared by every
+        place a workflow becomes "loaded" so they cannot drift.
 
         Returns the active config's name.
         """
         active = self.get_active_name() or self.DEFAULT_NAME
-        paths = self.load(active) if self.exists(active) else []
-        if script_path not in paths:
-            paths.append(script_path)
-            self.save(active, paths)
+        entries = self.load(active) if self.exists(active) else []
+        if entry not in entries:
+            entries.append(entry)
+            self.save(active, entries)
         self.set_active_name(active)
         return active
 
-    def remove_from_active(self, script_path: str) -> None:
-        """Remove a script path from the active config, if one is active.
-        No-op if there's no active config or the path isn't in it."""
+    def remove_from_active(self, *entries: str) -> None:
+        """Unload a workflow from the active config.
+
+        Takes several entries because a workflow loaded before ids were
+        used is listed by its script path, and unloading it has to remove
+        whichever form is actually there.
+        """
         active = self.get_active_name()
         if active is None:
             return
-        paths = [p for p in self.load(active) if p != script_path]
-        self.save(active, paths)
+        removed = set(entries)
+        self.save(active, [e for e in self.load(active) if e not in removed])
 
     def load(self, name: str) -> list[str]:
-        """Read a named config's loaded script paths."""
+        """Read a named config's loaded workflows (ids, or legacy paths)."""
         path = self._path(name)
         if not path.exists():
             raise WorkflowSetError(f"No workflow config named {name!r}")

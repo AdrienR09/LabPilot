@@ -351,9 +351,13 @@ class WorkflowStore:
         if graph.metadata.get("script_path"):
             return
 
-        import labpilot.core.workflow_library as _workflow_library
+        # The user's own workflow directory, not `core/workflow_library/`
+        # inside the installed package — which only worked for an editable
+        # install and put user scripts under the framework's own version
+        # control (see core/config/paths.py::user_workflow_dir).
+        from labpilot.core.config.paths import user_workflow_dir
 
-        default_dir = Path(_workflow_library.__path__[0])
+        default_dir = user_workflow_dir()
         default_dir.mkdir(parents=True, exist_ok=True)
         graph.metadata["script_path"] = str(
             default_dir / f"{_slug(graph.name)}_{graph.id[:8]}.py"

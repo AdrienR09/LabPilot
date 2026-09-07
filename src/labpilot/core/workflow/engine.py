@@ -314,13 +314,32 @@ class WorkflowEngine:
             if real_name:
                 self.session.register_alias(role, real_name)
 
-    async def _execute_script(self, script_path: str) -> dict[str, Any]:
+    async def _execute_script(
+        self, script_path: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Import a workflow script and await its `run(session)` — the one
-        contract every generated or hand/AI-written script follows (see
-        core/workflow/script.py). Raises on import/attribute errors or
-        whatever the script itself raises; the caller's surrounding
-        try/except in `_execute_workflow` logs/emits failure the same way
-        a failed node would.
+        contract every generated or hand/AI-written script follows. Raises
+        on import/attribute errors or whatever the script itself raises;
+        the caller's surrounding try/except in `_execute_workflow`
+        logs/emits failure the same way a failed node would.
+
+        `params` are this workflow instance's own settings, applied to the
+        freshly imported module before `run()` is called. They used to be
+        stored *in the source*: loading a template copied its `.py` into
+        the installed package directory under a timestamped name, and
+        changing one parameter rewrote that copy's assignment in place
+        through an AST span edit. So every configuration change produced a
+        new source file, a workflow could not be reconfigured on a
+        non-editable install, and the parameters could not be read without
+        parsing Python.
+
+        A module attribute is exactly the right granularity for this: the
+        template declares `AXIS_RANGES` at module level and reads it inside
+        `run()`, which is what made the source rewrite work in the first
+        place — the difference is only where the value is kept. Each run
+        imports the module afresh (`spec.loader.exec_module` below), so
+        two workflows built on the same template do not see each other's
+        parameters.
         """
         path = Path(script_path)
         if not path.exists():
@@ -336,6 +355,10 @@ class WorkflowEngine:
             raise WorkflowExecutionError(
                 f"Script {script_path} has no `run(session)` function to execute"
             )
+
+        for name, value in (params or {}).items():
+            if hasattr(module, name):
+                setattr(module, name, value)
 
         result = await module.run(self.session)
         return result if isinstance(result, dict) else {"result": result}
@@ -371,7 +394,9 @@ class WorkflowEngine:
                     f"`async def run(session) -> dict`; see "
                     f"core/workflow_templates/ for the contract."
                 )
-            node_results.update(await self._execute_script(script_path))
+            node_results.update(
+                await self._execute_script(script_path, graph.metadata.get("params"))
+            )
 
             await self._save_run(graph, execution_id, node_results, "completed")
 

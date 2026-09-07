@@ -2,17 +2,14 @@
 "omniscan"), so loading a template again starts from where you left off
 instead of the template's hardcoded defaults.
 
-Distinct from an already-loaded workflow *instance*'s own script file,
-which already remembers its own edits directly (every `set_workflow_param`
-call rewrites that instance's script in place — see `write_workflow_param`)
-— that already survives reopening the *same* instance/window, including
-across a backend restart (its script_path stays registered in
-`WorkflowSetPersistence`). What that doesn't cover is clicking "load
-template" again: `load_workflow_template` (server.py) always copies the
-template's own original source into a brand-new, separately-tracked
-script file, so a fresh instance starts from the template's hardcoded
-defaults with no link to any previous instance's edits. This is what
-carries values forward into that next fresh instance.
+Distinct from a loaded workflow *instance*'s own settings, which live on
+that workflow (`WorkflowGraph.metadata["params"]`, written by
+`set_workflow_param`) and survive reopening the same instance, including
+across a backend restart. What that does not cover is clicking "load
+template" again, which creates a *new* instance with no link to any
+previous one's settings — it would otherwise start from the template's
+hardcoded defaults. This is what carries values forward into that next
+fresh instance.
 
 Mirrors `workflow_sets.py`'s `WorkflowSetPersistence` layout/pattern
 exactly (same `config_dir`, same atomic temp-then-rename write) — a
