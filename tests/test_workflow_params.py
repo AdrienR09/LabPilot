@@ -167,6 +167,35 @@ def test_editing_a_template_instances_script_copies_it_out_of_the_package(client
     assert (TEMPLATE_DIR / f"{TEMPLATE}.py").read_text() == original
 
 
+def test_the_optimizer_reads_this_workflows_settings_not_the_templates(client):
+    """Anything that consults a workflow's parameters has to consult the
+    row, not the script — the optimizer derives which axes to scan and how
+    far from `SCAN_AXES`/`AXIS_RANGES`, and would otherwise optimize over
+    the template's defaults on a workflow configured to something else."""
+    import time
+
+    instruments = {i["adapter_type"]: i["id"] for i in client.get("/api/dashboard/instruments").json()["data"]}
+    actuator, detector = instruments["mock_basic_actuator_nd"], instruments["mock_basic_detector_0d"]
+    for instrument in (actuator, detector):
+        client.post(f"/api/dashboard/instruments/{instrument}/connect")
+
+    workflow_id = _load(client)
+    client.put(f"/api/workflows/{workflow_id}/params/SCAN_AXES", json={"value": ["z"]})
+    for role, instrument in (("actuator", actuator), ("detector", detector)):
+        client.put(f"/api/workflows/{workflow_id}/bindings/{role}", json={"instrument_id": instrument})
+
+    started = client.post(f"/api/workflows/{workflow_id}/optimize/start", json={"points": 3})
+    assert started.status_code == 200, started.text
+    for _ in range(400):
+        state = client.get(f"/api/workflows/{workflow_id}/optimize/state").json()["data"]
+        if not state["running"]:
+            break
+        time.sleep(0.05)
+
+    assert state["error"] is None, state["error"]
+    assert [list(step) for step in state["last_result"]["sequence"]] == [["z"]]
+
+
 async def test_a_stored_parameter_is_what_the_run_actually_uses(tmp_path):
     """The end of the chain: a row on the workflow becomes a module
     attribute on the freshly imported template, which is where the template

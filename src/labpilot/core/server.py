@@ -38,6 +38,7 @@ from labpilot.core.config import (
 from labpilot.core.config.paths import user_workflow_dir
 from labpilot.core.config.template_params import TemplateParamPersistence
 from labpilot.core.config.workflow_sets import WorkflowSetPersistence
+from labpilot.core.device.kinds import wrap as wrap_instrument
 from labpilot.core.events import EventKind
 from labpilot.core.session import Session
 from labpilot.core.workflow import WorkflowEngine, WorkflowGraph, WorkflowStore
@@ -187,6 +188,9 @@ class LabPilotServer:
         # since it isn't a run of the workflow's script at all.
         self.optimize_states: dict[str, dict] = {}
         self._optimize_tasks: dict[str, asyncio.Task] = {}
+        # The actuator each in-flight optimize is driving, so stopping one
+        # can stop the hardware and not just the task.
+        self._optimize_actuators: dict[str, Any] = {}
 
     async def initialize(self):
         """Initialize server components."""
@@ -779,7 +783,7 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         return ApiResponse(success=True, data={"name": param_name, "value": new_value})
 
     def _resolve_optimize_axes(
-        script_text: str, actuator_schema, x_axis: str | None, y_axis: str | None,
+        params: dict[str, Any], actuator_schema, x_axis: str | None, y_axis: str | None,
         requested_axes: list[str] | None = None,
     ) -> tuple[list[str], dict[str, tuple[float, float, int]]]:
         """Which actuator axes to run the optimize sequence over, and each
@@ -801,7 +805,6 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         workflow doesn't have is silently dropped rather than erroring,
         matching how an unavailable SCAN_AXES entry is already handled
         elsewhere)."""
-        params = read_workflow_params(script_text)
         axis_ranges = params.get("AXIS_RANGES")
         scan_axes = params.get("SCAN_AXES")
         if isinstance(axis_ranges, dict) and isinstance(scan_axes, list):
@@ -886,7 +889,12 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         if value_key is None:
             raise HTTPException(status_code=400, detail="Bound detector declares no readable value")
 
-        axes, axis_ranges = _resolve_optimize_axes(script_text, actuator_schema, x_axis, y_axis, requested_axes)
+        # This workflow's own parameters, not the template's defaults: a
+        # scan reconfigured to a different AXIS_RANGES must be optimized
+        # over the range it actually scans.
+        axes, axis_ranges = _resolve_optimize_axes(
+            _workflow_params(graph), actuator_schema, x_axis, y_axis, requested_axes
+        )
         if not axes:
             raise HTTPException(status_code=400, detail="Could not determine which axes to optimize")
 
@@ -982,16 +990,31 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
                           request.ranges, request.points, request.points_per_axis)
         )
         server._optimize_tasks[workflow_id] = task
+        # Remembered so stopping can reach the hardware, not only the task.
+        server._optimize_actuators[workflow_id] = wrap_instrument(actuator)
         return ApiResponse(success=True, data={"started": True})
 
     @app.post("/api/workflows/{workflow_id}/optimize/stop", response_model=ApiResponse)
     async def stop_optimize(workflow_id: str, server: LabPilotServer = Depends(get_server)):
-        """Cancels an in-flight optimize task, if any (a no-op
-        otherwise) — the actuator is left wherever the scan had reached,
-        not moved back or on to the best point found so far."""
+        """Stops an in-flight optimize, if any (a no-op otherwise).
+
+        The actuator stays where the scan had reached — it is not moved
+        back, nor on to the best point found so far — but it is told to
+        stop: cancelling the task ends the loop that commands the stage
+        while leaving the stage travelling to the position it was last
+        sent to. Same reasoning, and the same `Motor.stop()`, as
+        WorkflowEngine.stop_workflow.
+        """
         task = server._optimize_tasks.get(workflow_id)
         if task is not None and not task.done():
             task.cancel()
+        actuator = server._optimize_actuators.pop(workflow_id, None)
+        stop = getattr(actuator, "stop", None) if actuator is not None else None
+        if stop is not None:
+            try:
+                await stop()
+            except Exception as e:
+                print(f"⚠️  Could not stop the optimize actuator: {e}")
         state = server.optimize_states.get(workflow_id)
         if state is not None:
             state["running"] = False
