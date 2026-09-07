@@ -21,8 +21,6 @@ from labpilot.core.device.kinds import wrap as _wrap_instrument
 from labpilot.core.device.protocols import Readable
 from labpilot.core.events import Event, EventBus, EventKind
 from labpilot.core.fsm import ScanState, State
-from labpilot.core.plans.base import ScanPlan
-from labpilot.core.plans.scan import scan as scan_generator
 
 __all__ = ["Session"]
 
@@ -323,125 +321,25 @@ class Session:
             )
         return self.devices[name]
 
-    async def run(self, plan: ScanPlan) -> str:
-        """Execute scan plan and return run UID.
+    async def execute(self, plan: Any) -> dict[str, Any]:
+        """Run a plan to completion and return its result.
 
-        Transitions FSM through states:
-        IDLE → CONFIGURING → ARMED → RUNNING → FINISHING → DONE
+        The scripting entry point: `await session.execute(plan)` is what a
+        template, the console and a notebook all call, and it is the same
+        object in each. Replaces `Session.run(plan)`, which drove
+        `core/plans/scan.py` — a second, orphaned scan engine that no REST
+        route, template or UI ever reached, whose cancellation checks were
+        no-ops precisely because nothing ran them.
 
-        Args:
-            plan: ScanPlan to execute.
-
-        Returns:
-            Run UID (UUID4 string) for referencing this scan.
-
-        Raises:
-            ValueError: If motor/detector names in plan not found in registry.
-            InvalidTransitionError: If session not in IDLE state.
-
-        Example:
-            >>> plan = ScanPlan(name="scan1", motor="m1", detector="d1", ...)
-            >>> run_uid = await session.run(plan)
-            >>> print(f"Scan started: {run_uid}")
+        `pause()`, `resume()` and `abort()` live on the `Run`
+        (`core/run/run.py`) rather than here, because they need the loop
+        between points to mean anything. The versions that used to sit on
+        this class moved the FSM and nothing else, which their own
+        docstrings admitted.
         """
-        # Validate FSM state
-        self.state = self.state.transition(State.CONFIGURING, "Loading plan")
-        await self._emit_state_change()
+        from labpilot.core.run import execute as _execute
 
-        # Resolve device names from plan
-        try:
-            motor = self.get(plan.motor)
-            detector = self.get(plan.detector)
-        except KeyError as e:
-            self.state = self.state.transition(State.ERROR, str(e))
-            await self._emit_state_change()
-            raise ValueError(f"Plan validation failed: {e}") from e
-
-        # Transition to ARMED
-        self.state = self.state.transition(State.ARMED, "Devices ready")
-        await self._emit_state_change()
-
-        # Transition to RUNNING
-        self.state = self.state.transition(State.RUNNING, "Scan in progress")
-        await self._emit_state_change()
-
-        # Execute scan generator
-        run_uid = None
-        try:
-            async for event in scan_generator(plan, motor, detector, self.bus):
-                if event.kind == EventKind.DESCRIPTOR:
-                    run_uid = event.run_uid
-                    self._current_run_uid = run_uid
-
-                # Check for stop or error events
-                if event.kind == EventKind.STOP:
-                    self.state = self.state.transition(
-                        State.FINISHING, "Cleaning up"
-                    )
-                    await self._emit_state_change()
-                    break
-                elif event.kind == EventKind.ERROR:
-                    self.state = self.state.transition(
-                        State.ERROR, event.data.get("error_message", "Unknown error")
-                    )
-                    await self._emit_state_change()
-                    break
-
-            # Transition to DONE
-            if self.state.state == State.FINISHING:
-                self.state = self.state.transition(State.DONE, "Scan completed")
-                await self._emit_state_change()
-
-        except Exception as e:
-            self.state = self.state.transition(State.ERROR, str(e))
-            await self._emit_state_change()
-            raise
-
-        finally:
-            self._current_run_uid = None
-
-        # Return to IDLE after completion or error
-        self.state = self.state.transition(State.IDLE, "Ready for next scan")
-        await self._emit_state_change()
-
-        return run_uid or "unknown"
-
-    async def pause(self) -> None:
-        """Pause currently running scan.
-
-        Raises:
-            InvalidTransitionError: If not in RUNNING state.
-
-        Note:
-            Pause functionality requires cancellation scope integration in
-            scan generators. Currently transitions state but does not yet
-            implement actual pause/resume logic.
-        """
-        self.state = self.state.transition(State.PAUSED, "Scan paused")
-        await self._emit_state_change()
-
-    async def resume(self) -> None:
-        """Resume paused scan.
-
-        Raises:
-            InvalidTransitionError: If not in PAUSED state.
-        """
-        self.state = self.state.transition(State.RUNNING, "Scan resumed")
-        await self._emit_state_change()
-
-    async def abort(self) -> None:
-        """Abort currently running scan and transition to ERROR state.
-
-        Can be called from RUNNING or PAUSED states. Triggers cleanup
-        (device unstaging) via scan generator finally blocks.
-
-        Note:
-            Full abort implementation requires anyio cancellation scope
-            integration in scan generators.
-        """
-        if self.state.state in {State.RUNNING, State.PAUSED}:
-            self.state = self.state.transition(State.ERROR, "Aborted by user")
-            await self._emit_state_change()
+        return await _execute(self, plan)
 
     async def _emit_state_change(self) -> None:
         """Emit STATE_CHANGE event on bus.
