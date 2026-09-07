@@ -109,6 +109,59 @@ def test_using_names_the_instrument_once(lp):
     assert run.wait(timeout=60).result()["shape"] == [3]
 
 
+def test_one_plan_runs_at_the_console_and_in_a_template(lp, tmp_path):
+    """The phase's whole claim, as a test: the same plan object, run both
+    ways, measures the same thing.
+
+    A template writes `await session.execute(plan)`; the console writes
+    `lp.execute(plan)`. The two differ by the `await` and nothing else —
+    the plan is one object, and the transport under it is the only thing
+    that changes.
+    """
+    from labpilot.core.run import ScanAxis, ScanPlan
+
+    def build() -> ScanPlan:
+        return ScanPlan(
+            [ScanAxis("x", STAGE, 0.0, 2.0, 5)], detector=APD, name="shared"
+        )
+
+    from_console = lp.execute(build()).wait(timeout=60).result()
+
+    template = tmp_path / "shared_plan.py"
+    # No REQUIRED_INSTRUMENTS: this plan names the instruments outright,
+    # exactly as the console one does, so there are no roles to bind.
+    template.write_text(
+        "from labpilot.core.run import ScanAxis, ScanPlan, execute\n"
+        "\n"
+        "async def run(session):\n"
+        "    return await execute(session, ScanPlan(\n"
+        f"        [ScanAxis('x', {STAGE!r}, 0.0, 2.0, 5)],\n"
+        f"        detector={APD!r}, name='shared',\n"
+        "    ))\n"
+    )
+    from_template = _run_as_workflow(lp, template)
+
+    assert from_console["shape"] == from_template["shape"] == [5]
+    assert from_console["axis_names"] == from_template["axis_names"] == ["x"]
+    assert len(from_template["data"]) == 5
+
+
+def _run_as_workflow(lp, script_path) -> dict:
+    """Load a script as a workflow, run it, and return its results."""
+    http = lp.client._client
+    loaded = http.post("/api/workflows/load", json={"path": str(script_path)})
+    assert loaded.status_code in (200, 201), loaded.text
+    workflow_id = loaded.json()["data"]["workflow_id"]
+
+    assert http.post(f"/api/workflows/{workflow_id}/execute").status_code == 200
+    for _ in range(600):
+        state = http.get(f"/api/workflows/{workflow_id}/execution_state").json()["data"]
+        if not state.get("running"):
+            return state["last_results"]
+        time.sleep(0.1)
+    raise AssertionError("the workflow never finished")
+
+
 # --- Controls --------------------------------------------------------------
 
 

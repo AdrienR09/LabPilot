@@ -144,6 +144,25 @@ lp.runs[0]                            # the newest saved run
 run.result().to_hdf5('scan.h5')       # or write a copy wherever you like
 ```
 
+### One plan, both places
+
+`lp.scan(...)` is a convenience over `lp.execute(plan)`, and a plan is an
+ordinary object. The same one runs at the console and inside a template,
+differing by the `await` and nothing else:
+
+```python
+from labpilot.core.run import ScanAxis, ScanPlan
+plan = ScanPlan([ScanAxis('x', 'mock_xyz_stage_2', 0, 10, 51)], detector='fake_apd_8')
+
+lp.execute(plan)                 # console, notebook
+await session.execute(plan)      # inside a workflow template
+```
+
+Instruments live in the server process, so the plan is not shipped as an
+object — its fields are, and the server rebuilds it. That is the same
+boundary every other console call crosses: one API over two transports,
+not two APIs.
+
 `result()` is the plain dict a template returns *and* a `Dataset`, so
 `result()['shape']` works and so does `result().primary().unit`. The
 HDF5 it writes carries units and axis coordinates as dimension scales,

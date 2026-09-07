@@ -499,8 +499,13 @@ class LabPilotSession:
         finishes. The difference is only that nobody wrote a workflow
         record for it.
 
+        A convenience over `lp.execute(ScanPlan(...))`, and built on it, so
+        the two cannot drift apart.
+
         Returns immediately with a `RunHandle`; call `.wait()` to block.
         """
+        from labpilot.core.run import ScanAxis, ScanPlan
+
         detector = read[0] if isinstance(read, list) else read
         if isinstance(read, list) and len(read) != 1:
             raise ValueError(
@@ -525,15 +530,52 @@ class LabPilotSession:
                 raise ValueError(
                     f"Axis {key!r} needs (start, stop, points), got {span!r}"
                 ) from None
-            axes.append({
-                "name": parameter, "device": device,
-                "start": float(start), "stop": float(stop), "points": int(points),
-            })
+            axes.append(
+                ScanAxis(parameter, device, float(start), float(stop), int(points))
+            )
 
-        run_id = self.client.start_scan(
-            axes, detector=detector, name=name, hold=hold or {}
+        return self.execute(
+            ScanPlan(axes, detector=detector, name=name, hold=hold or {})
         )
-        return RunHandle(self.client, run_id, name)
+
+    def execute(self, plan: Any) -> RunHandle:
+        """Run a plan object, the way a template runs one.
+
+        The same `ScanPlan` runs in both places, and the two lines differ
+        only by the `await`:
+
+            plan = ScanPlan([ScanAxis("x", "stage", 0, 10, 51)], detector="apd")
+
+            await session.execute(plan)     # in a workflow template
+            lp.execute(plan)                # at the console, in a notebook
+
+        Instruments live in the server process, so the plan cannot be sent
+        as an object; its fields are, and the server rebuilds it. That is
+        the same boundary every other console call crosses — one API over
+        two transports, not two APIs.
+        """
+        axes = getattr(plan, "axes", None)
+        if axes is None or not hasattr(plan, "detector"):
+            raise TypeError(
+                f"{type(plan).__name__} cannot be started from here yet — the "
+                f"console runs ScanPlan. Start the others from a workflow "
+                f"(see lp.workflows)."
+            )
+        run_id = self.client.start_scan(
+            [
+                {
+                    "name": axis.name, "device": axis.device,
+                    "start": float(axis.start), "stop": float(axis.stop),
+                    "points": int(axis.points), "unit": getattr(axis, "unit", "") or "",
+                }
+                for axis in axes
+            ],
+            detector=plan.detector,
+            name=getattr(plan, "name", "scan"),
+            hold=dict(getattr(plan, "hold", {}) or {}),
+            hold_device=getattr(plan, "hold_device", None),
+        )
+        return RunHandle(self.client, run_id, getattr(plan, "name", "scan"))
 
     def run(self, run_id: str) -> RunHandle:
         """A handle on a run already in flight — including one started from
