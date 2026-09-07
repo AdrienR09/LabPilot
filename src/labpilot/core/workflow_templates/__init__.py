@@ -9,7 +9,7 @@ declares those roles via a `REQUIRED_INSTRUMENTS` module constant (see
 unbound; binding a role to a real connected instrument (via the
 flowchart, or `PUT /api/workflows/{id}/bindings/{role}` directly) is what
 actually makes it runnable, and can be changed again later without
-touching the script text (see `WorkflowEngine._apply_instrument_bindings`,
+touching the script text (see `RunManager._apply_instrument_bindings`,
 which resolves roles via `Session.register_alias` at execution time).
 
 These files are never imported/executed by this package itself — they're

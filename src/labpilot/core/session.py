@@ -36,7 +36,7 @@ _progress_context_var: contextvars.ContextVar[tuple[str, str, dict] | None] = co
 )
 
 # Role -> real device name, per running workflow. Also a ContextVar, and for
-# exactly the same reason as the progress context above: WorkflowEngine applies
+# exactly the same reason as the progress context above: RunManager applies
 # a workflow's bindings immediately before running it and clears them after, so
 # on a plain instance attribute two workflows running concurrently share one
 # namespace. Both templates using the role "detector" meant the second to start
@@ -165,7 +165,7 @@ class Session:
         _aliases_var.set(None)
 
     def set_progress_context(self, workflow_id: str, execution_id: str, sink: dict[str, dict]) -> None:
-        """Called by WorkflowEngine right before running a script (inside
+        """Called by RunManager right before running a script (inside
         that execution's own asyncio task — see _progress_context_var), so
         any `session.report_progress(...)` call inside it knows which
         workflow/execution it belongs to and where to store the latest
@@ -189,7 +189,7 @@ class Session:
         workflow script — e.g. the whole scan array to date.
 
         `data` is stored verbatim for REST polling
-        (`WorkflowEngine.get_live_progress`), which is cheap: a dict
+        (`RunManager.get_live_progress`), which is cheap: a dict
         reference, not a copy. What goes **on the bus** is
         `summarise_arrays(data)` — every array replaced by its length.
 

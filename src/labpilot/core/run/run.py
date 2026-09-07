@@ -4,7 +4,7 @@ Pause, resume and abort exist today only as FSM transitions. Their own
 docstrings say so: `Session.pause` notes it "transitions state but does not
 yet implement actual pause/resume logic", and `Session.abort` that "full
 abort implementation requires anyio cancellation scope integration". What
-`WorkflowEngine.stop_workflow` really does is cancel the asyncio task, which
+`RunManager.stop_workflow` really does is cancel the asyncio task, which
 lands wherever the script happens to be awaiting — mid-move, mid-read — and
 nothing tells the actuator to stop. The hardware finishes travelling to
 whatever position was last commanded, after the run has been reported
@@ -96,7 +96,7 @@ class Run:
     # --- Controls ---------------------------------------------------------
     #
     # Called from the server's event loop while the run executes on the
-    # workflow loop (see WorkflowEngine._WorkflowRunner), so each one hops
+    # workflow loop (see RunManager._WorkflowRunner), so each one hops
     # loops rather than touching an asyncio primitive from the wrong thread.
 
     def pause(self) -> None:
@@ -179,10 +179,12 @@ class Run:
                     )
         except RunAbortedError:
             self.state = ScanState(state=State.ERROR, message="Aborted by user")
+            await self._close(points)
             await self._stop_actuators()
             raise
         except Exception as e:
             self.state = ScanState(state=State.ERROR, message=str(e))
+            await self._close(points)
             raise
         else:
             self.state = ScanState(state=State.DONE, message="Completed")
@@ -206,6 +208,29 @@ class Run:
     def dataset(self):
         """The same data as a `Dataset` — units, coordinates, provenance."""
         return self.descriptor.dataset(self.data)
+
+    async def events(self) -> AsyncIterator[Any]:
+        """This run's events, as they happen.
+
+        A filtered view of the session bus: readings and progress carrying
+        this run's own `run_uid`, so a consumer following one run does not
+        have to filter another's out. Ends when the subscription is closed.
+
+            async for event in run.events():
+                print(event.data["completed"])
+
+        The bus is the transport in both directions — it is what the
+        WebSocket, the Qt window and the console already read — so this is
+        a lens on it rather than a second channel.
+        """
+        from labpilot.core.events import EventKind
+
+        async for event in self.session.bus.subscribe(
+            EventKind.READING, EventKind.WORKFLOW_PROGRESS, EventKind.STATE_CHANGE
+        ):
+            data = event.data or {}
+            if data.get("run_uid") in (None, self.descriptor.run_uid):
+                yield event
 
     # --- Internals --------------------------------------------------------
 
@@ -231,6 +256,23 @@ class Run:
             total=total,
             **(fields if self.completed == 1 else {}),
         )
+
+    @staticmethod
+    async def _close(points: AsyncIterator[DatasetPatch]) -> None:
+        """Close the plan's point stream, so its cleanup runs here and now.
+
+        Stopping early leaves the generator suspended at its `yield`, and
+        an abandoned async generator is only finalised whenever the event
+        loop gets round to it — at interpreter shutdown, in the worst case.
+        Its `finally` is where the detector is unstaged and a hardware
+        scanner is told to stop, so "eventually" is the wrong time for it:
+        an aborted scan would leave an integrating detector armed, and a
+        process that aborted one was observed hanging at exit on a worker
+        thread parked inside that never-finalised generator.
+        """
+        aclose = getattr(points, "aclose", None)
+        if aclose is not None:
+            await aclose()
 
     async def _stop_actuators(self) -> None:
         """Tell every device this run drives to stop where it is.

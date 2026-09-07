@@ -202,7 +202,7 @@ async def test_a_stored_parameter_is_what_the_run_actually_uses(tmp_path):
     reads it. This is what the source rewrite used to achieve by editing
     the assignment itself."""
     from labpilot.core.session import Session
-    from labpilot.core.workflow.engine import WorkflowEngine
+    from labpilot.core.run.manager import RunManager
     from labpilot.core.workflow.store import WorkflowStore
 
     script = tmp_path / "reports_its_own_settings.py"
@@ -212,7 +212,7 @@ async def test_a_stored_parameter_is_what_the_run_actually_uses(tmp_path):
         "async def run(session):\n"
         "    return {'points': POINTS, 'label': LABEL}\n"
     )
-    engine = WorkflowEngine(Session(), WorkflowStore(tmp_path / "workflows.db"))
+    engine = RunManager(Session(), WorkflowStore(tmp_path / "workflows.db"))
     try:
         result = await engine._execute_script(str(script), {"POINTS": 21})
         untouched = await engine._execute_script(str(script), None)

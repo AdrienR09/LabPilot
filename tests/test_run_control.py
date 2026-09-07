@@ -1,6 +1,6 @@
 """Stopping a workflow stops the experiment, not just the task.
 
-`WorkflowEngine.stop_workflow` cancelled the asyncio task running the
+`RunManager.stop_workflow` cancelled the asyncio task running the
 script. That lands wherever the script happens to be awaiting — inside a
 move, inside a detector read — and nothing tells the actuator to stop, so
 the stage keeps travelling to its last commanded position after the run has
@@ -19,7 +19,7 @@ import textwrap
 import pytest
 
 from labpilot.core.session import Session
-from labpilot.core.workflow.engine import WorkflowEngine
+from labpilot.core.run.manager import RunManager
 from labpilot.core.workflow.graph import WorkflowGraph
 from labpilot.core.workflow.store import WorkflowStore
 from labpilot.instruments.MockBasic.simple import (
@@ -55,7 +55,7 @@ async def engine(tmp_path):
         await device.connect()
         session.register(device, role)
 
-    engine = WorkflowEngine(session, WorkflowStore(tmp_path / "workflows.db"))
+    engine = RunManager(session, WorkflowStore(tmp_path / "workflows.db"))
     engine.runs.root = tmp_path / "data"
     engine.runs.catalogue_path = tmp_path / "data" / "catalogue.db"
 
@@ -72,7 +72,7 @@ async def engine(tmp_path):
         engine._runner.shutdown()
 
 
-async def _started(engine: WorkflowEngine, workflow_id: str) -> None:
+async def _started(engine: RunManager, workflow_id: str) -> None:
     """Wait until the run is actually executing points."""
     await engine.start_workflow(workflow_id)
     for _ in range(500):

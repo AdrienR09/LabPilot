@@ -136,7 +136,7 @@ class DashboardManager:
         self.active_config_name: str | None = None
         # Set once at server startup (see server.py) so a connected
         # instrument is also resolvable by name from a workflow node
-        # (WorkflowEngine reads through Session, not this dict) — optional
+        # (RunManager reads through Session, not this dict) — optional
         # so this module stays usable standalone (e.g. in tests) without a
         # full server.
         self.session: Session | None = None

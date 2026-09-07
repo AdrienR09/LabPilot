@@ -12,8 +12,8 @@ no per-pixel software round-trip at all — a real NI DAQ card
 meaningful mock (`instruments/mock/hardware_scan.py`'s `MockNIScanner`)
 both implement this the same way Qudi's own `ScanningProbeInterface`/NI
 hardware module do (`configure_scan` once for the whole frame, `start_scan`,
-poll `get_scan_data` — see `core/workflow/capabilities.py`'s
-`HardwareTimedScanCapability`, which this template is built on).
+poll `get_scan_data` — see `core/run/plans.py`'s
+`HardwareTimedScanPlan`, which this template is built on).
 
 References its instrument by *role* — a single "scanner" role, not
 separate actuator/detector roles like `confocal_scanner.py`: this is
@@ -23,15 +23,18 @@ clock), not two independent ones a script happens to coordinate. Bind
 to whichever real connected scanning device should play this part.
 
 Only 1D/2D scans are supported (`HardwareScanMixin`'s own constraint —
-only the fast, first axis is genuinely hardware-clocked); this template
-is scoped to the 2D case (`RESULT_UI["type"] == "image2d"`, reusing
-`confocal_scanner.py`'s exact result shape so the native window needs no
-new code at all). A 1D hardware-timed line scan is a plausible future
-template built the same way, just not wired up here.
+only the fast, first axis is genuinely hardware-clocked).
+
+Like every other scan here it returns the flat N-D convention rather than
+`confocal_scanner.py`'s nested `image` — one convention for one kind of
+thing, and `NDScanResultView` renders a 2-D scan as the same image the
+`image2d` view did. The reshaping, the counters and the live streaming
+belong to `Run`, so what is left below is which axes to scan and how fast.
 """
 
+from labpilot.core.run import ScanAxis, execute
+from labpilot.core.run.plans import HardwareTimedScanPlan
 from labpilot.core.session import Session
-from labpilot.core.workflow.capabilities import HardwareTimedScanCapability
 
 REQUIRED_INSTRUMENTS = {
     "scanner": {"kind": "generic"},
@@ -39,15 +42,19 @@ REQUIRED_INSTRUMENTS = {
 SCANNER_ID = "scanner"
 
 # Read by the native desktop window (workflow_window.py) to render a
-# live, qudi-style image view that fills in as the scan runs — same
-# shape confocal_scanner.py's RESULT_UI declares, so Image2DResultView
-# needs no changes to render this template's output.
+# live, qudi-style image that fills in as the scan runs. Same declaration
+# omniscan makes, because it is the same kind of result — `pick_view`
+# would now infer an equivalent spec from the data itself, and this stays
+# only to name the crosshair's role.
 RESULT_UI = {
-    "type": "image2d",
-    "value_key": "image",
-    "x_key": "x_positions",
-    "y_key": "y_positions",
+    "type": "ndscan",
+    "value_key": "data",
+    "shape_key": "shape",
+    "axis_names_key": "axis_names",
+    "axis_positions_key": "axis_positions",
+    "actuator_axis_count_key": "actuator_axis_count",
     "value_label": "Counts",
+    "crosshair": {"role": "scanner"},
 }
 
 # Which two axes to scan, fast axis first — only the fast (first) axis is
@@ -66,46 +73,18 @@ SCAN_RANGES: dict = {"x": (-2.0, 2.0, 50), "y": (-2.0, 2.0, 50)}
 SCAN_FREQUENCY = 5000.0
 
 
-def _reshape(data: list, n_fast: int, n_slow: int) -> list[list]:
-    """`data` is flat, fast axis varying fastest (`build_scan_waveform`'s
-    acquisition order: index = slow_idx * n_fast + fast_idx). Returns
-    `image[fast_idx][slow_idx]` — a not-yet-acquired cell stays `None`
-    (never converted to NaN here — Image2DResultView's own update_data
-    does that on the frontend side, same convention confocal_scanner.py
-    already relies on)."""
-    image = [[None] * n_slow for _ in range(n_fast)]
-    for slow_idx in range(n_slow):
-        base = slow_idx * n_fast
-        for fast_idx in range(n_fast):
-            image[fast_idx][slow_idx] = data[base + fast_idx]
-    return image
-
-
 async def run(session: Session) -> dict:
-    scanner = session.get(SCANNER_ID)
-
-    ranges = {axis: (SCAN_RANGES[axis][0], SCAN_RANGES[axis][1]) for axis in SCAN_AXES}
-    resolution = {axis: int(SCAN_RANGES[axis][2]) for axis in SCAN_AXES}
-    n_fast = resolution[SCAN_AXES[0]]
-    n_slow = resolution[SCAN_AXES[1]]
-
-    async def on_progress(progress: dict) -> None:
-        x_positions, y_positions = progress["positions"]
-        await session.report_progress({
-            "image": _reshape(progress["data"], n_fast, n_slow),
-            "x_positions": x_positions.tolist(),
-            "y_positions": y_positions.tolist(),
-            "completed": progress["completed"],
-            "total": progress["total"],
-        })
-
-    scan = HardwareTimedScanCapability(scanner)
-    result = await scan.run_scan(SCAN_AXES, ranges, resolution, SCAN_FREQUENCY, on_progress=on_progress)
-
-    x_positions, y_positions = result["positions"]
-    return {
-        "scanner": SCANNER_ID,
-        "x_positions": list(x_positions),
-        "y_positions": list(y_positions),
-        "image": _reshape(result["data"], n_fast, n_slow),
-    }
+    # Declared fast-axis-first (only the fast axis is genuinely
+    # hardware-clocked), while every plan takes its axes slowest-first —
+    # so they are reversed here, once, at the one place that knows this
+    # template's own convention.
+    axes = [
+        ScanAxis(name, SCANNER_ID, SCAN_RANGES[name][0], SCAN_RANGES[name][1],
+                 points=int(SCAN_RANGES[name][2]))
+        for name in reversed(SCAN_AXES)
+    ]
+    plan = HardwareTimedScanPlan(
+        axes=axes, scanner=SCANNER_ID, frequency=SCAN_FREQUENCY,
+        name="hardware_timed_scan",
+    )
+    return {"scanner": SCANNER_ID, **await execute(session, plan)}

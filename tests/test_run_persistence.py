@@ -174,10 +174,10 @@ async def test_a_write_failure_is_reported_not_raised(tmp_path):
 async def test_running_a_workflow_leaves_a_file_behind(tmp_path, monkeypatch):
     """The end-to-end claim: no Save button, no manual export."""
     from labpilot.core.session import Session
-    from labpilot.core.workflow.engine import WorkflowEngine
+    from labpilot.core.run.manager import RunManager
     from labpilot.core.workflow.store import WorkflowStore
 
-    engine = WorkflowEngine(Session(), WorkflowStore(tmp_path / "workflows.db"))
+    engine = RunManager(Session(), WorkflowStore(tmp_path / "workflows.db"))
     engine.runs = RunStore(root=tmp_path / "data")
 
     class _Graph:

@@ -18,7 +18,6 @@ import json
 import re
 import subprocess
 import time
-import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -38,11 +37,10 @@ from labpilot.core.config import (
 from labpilot.core.config.paths import user_workflow_dir
 from labpilot.core.config.template_params import TemplateParamPersistence
 from labpilot.core.config.workflow_sets import WorkflowSetPersistence
-from labpilot.core.device.kinds import wrap as wrap_instrument
-from labpilot.core.events import EventKind
+from labpilot.core.run import OptimizePlan, RunAbortedError, prepare
+from labpilot.core.run.manager import RunManager
 from labpilot.core.session import Session
-from labpilot.core.workflow import WorkflowEngine, WorkflowGraph, WorkflowStore
-from labpilot.core.workflow.capabilities import OptimizerCapability
+from labpilot.core.workflow import WorkflowGraph, WorkflowStore
 from labpilot.core.workflow.instrument_roles import (
     read_capabilities,
     read_required_instruments,
@@ -175,7 +173,7 @@ class LabPilotServer:
         self.session = Session()
         self.config_persistence = ConfigPersistence(config_dir)
         self.workflow_store: WorkflowStore | None = None
-        self.workflow_engine: WorkflowEngine | None = None
+        self.workflow_engine: RunManager | None = None
         self.workflow_set_store = WorkflowSetPersistence(self.config_persistence.config_dir)
         self.template_param_store = TemplateParamPersistence(self.config_persistence.config_dir)
         self.websocket_manager = WebSocketManager()
@@ -184,13 +182,13 @@ class LabPilotServer:
         # scan around the crosshair-bound actuator's current position,
         # separate from a full run of the workflow's own script (see
         # /api/workflows/{id}/optimize/start below). Tracked here rather
-        # than through WorkflowEngine's own execution-state machinery
+        # than through RunManager's own execution-state machinery
         # since it isn't a run of the workflow's script at all.
         self.optimize_states: dict[str, dict] = {}
         self._optimize_tasks: dict[str, asyncio.Task] = {}
-        # The actuator each in-flight optimize is driving, so stopping one
-        # can stop the hardware and not just the task.
-        self._optimize_actuators: dict[str, Any] = {}
+        # The Run each in-flight optimize is executing, so stopping one
+        # stops the hardware and keeps its points, not just the task.
+        self._optimize_runs: dict[str, Any] = {}
 
     async def initialize(self):
         """Initialize server components."""
@@ -202,7 +200,7 @@ class LabPilotServer:
         # Initialize workflow components
         db_path = self.config_persistence.config_dir / "workflows" / "workflows.db"
         self.workflow_store = WorkflowStore(db_path)
-        self.workflow_engine = WorkflowEngine(self.session, self.workflow_store)
+        self.workflow_engine = RunManager(self.session, self.workflow_store)
 
         # First run: nothing loaded yet — seed the active workflow-set from
         # whatever's already in the store with a real script_path, so
@@ -225,7 +223,7 @@ class LabPilotServer:
         self._event_task = asyncio.create_task(self._event_broadcaster())
 
         # A dashboard-connected instrument must also be resolvable by name
-        # from a workflow node (WorkflowEngine reads through self.session,
+        # from a workflow node (RunManager reads through self.session,
         # the dashboard's own instrument registry is separate) — attach the
         # session before any instrument can connect.
         get_dashboard_manager().set_session(self.session)
@@ -728,7 +726,7 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
 
         Stored on the workflow (`graph.metadata["params"]`), applied to the
         template module when the run starts (see
-        `WorkflowEngine._execute_script`). It used to be written into the
+        `RunManager._execute_script`). It used to be written into the
         script: the instance's private copy of the template had that
         constant's assignment rewritten in place, through an AST span edit.
         Which meant configuring a workflow rewrote source code, the values
@@ -836,7 +834,7 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         declares no explicit CAPABILITIES, see `read_capabilities`), their
         bound+connected instrument adapters, which axes to optimize, and
         the detector's value key. Raises HTTPException on any failure;
-        returns (actuator, detector, axes, axis_ranges, value_key)."""
+        returns (actuator_id, detector_id, axes, axis_ranges)."""
         if not server.workflow_store:
             raise HTTPException(status_code=503, detail="Workflow store not available")
         try:
@@ -884,10 +882,13 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=409, detail="Both instruments must be connected to optimize")
 
         actuator_schema = manager.instruments[actuator_id]["schema"]
-        detector_schema = manager.instruments[detector_id]["schema"]
-        value_key = next(iter(detector_schema.readable.keys()), None)
-        if value_key is None:
+        if not manager.instruments[detector_id]["schema"].readable:
             raise HTTPException(status_code=400, detail="Bound detector declares no readable value")
+        if not (server.session.has(actuator_id) and server.session.has(detector_id)):
+            raise HTTPException(
+                status_code=409,
+                detail="Both instruments must be connected to optimize",
+            )
 
         # This workflow's own parameters, not the template's defaults: a
         # scan reconfigured to a different AXIS_RANGES must be optimized
@@ -898,10 +899,13 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         if not axes:
             raise HTTPException(status_code=400, detail="Could not determine which axes to optimize")
 
-        return actuator, detector, axes, axis_ranges, value_key
+        # Ids, not adapters: the plan resolves devices through the session,
+        # the same way a workflow's roles are resolved, so an optimize and a
+        # scan drive hardware through one path.
+        return actuator_id, detector_id, axes, axis_ranges
 
     async def _run_optimize(
-        server: LabPilotServer, workflow_id: str, actuator, detector,
+        server: LabPilotServer, workflow_id: str, actuator_id: str, detector_id: str,
         axes: list[str], axis_ranges: dict[str, tuple[float, float, int]],
         search_range: dict[str, float] | None, points: int,
         points_per_axis_override: dict[str, int] | None = None,
@@ -909,11 +913,10 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         """Background task running the whole optimize sequence — the
         OptimizerDockWidget (see workflow_window.py) polls
         `server.optimize_states[workflow_id]["progress"]` as this fills
-        in, one pane per `OptimizerSequence` step (qudi's own
-        `OptimizerDockWidget`, `UI_FRAMEWORK_DESIGN.md` §2.6), the same
-        live-progress feel a full workflow run gets from
-        report_progress(), scoped to this small re-scan-and-recenter
-        sequence instead of the workflow's own script.
+        in, one pane per step (qudi's own `OptimizerDockWidget`,
+        `UI_FRAMEWORK_DESIGN.md` §2.6), the same live-progress feel a full
+        workflow run gets from report_progress(), scoped to this small
+        re-scan-and-recenter sequence instead of the workflow's own script.
 
         `progress`/`last_result` are shaped `{"sequence": [...], "steps":
         {step_index: {...}}}` — a dict KEYED BY STEP, not overwritten
@@ -922,35 +925,46 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         sees one `progress` snapshot at a time; overwriting the whole
         thing with just the newest step's data would lose every prior
         step's result the instant the sequence moved on, well before a
-        poll could ever have seen it)."""
+        poll could ever have seen it).
+
+        The sequence itself is an `OptimizePlan`, so aborting it stops at
+        a point boundary and keeps what it measured, exactly as stopping a
+        scan does — where cancelling the task left the sub-scan's
+        detector staged and the stage still travelling.
+        """
         state = server.optimize_states[workflow_id]
         points_per_axis_override = points_per_axis_override or {}
         points_per_axis = {ax: max(2, points_per_axis_override.get(ax, points)) for ax in axes}
-        optimizer = OptimizerCapability(actuator, detector)
 
-        async def on_progress(progress: dict) -> None:
+        async def on_step(progress: dict) -> None:
             current = state.get("progress") or {"sequence": progress.get("sequence"), "steps": {}}
             current["sequence"] = progress.get("sequence", current.get("sequence"))
             current["steps"][progress["step_index"]] = progress
             current["current_step_index"] = progress["step_index"]
             state["progress"] = current
 
+        plan = OptimizePlan(
+            axes=axes, axis_ranges=axis_ranges,
+            actuator=actuator_id, detector=detector_id,
+            search_range=search_range, points_per_axis=points_per_axis,
+            on_step=on_step,
+        )
         try:
-            result = await optimizer.run(
-                axes, axis_ranges, search_range=search_range, points=points_per_axis,
-                on_progress=on_progress,
-            )
-            state["last_result"] = {
-                "sequence": result["sequence"],
-                "steps": {step["step_index"]: step for step in result["steps"]},
-                "best_position": result["best_position"],
-            }
-        except asyncio.CancelledError:
+            run = await prepare(server.session, plan)
+            server._optimize_runs[workflow_id] = run
+            await run.execute(plan.points(server.session, run.descriptor))
+        except (asyncio.CancelledError, RunAbortedError):
             pass
         except Exception as e:
             state["error"] = str(e)
         finally:
+            state["last_result"] = {
+                "sequence": plan.sequence,
+                "steps": {step["step_index"]: step for step in plan.steps},
+                "best_position": plan.best_position,
+            }
             state["running"] = False
+            server._optimize_runs.pop(workflow_id, None)
 
     @app.post("/api/workflows/{workflow_id}/optimize/start", response_model=ApiResponse)
     async def start_optimize(
@@ -975,7 +989,7 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
             "running": True, "progress": None, "last_result": None, "error": None,
         }
         try:
-            actuator, detector, axes, axis_ranges, _value_key = _resolve_optimize_targets(
+            actuator_id, detector_id, axes, axis_ranges = _resolve_optimize_targets(
                 workflow_id, server, request.axes,
             )
         except HTTPException:
@@ -986,12 +1000,10 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail=f"Failed to resolve optimize targets: {e}")
 
         task = asyncio.create_task(
-            _run_optimize(server, workflow_id, actuator, detector, axes, axis_ranges,
+            _run_optimize(server, workflow_id, actuator_id, detector_id, axes, axis_ranges,
                           request.ranges, request.points, request.points_per_axis)
         )
         server._optimize_tasks[workflow_id] = task
-        # Remembered so stopping can reach the hardware, not only the task.
-        server._optimize_actuators[workflow_id] = wrap_instrument(actuator)
         return ApiResponse(success=True, data={"started": True})
 
     @app.post("/api/workflows/{workflow_id}/optimize/stop", response_model=ApiResponse)
@@ -1003,18 +1015,17 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         stop: cancelling the task ends the loop that commands the stage
         while leaving the stage travelling to the position it was last
         sent to. Same reasoning, and the same `Motor.stop()`, as
-        WorkflowEngine.stop_workflow.
+        RunManager.stop_workflow.
         """
-        task = server._optimize_tasks.get(workflow_id)
-        if task is not None and not task.done():
-            task.cancel()
-        actuator = server._optimize_actuators.pop(workflow_id, None)
-        stop = getattr(actuator, "stop", None) if actuator is not None else None
-        if stop is not None:
-            try:
-                await stop()
-            except Exception as e:
-                print(f"⚠️  Could not stop the optimize actuator: {e}")
+        run = server._optimize_runs.get(workflow_id)
+        if run is not None:
+            # Stops at the next point boundary, unstages the detector and
+            # stops the actuator — the same abort a scan gets.
+            run.abort()
+        else:
+            task = server._optimize_tasks.get(workflow_id)
+            if task is not None and not task.done():
+                task.cancel()
         state = server.optimize_states.get(workflow_id)
         if state is not None:
             state["running"] = False
@@ -1034,7 +1045,7 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
     async def execute_workflow(workflow_id: str, server: LabPilotServer = Depends(get_server)):
         """Execute a workflow — either its node graph, or (if it has no
         nodes, e.g. a hand/AI-written script loaded directly) its script's
-        `run(session)` function, per WorkflowEngine._execute_script."""
+        `run(session)` function, per RunManager._execute_script."""
         if not server.workflow_engine or not server.workflow_store:
             raise HTTPException(status_code=503, detail="Workflow engine not available")
         try:
@@ -1058,7 +1069,7 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
 
         A workflow running a plan stops at its next point boundary, keeping
         what it measured and telling its actuators to stop; anything else is
-        cancelled where it stands. See WorkflowEngine.stop_workflow.
+        cancelled where it stands. See RunManager.stop_workflow.
         """
         if not server.workflow_engine:
             raise HTTPException(status_code=503, detail="Workflow engine not available")
@@ -1121,7 +1132,7 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         """Add a script path to the active workflow-set. If it isn't
         already backed by a WorkflowStore graph, register a minimal
         placeholder so it has an id to list/view — it's still immediately
-        Execute-able (see WorkflowEngine._execute_script): a script's
+        Execute-able (see RunManager._execute_script): a script's
         `run(session)` runs directly, no node graph required."""
         if not server.workflow_store:
             raise HTTPException(status_code=503, detail="Workflow store not available")

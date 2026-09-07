@@ -1,7 +1,7 @@
 """End-to-end smoke test for every shipped workflow template.
 
 This is the regression net the data-model work depends on. Each template is
-imported the same way `WorkflowEngine._execute_script` imports it, bound to
+imported the same way `RunManager._execute_script` imports it, bound to
 mock instruments matching its own `REQUIRED_INSTRUMENTS` declaration, shrunk
 to a handful of points, and run to completion. Then the invariant that
 nothing previously checked:

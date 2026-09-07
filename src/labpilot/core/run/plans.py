@@ -42,6 +42,7 @@ from __future__ import annotations
 import itertools
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import numpy as np
@@ -55,11 +56,20 @@ from labpilot.core.device.motion import (
 from labpilot.core.run.descriptor import RunDescriptor
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
     from labpilot.core.session import Session
 
-__all__ = ["Plan", "ScanAxis", "ScanPlan", "TimeSeriesPlan"]
+__all__ = [
+    "HardwareTimedScanPlan",
+    "OptimizePlan",
+    "Plan",
+    "ScanAxis",
+    "ScanPlan",
+    "ScriptPlan",
+    "TimeSeriesPlan",
+    "decompose",
+]
 
 # A run whose grid is this large is a misconfiguration, not an experiment:
 # `AXIS_RANGES` typed as 50x50x30 where 5x5x3 was meant used to allocate a
@@ -237,6 +247,238 @@ class ScanPlan:
         await device.write(targets)
 
 
+def decompose(axes: Sequence[str]) -> list[tuple[str, ...]]:
+    """An axis list as a sequence of at-most-2D optimize steps.
+
+    `['x', 'y', 'z']` -> `[('x', 'y'), ('z',)]`, which is qudi's own
+    confocal three-axis case. Generalizes its `OptimizerScanSequence`
+    decomposition idea to any axis count; a genuine N-D peak fit exists
+    here no more than it does there, so N axes are optimized as a sequence
+    of 1-D and 2-D sub-scans, each fit and centred before the next.
+
+    Deterministic pairing in declared order rather than qudi's
+    combinatorial search over every valid decomposition: that search exists
+    to let a user interactively choose among equivalent decompositions, and
+    nothing here surfaces that choice yet.
+    """
+    steps: list[tuple[str, ...]] = []
+    remaining = list(axes)
+    while remaining:
+        steps.append(tuple(remaining[:2]))
+        remaining = remaining[2:]
+    return steps
+
+
+@dataclass
+class OptimizePlan:
+    """Re-centre an actuator on a local maximum of a detector's reading.
+
+    A sequence of small sub-scans, each fit and centred before the next —
+    and each of them *is* a `ScanPlan`, which is the "an optimizer is built
+    on a scan" relationship expressed as shared code rather than
+    documentation.
+
+    ## Why its coordinates are a point index
+
+    Every other plan knows its axes' coordinates before it starts. This one
+    cannot: each step scans around the position the *previous* step's fit
+    produced, so where step 2 will look is not knowable until step 1 has
+    run. The descriptor is honest about that — one index axis over the
+    probe points — and each step's real positions are reported with the
+    step, where they are known. Inventing coordinates up front would be the
+    kind of convention that is right until a fit moves.
+
+    Detector data of any dimensionality is reduced to one scalar per point
+    (`sum` by default — a reasonable "how much signal is here"; pass
+    `reduce` for something else, e.g. a spectral line's amplitude rather
+    than total counts). Qudi's optimizer has no equivalent step because it
+    never handles a non-scalar detector at all.
+    """
+
+    axes: list[str]
+    axis_ranges: dict[str, tuple[float, float, int]]
+    actuator: str = "actuator"
+    detector: str = "detector"
+    search_range: dict[str, float] | None = None
+    points_per_axis: dict[str, int] | None = None
+    """Probe points per axis. Named for the axis rather than as `points`,
+    which on this class would shadow the `points()` every plan defines."""
+    default_range_fraction: float = 0.1
+    settle_tolerance: float = DEFAULT_TOLERANCE
+    max_settle_polls: int = DEFAULT_MAX_POLLS
+    name: str = "optimize"
+    on_step: Callable[[dict], Awaitable[None]] | None = None
+    """Called with each step's live progress and again when it is fit —
+    the payload the optimizer panel renders, one pane per step."""
+    reduce: Callable[[np.ndarray], float] | None = None
+
+    #: Filled in as the sequence runs.
+    sequence: list[tuple[str, ...]] = field(default_factory=list)
+    steps: list[dict[str, Any]] = field(default_factory=list)
+    best_position: dict[str, float] = field(default_factory=dict)
+
+    async def describe(self, session: Session) -> RunDescriptor:
+        detector = session.get(self.detector)
+        self.sequence = decompose(self.axes)
+        per_axis = self.points_per_axis or {}
+        total = sum(
+            int(np.prod([max(2, per_axis.get(axis, 5)) for axis in step], dtype=int))
+            for step in self.sequence
+        )
+        sample = await detector.read()
+        return RunDescriptor(
+            run_uid=str(uuid.uuid4()),
+            plan_name=self.name,
+            axes=(Axis("point", np.arange(total), kind="index"),),
+            scan_axis_count=1,
+            value_name="data",
+            value_unit=sample.primary().unit,
+            # The index axis cannot say what this drives, so it is named.
+            driven=(self.actuator,),
+            devices={
+                role: session.get(role).schema.model_dump(mode="json")
+                for role in (self.actuator, self.detector) if session.has(role)
+            },
+            params={
+                "optimize_axes": list(self.axes),
+                "sequence": [list(step) for step in self.sequence],
+            },
+        )
+
+    async def points(
+        self, session: Session, descriptor: RunDescriptor
+    ) -> AsyncIterator[DatasetPatch]:
+        from labpilot.core.analysis.fits import fit_peak, fit_peak_2d
+
+        reduce = self.reduce or (lambda values: float(np.sum(values)))
+        actuator = session.get(self.actuator)
+        current = await actuator.read()
+        self.best_position = {axis: float(current[axis]) for axis in self.axes}
+        self.steps = []
+        emitted = 0
+
+        for step_index, step_axes in enumerate(self.sequence):
+            sub = ScanPlan(
+                axes=[self._sub_axis(axis) for axis in step_axes],
+                detector=self.detector,
+                name=f"{self.name}[{step_index}]",
+                settle_tolerance=self.settle_tolerance,
+                max_settle_polls=self.max_settle_polls,
+            )
+            sub_descriptor = await sub.describe(session)
+            positions = [axis.values.tolist() for axis in sub_descriptor.scan_axes]
+            shape = [len(axis) for axis in sub_descriptor.scan_axes]
+            total = sub_descriptor.points
+            values: list[float | None] = [None] * total
+
+            index = 0
+            async for patch in sub.points(session, sub_descriptor):
+                values[index] = reduce(patch.values)
+                index += 1
+                yield DatasetPatch(
+                    array=descriptor.value_name,
+                    index=emitted,
+                    values=np.asarray([values[index - 1]], dtype=float),
+                    run_uid=descriptor.run_uid,
+                    seq=emitted + 1,
+                )
+                emitted += 1
+                await self._report({
+                    "step_index": step_index, "step_axes": step_axes,
+                    "sequence": self.sequence, "done": False,
+                    "positions": positions, "shape": shape, "values": values,
+                    "completed": index, "total": total,
+                })
+
+            fit = self._fit(step_axes, positions, values, fit_peak, fit_peak_2d)
+            record = {
+                "step_index": step_index, "step_axes": step_axes,
+                "positions": positions, "values": values, "shape": shape, "fit": fit,
+            }
+            self.steps.append(record)
+            await self._report({
+                "step_index": step_index, "step_axes": step_axes,
+                "sequence": self.sequence, "done": True, **record,
+            })
+
+            if fit is None:
+                break  # qudi's own "stop the whole optimize on a failed fit"
+            await self._command(
+                actuator, {axis: self.best_position[axis] for axis in step_axes}
+            )
+
+    # --- Internals --------------------------------------------------------
+
+    def _sub_axis(self, axis: str) -> ScanAxis:
+        """This step's search window around the best position so far."""
+        low, high, _ = self.axis_ranges[axis]
+        span = (self.search_range or {}).get(
+            axis, abs(high - low) * self.default_range_fraction
+        )
+        centre = self.best_position[axis]
+        return ScanAxis(
+            name=axis, device=self.actuator,
+            start=centre - span / 2, stop=centre + span / 2,
+            points=max(2, (self.points_per_axis or {}).get(axis, 5)),
+        )
+
+    def _fit(self, step_axes, positions, values, fit_peak, fit_peak_2d) -> dict | None:
+        """Fit this step's peak, and refuse a centre it did not measure.
+
+        A least-squares peak fit is unconstrained: given a monotonic slope
+        rather than a peak — which is exactly what a step that started far
+        off-target measures — it happily reports a centre far outside the
+        window that was scanned. Observed on the simulated sample: a sweep
+        of x over [-4, 4] returning a centre of 21.65, which the optimizer
+        then drove to, ending with less signal than it started with and
+        the stage parked well outside its own declared range.
+
+        A centre outside the scanned span is not a measurement, so it is
+        treated as a failed fit — which stops the sequence, the same as
+        qudi's "abort the whole optimize on a failed fit".
+        """
+        measured = [0.0 if v is None else v for v in values]
+        centres: dict[str, float] = {}
+        if len(step_axes) == 1:
+            fit = fit_peak(positions[0], measured)
+            if fit is not None:
+                centres[step_axes[0]] = fit["center"]
+        else:
+            rows, columns = positions
+            grid = np.asarray(measured, dtype=float).reshape(len(rows), len(columns))
+            fit = fit_peak_2d(rows, columns, grid)
+            if fit is not None:
+                centres[step_axes[0]] = fit["center_x"]
+                centres[step_axes[1]] = fit["center_y"]
+
+        if fit is None:
+            return None
+        for index, axis in enumerate(step_axes):
+            swept = positions[index]
+            if not min(swept) <= centres[axis] <= max(swept):
+                return None
+        self.best_position.update(centres)
+        return fit
+
+    async def _report(self, payload: dict[str, Any]) -> None:
+        if self.on_step is not None:
+            await self.on_step(payload)
+
+    async def _command(self, device: Any, targets: dict[str, float]) -> None:
+        await move_and_settle(
+            device, targets, self.settle_tolerance, self.max_settle_polls
+        )
+
+    @property
+    def result(self) -> dict[str, Any]:
+        """What the optimize concluded."""
+        return {
+            "sequence": self.sequence,
+            "steps": self.steps,
+            "best_position": self.best_position,
+        }
+
+
 @dataclass
 class HardwareTimedScanPlan:
     """A whole frame clocked by one device, rather than a software loop.
@@ -381,6 +623,85 @@ class TimeSeriesPlan:
                 )
         finally:
             await detector.unstage()
+
+
+@dataclass
+class ScriptPlan:
+    """A workflow script — `async def run(session) -> dict` in a `.py`.
+
+    The escape hatch, and deliberately kept: "a workflow is a Python file
+    with a `run` function" is the best thing here for scripting. It is
+    human-readable, editable in the UI, runnable from the console and
+    diffable, and a plan object should not take that away from anyone who
+    wants to write the loop themselves.
+
+    So this is a Plan by *composition* rather than by decomposition: it
+    yields no points, because the script owns its own loop. What that
+    costs is exactly what the API already says — pausing a workflow that
+    is not running a plan answers 409, because a script has no point
+    boundary to hold at. What it gains is one entry point: `execute(...)`
+    takes any plan, and a script is one of them.
+
+    A script that wants pause, abort and streaming for free runs a plan of
+    its own inside `run()`, which is what the shipped templates do.
+    """
+
+    path: str
+    params: dict[str, Any] = field(default_factory=dict)
+    name: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            self.name = Path(self.path).stem
+
+    async def describe(self, session: Session) -> RunDescriptor:
+        """What can be known without running it: its declared parameters
+        and the roles it needs. Not its shape — only the script knows
+        that, and only once it has run."""
+        from labpilot.core.workflow.instrument_roles import (
+            read_required_instruments_from_file,
+            read_workflow_params,
+        )
+
+        text = Path(self.path).read_text()
+        roles = read_required_instruments_from_file(self.path)
+        return RunDescriptor(
+            run_uid=str(uuid.uuid4()),
+            plan_name=self.name,
+            devices={
+                role: session.get(role).schema.model_dump(mode="json")
+                for role in roles if session.has(role)
+            },
+            params={**read_workflow_params(text), **self.params},
+        )
+
+    async def points(
+        self, session: Session, descriptor: RunDescriptor
+    ) -> AsyncIterator[DatasetPatch]:
+        """No points: `run()` owns the loop. See the class docstring."""
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+    async def run(self, session: Session, descriptor: RunDescriptor) -> dict[str, Any]:
+        """Import the module and await its `run(session)`, with this
+        workflow's parameters applied as module attributes."""
+        import importlib.util
+
+        path = Path(self.path)
+        spec = importlib.util.spec_from_file_location(f"workflow_script_{path.stem}", path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not load script: {self.path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if not hasattr(module, "run"):
+            raise AttributeError(
+                f"Script {self.path} has no `run(session)` function to execute"
+            )
+        for name, value in self.params.items():
+            if hasattr(module, name):
+                setattr(module, name, value)
+        result = await module.run(session)
+        return result if isinstance(result, dict) else {"result": result}
 
 
 def _by_device(

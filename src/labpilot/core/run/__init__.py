@@ -12,20 +12,32 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from labpilot.core.run.descriptor import RunDescriptor
-from labpilot.core.run.plans import Plan, ScanAxis, ScanPlan, TimeSeriesPlan
-from labpilot.core.run.run import Run, RunAbortedError
+from labpilot.core.run.plans import (
+    HardwareTimedScanPlan,
+    OptimizePlan,
+    Plan,
+    ScanAxis,
+    ScanPlan,
+    ScriptPlan,
+    TimeSeriesPlan,
+)
+from labpilot.core.run.run import Run, RunAbortedError, active_run
 
 if TYPE_CHECKING:
     from labpilot.core.session import Session
 
 __all__ = [
+    "HardwareTimedScanPlan",
+    "OptimizePlan",
     "Plan",
     "Run",
     "RunAbortedError",
     "RunDescriptor",
     "ScanAxis",
     "ScanPlan",
+    "ScriptPlan",
     "TimeSeriesPlan",
+    "active_run",
     "execute",
     "prepare",
 ]
@@ -48,6 +60,13 @@ async def execute(session: Session, plan: Plan) -> dict[str, Any]:
     The result is the flat N-D scan convention every existing template
     emits and every view reads, so a template rewritten onto a plan is a
     drop-in for the loop it replaces.
+
+    A plan that owns its own loop (`ScriptPlan`) says so by defining
+    `run()`, and that is what gets awaited — one entry point for both,
+    rather than the caller having to know which kind it holds.
     """
     run = await prepare(session, plan)
+    own_loop = getattr(plan, "run", None)
+    if own_loop is not None:
+        return await own_loop(session, run.descriptor)
     return await run.execute(plan.points(session, run.descriptor))

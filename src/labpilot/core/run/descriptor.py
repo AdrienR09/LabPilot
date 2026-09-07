@@ -68,6 +68,9 @@ class RunDescriptor:
     """How many leading axes the plan iterates over."""
     value_name: str = "data"
     value_unit: str = ""
+    driven: tuple[str, ...] = ()
+    """Devices this run commands, when its axes cannot say so — see
+    `actuators`."""
     devices: Mapping[str, Any] = field(default_factory=dict)
     """Serialised `DeviceSchema` per role, for provenance."""
     params: Mapping[str, Any] = field(default_factory=dict)
@@ -114,7 +117,15 @@ class RunDescriptor:
 
     @property
     def actuators(self) -> tuple[str, ...]:
-        """Devices this run drives — what `abort()` has to stop."""
+        """Devices this run drives — what `abort()` has to stop.
+
+        Usually the movable axes say so themselves. A run whose axis is a
+        point index still drives hardware, though — an optimize scans
+        around wherever the previous fit landed, so its coordinates are
+        not knowable up front — and it names those devices in `driven`.
+        """
+        if self.driven:
+            return self.driven
         seen: list[str] = []
         for axis in self.axes:
             if axis.movable and axis.device and axis.device not in seen:

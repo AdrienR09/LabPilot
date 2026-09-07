@@ -24,21 +24,23 @@ import re
 import threading
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from labpilot.core.data.dataset import Dataset, RunMeta, summarise_arrays
 from labpilot.core.events import Event, EventKind
 from labpilot.core.run.run import RunAbortedError, active_run
-from labpilot.core.session import Session
 from labpilot.core.storage.runs import RunStore
-from labpilot.core.workflow.graph import WorkflowGraph
 from labpilot.core.workflow.instrument_roles import (
     read_required_instruments_from_file,
     read_result_ui_from_file,
 )
-from labpilot.core.workflow.store import WorkflowStore
 
-__all__ = ["WorkflowEngine", "WorkflowExecutionError"]
+if TYPE_CHECKING:
+    from labpilot.core.session import Session
+    from labpilot.core.workflow.graph import WorkflowGraph
+    from labpilot.core.workflow.store import WorkflowStore
+
+__all__ = ["RunManager", "WorkflowExecutionError"]
 
 
 class WorkflowExecutionError(Exception):
@@ -85,7 +87,7 @@ class _WorkflowRunner:
         self._thread.join(timeout=5.0)
 
 
-class WorkflowEngine:
+class RunManager:
     """Async workflow execution engine.
 
     One run per workflow id at a time; different workflows may run

@@ -1,6 +1,6 @@
 """Role aliases must be per-execution, not shared session state.
 
-WorkflowEngine binds a workflow's roles (`register_alias`) immediately before
+RunManager binds a workflow's roles (`register_alias`) immediately before
 running it and clears them afterwards. When those lived in a plain instance
 dict on the shared Session, two workflows running at once shared one
 namespace: both templates use the role name "detector", so the second to start
