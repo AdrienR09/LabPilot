@@ -17,7 +17,6 @@ import numpy as np
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from labpilot.core.config import DeviceConfig
 from labpilot.core.config.instrument_sets import (
     InstrumentSetError,
     InstrumentSetPersistence,
@@ -27,15 +26,20 @@ from labpilot.core.config.instrument_ui_prefs import (
     get_instrument_ui_prefs,
     set_instrument_ui_prefs,
 )
-from labpilot.core.device.kinds import wrap as wrap_instrument
 from labpilot.core.errors import (
     NotConnectedError,
     ParameterError,
     UnsupportedOperationError,
 )
+from labpilot.core.lab import (
+    InstrumentHandle,
+    InstrumentSpec,
+    Lab,
+    UnknownInstrumentError,
+)
 from labpilot.core.session import Session
-from labpilot.instruments import INSTRUMENT_CATALOG, adapter_registry, available_catalog
-from labpilot.instruments.factory import UnknownAdapterError, create_adapter
+from labpilot.instruments import available_catalog
+from labpilot.instruments.factory import UnknownAdapterError
 
 
 def _jsonable_read(data: dict[str, Any]) -> dict[str, Any]:
@@ -126,423 +130,92 @@ class DashboardState(BaseModel):
 
 
 class DashboardManager:
-    """Manages dashboard state, instruments, and workflows."""
+    """The HTTP/WebSocket face of the `Lab`.
+
+    Everything about *which instruments exist and what they are doing* now
+    lives in `core/lab/` — this class turns that model into the wire format
+    the Devices UI and the console client already speak, and owns the
+    WebSocket fan-out, which is genuinely presentation.
+
+    It used to be the model as well: `self.instruments` was a dict of
+    untyped dicts holding the adapter, its address, its saved settings, its
+    status and its last error together, and `_save_active_config()` wrote
+    the whole thing to disk from the `finally` of nearly every operation.
+    That is what let a runtime write land in the saved configuration. With
+    the spec/handle split the save calls that remain are the ones that
+    follow a change to the configuration itself.
+    """
 
     def __init__(self):
-        self.instruments: dict[str, Any] = {}  # id -> adapter instance
+        self.lab = Lab()
         self.websockets: list[WebSocket] = []
         self.instrument_data_streams: dict[str, asyncio.Task] = {}
-        self.config_store = InstrumentSetPersistence()
-        self.active_config_name: str | None = None
-        # Set once at server startup (see server.py) so a connected
-        # instrument is also resolvable by name from a workflow node
-        # (RunManager reads through Session, not this dict) — optional
-        # so this module stays usable standalone (e.g. in tests) without a
-        # full server.
-        self.session: Session | None = None
+
+    # --- The lab, as the routes and the rest of the server see it ---------
+
+    @property
+    def instruments(self) -> dict[str, InstrumentHandle]:
+        """Every configured instrument, by id."""
+        return {handle.id: handle for handle in self.lab}
+
+    @property
+    def config_store(self) -> InstrumentSetPersistence:
+        return self.lab.store
+
+    @property
+    def active_config_name(self) -> str | None:
+        return self.lab.active_config
+
+    @property
+    def session(self) -> Session | None:
+        return self.lab.session
 
     def set_session(self, session: Session) -> None:
-        """Attach the shared Session so connect/disconnect can mirror
-        instrument availability into it (see connect_instrument/
-        disconnect_instrument)."""
-        self.session = session
+        """Attach the shared Session, so a connected instrument is also
+        resolvable by name from a workflow script."""
+        self.lab.set_session(session)
 
-    def _instantiate(self, adapter_key: str, instrument_id: str, name: str,
-                      connection_params: dict[str, Any],
-                      custom_settings: dict[str, Any] | None = None) -> None:
-        """Instantiate one adapter and add it to self.instruments, disconnected.
-
-        `custom_settings` (config-only settable params staged via the
-        Settings UI, e.g. integration time) are remembered here even though
-        they can't be written to hardware yet — connect_instrument() writes
-        them the moment the adapter actually connects.
-        """
-        adapter = create_adapter(adapter_key, connection_params, name=name)
-        dim = next(
-            (m.instrument_type.value.split("_")[-1].upper() for m in INSTRUMENT_CATALOG
-             if m.adapter_key == adapter_key),
-            "0D",
-        )
-        self.instruments[instrument_id] = {
-            "adapter": adapter,
-            "name": name,
-            "adapter_type": adapter_key,
-            "connection_params": connection_params,
-            "custom_settings": dict(custom_settings) if custom_settings else {},
-            "dimensionality": dim,
-            "schema": adapter.schema,
-            "status": "idle",
-            "error": None,
-        }
-
-    def _snapshot(self) -> list[DeviceConfig]:
-        """Build DeviceConfig entries from the current live instrument set."""
-        entries = []
-        for inst_id, inst in self.instruments.items():
-            entries.append(DeviceConfig(
-                id=inst_id,
-                name=inst["name"],
-                adapter_type=inst["adapter_type"],
-                connection_params=inst.get("connection_params", {}),
-                custom_settings=inst.get("custom_settings", {}),
-                status=inst.get("status"),
-                last_connected=time.time() if inst["adapter"].connected else None,
-            ))
-        return entries
-
-    def _save_active_config(self) -> None:
-        """Persist the current instrument set under the active config name, if any."""
-        if self.active_config_name is None:
-            return
-        try:
-            self.config_store.save(self.active_config_name, self._snapshot())
-        except InstrumentSetError as e:
-            print(f"⚠️ Failed to save instrument config {self.active_config_name!r}: {e}")
+    # --- Instrument sets --------------------------------------------------
 
     async def initialize_instruments(self):
-        """Load the active instrument-set config, or seed a fresh "default"
-        one from the catalog (instruments.MockBasic) if none exists yet.
-
-        Either way, instruments come from real `instruments/` adapter code —
-        never a hardcoded list living in `core/`.
-        """
-        active = self.config_store.get_active_name()
-        if active is not None:
-            try:
-                await self.load_instrument_set(active)
-                return
-            except InstrumentSetError as e:
-                print(f"⚠️ Failed to load active config {active!r}, reseeding: {e}")
-
-        seed_manufacturer = "MockBasic"
-        seed_entries = [m for m in INSTRUMENT_CATALOG if m.manufacturer == seed_manufacturer]
-        for entry in seed_entries:
-            try:
-                self._instantiate(entry.adapter_key, entry.adapter_key, entry.display_name, {})
-                print(f"✅ Registered {entry.display_name} ({entry.adapter_key}) - disconnected")
-            except Exception as e:
-                print(f"❌ Failed to register {entry.display_name}: {e}")
-
-        self.active_config_name = InstrumentSetPersistence.DEFAULT_NAME
-        self.config_store.set_active_name(self.active_config_name)
-        self._save_active_config()
+        """Load the active instrument-set config, or seed a fresh one."""
+        await self.lab.initialize()
 
     async def load_instrument_set(self, name: str) -> None:
         """Tear down the current instrument set and load a named config."""
-        for inst_id in list(self.instruments.keys()):
-            adapter = self.instruments[inst_id]["adapter"]
-            if adapter.connected:
-                try:
-                    await adapter.disconnect()
-                except Exception:
-                    pass
-            if self.session is not None:
-                self.session.unregister(inst_id)
-        self.instruments.clear()
-
-        entries = self.config_store.load(name)  # raises InstrumentSetError if missing/corrupt
-        for entry in entries:
-            try:
-                self._instantiate(entry.adapter_type, entry.id or entry.name, entry.name,
-                                   entry.connection_params, entry.custom_settings)
-                print(f"✅ Loaded {entry.name} ({entry.id}) from config {name!r}")
-            except Exception as e:
-                print(f"❌ Failed to load {entry.name} from config {name!r}: {e}")
-
-        self.active_config_name = name
-        self.config_store.set_active_name(name)
+        await self.lab.load(name)
 
     def save_instrument_set_as(self, name: str) -> None:
-        """Snapshot the current instrument set to a (new or existing) named config
-        and make it the active one."""
-        self.config_store.save(name, self._snapshot())
-        self.active_config_name = name
-        self.config_store.set_active_name(name)
+        """Snapshot the current instrument set under a name and activate it."""
+        self.lab.save_as(name)
 
     async def create_blank_instrument_set(self, name: str) -> None:
-        """Tear down the current instrument set and start a new, empty
-        named config — instruments added afterward save into it."""
-        for inst_id in list(self.instruments.keys()):
-            adapter = self.instruments[inst_id]["adapter"]
-            if adapter.connected:
-                try:
-                    await adapter.disconnect()
-                except Exception:
-                    pass
-            if self.session is not None:
-                self.session.unregister(inst_id)
-        self.instruments.clear()
-
-        self.config_store.save(name, [])
-        self.active_config_name = name
-        self.config_store.set_active_name(name)
+        """Start a new, empty named config; instruments added later save into it."""
+        await self.lab.new(name)
 
     async def import_instrument_set(self, name: str, device_dicts: list[dict[str, Any]]) -> None:
-        """Load an uploaded config's device list, save it under `name`, and
-        make it active — same effect as `load_instrument_set`, but the
-        source is an upload rather than an already-known config file."""
-        entries = [DeviceConfig(**d) for d in device_dicts]
-        self.config_store.save(name, entries)
-        await self.load_instrument_set(name)
+        """Load an uploaded config's device list, save it, and make it active."""
+        await self.lab.import_specs(name, device_dicts)
+
+    # --- One instrument ---------------------------------------------------
 
     def get_instrument_status(self, instrument_id: str) -> InstrumentStatus:
-        """Get current status of an instrument."""
-        if instrument_id not in self.instruments:
-            raise ValueError(f"Instrument {instrument_id} not found")
-
-        inst = self.instruments[instrument_id]
-        schema = inst["schema"]
-        adapter = inst["adapter"]
-
+        """One instrument's spec and runtime state, in the wire format."""
+        handle = self.lab.get(instrument_id)
         return InstrumentStatus(
-            id=instrument_id,
-            name=inst["name"],
-            adapter_type=inst["adapter_type"],
-            kind=schema.kind,
-            dimensionality=inst["dimensionality"],
-            tags=schema.tags,
-            connected=adapter.connected,
-            status=inst.get("status", "idle"),
-            error=inst.get("error"),
-            data=None,  # Will be populated by real-time stream
-            connection_params=inst.get("connection_params", {}),
-            custom_settings=inst.get("custom_settings", {}),
+            id=handle.id,
+            name=handle.name,
+            adapter_type=handle.adapter_key,
+            kind=handle.schema.kind,
+            dimensionality=handle.dimensionality,
+            tags=handle.schema.tags,
+            connected=handle.connected,
+            status=handle.status,
+            error=handle.error,
+            data=None,  # populated by the real-time stream
+            connection_params=dict(handle.spec.connection),
+            custom_settings=dict(handle.spec.defaults),
         )
-
-    async def connect_instrument(self, instrument_id: str) -> InstrumentStatus:
-        """Connect an instrument's adapter to real hardware.
-
-        Any config values staged via write_instrument_settings() while
-        disconnected (or loaded from a saved config) are applied right
-        after — the earliest point a real adapter can actually accept a
-        write, since most only construct their underlying `_instrument`
-        handle in connect().
-        """
-        if instrument_id not in self.instruments:
-            raise ValueError(f"Instrument {instrument_id} not found")
-
-        inst = self.instruments[instrument_id]
-        inst["status"] = "busy"
-        inst["error"] = None
-        try:
-            await inst["adapter"].connect()
-            custom_settings = inst.get("custom_settings") or {}
-            if custom_settings:
-                try:
-                    await inst["adapter"].write(custom_settings)
-                except Exception as e:
-                    print(f"⚠️ Failed to apply saved settings for {instrument_id}: {e}")
-            inst["status"] = "idle"
-            # Make this instrument resolvable by a workflow node
-            # (AcquireNode.device / SetNode.device) under its dashboard id —
-            # a no-op if no session is attached (see set_session()).
-            if self.session is not None:
-                self.session.unregister(instrument_id)  # replace(), not duplicate-error on reconnect
-                self.session.register(inst["adapter"], name=instrument_id)
-        except Exception as e:
-            inst["status"] = "error"
-            inst["error"] = str(e)
-            raise
-        finally:
-            self._save_active_config()
-            await self.broadcast_to_websockets({
-                "type": "instrument_status",
-                "instrument_id": instrument_id,
-                "data": self.get_instrument_status(instrument_id).model_dump(),
-            })
-        return self.get_instrument_status(instrument_id)
-
-    async def disconnect_instrument(self, instrument_id: str) -> InstrumentStatus:
-        """Disconnect an instrument's adapter from hardware."""
-        if instrument_id not in self.instruments:
-            raise ValueError(f"Instrument {instrument_id} not found")
-
-        inst = self.instruments[instrument_id]
-        inst["status"] = "busy"
-        try:
-            await inst["adapter"].disconnect()
-            inst["status"] = "idle"
-            inst["error"] = None
-            if self.session is not None:
-                self.session.unregister(instrument_id)
-        except Exception as e:
-            inst["status"] = "error"
-            inst["error"] = str(e)
-            raise
-        finally:
-            self._save_active_config()
-            await self.broadcast_to_websockets({
-                "type": "instrument_status",
-                "instrument_id": instrument_id,
-                "data": self.get_instrument_status(instrument_id).model_dump(),
-            })
-        return self.get_instrument_status(instrument_id)
-
-    async def write_instrument_settings(
-        self, instrument_id: str, values: dict[str, Any], *, persist: bool = True
-    ) -> InstrumentStatus:
-        """Set one or more of an instrument's settable parameters.
-
-        With `persist` (the default, used by the Settings UI) the values are
-        also remembered as custom_settings and written to the active
-        instrument-set config, so they are restored the next time this
-        instrument connects.
-
-        `persist=False` is for ordinary runtime writes — a console loop
-        stepping a stage, a workflow moving an actuator. Those used to take
-        the same path, so every point of a scan rewrote the instrument-set
-        JSON to disk and left the last scan position saved as that
-        instrument's startup setting, replayed on the next connect.
-        """
-        if instrument_id not in self.instruments:
-            raise ValueError(f"Instrument {instrument_id} not found")
-
-        inst = self.instruments[instrument_id]
-        adapter = inst["adapter"]
-
-        # Validate first, and validate even when the instrument is
-        # disconnected: this endpoint saves settings for later application,
-        # so without this an out-of-range value would be stored, reported
-        # as saved, and then fail on the next connect — far from where the
-        # user typed it. Needs no hardware, only the schema.
-        checked = adapter.validate_write(values)
-
-        if adapter.connected:
-            await adapter.write(values)
-
-        if persist:
-            # The coerced values, not the raw ones, so what gets replayed
-            # on the next connect is what the device actually accepted.
-            inst.setdefault("custom_settings", {}).update(checked)
-            self._save_active_config()
-        return self.get_instrument_status(instrument_id)
-
-    async def set_instrument_staged(self, instrument_id: str, staged: bool) -> InstrumentStatus:
-        """Stage or unstage an instrument for acquisition.
-
-        `stage()`/`unstage()` are part of every adapter's contract and are
-        what a real acquisition loop brackets its reads with (arm the
-        camera, allocate the counter's buffer), but they had no route, so
-        the console and any other out-of-process client could only read and
-        write. Without them a scan driven from a notebook silently ran
-        every point unstaged.
-        """
-        if instrument_id not in self.instruments:
-            raise ValueError(f"Instrument {instrument_id} not found")
-
-        adapter = self.instruments[instrument_id]["adapter"]
-        if not adapter.connected:
-            raise NotConnectedError(
-                f"{instrument_id} is not connected", device=instrument_id
-            )
-        await (adapter.stage() if staged else adapter.unstage())
-        return self.get_instrument_status(instrument_id)
-
-    async def stop_instrument(self, instrument_id: str) -> InstrumentStatus:
-        """Stop a moving instrument where it is (`Motor.stop()`).
-
-        The half of "abort" that reaches hardware: ending the loop that
-        commands a stage does not stop the stage, which keeps travelling to
-        the position last commanded. Routed rather than reimplemented for
-        the console, so the remote handle and the in-process wrapper stop a
-        device the same way — including the fallback for the (measured:
-        nearly all) adapters that declare no halt command of their own.
-        """
-        if instrument_id not in self.instruments:
-            raise ValueError(f"Instrument {instrument_id} not found")
-
-        adapter = self.instruments[instrument_id]["adapter"]
-        if not adapter.connected:
-            raise NotConnectedError(
-                f"{instrument_id} is not connected", device=instrument_id
-            )
-        device = wrap_instrument(adapter)
-        stop = getattr(device, "stop", None)
-        if stop is None:
-            raise UnsupportedOperationError(
-                f"{instrument_id} is not something that moves, so it cannot be stopped",
-                device=instrument_id,
-            )
-        await stop()
-        return self.get_instrument_status(instrument_id)
-
-    async def call_instrument_action(self, instrument_id: str, action_name: str) -> InstrumentStatus:
-        """Invoke one of an instrument's declared `DeviceSchema.actions` —
-        a zero-argument adapter method that isn't a settable-parameter
-        write (e.g. a microwave source's `cw_on`/`off`, a pulse
-        sequencer's `start`/`stop`). Requires the instrument to be
-        connected — unlike write_instrument_settings, an action can't be
-        staged for later since it's a state transition, not a value."""
-        if instrument_id not in self.instruments:
-            raise ValueError(f"Instrument {instrument_id} not found")
-
-        inst = self.instruments[instrument_id]
-        schema = inst["schema"]
-        if action_name not in schema.actions:
-            raise KeyError(f"Instrument {instrument_id} declares no action {action_name!r}")
-        if not inst["adapter"].connected:
-            raise ConnectionError("Instrument is not connected")
-
-        method = getattr(inst["adapter"], action_name)
-        await method()
-        self._save_active_config()
-        await self.broadcast_to_websockets({
-            "type": "instrument_status",
-            "instrument_id": instrument_id,
-            "data": self.get_instrument_status(instrument_id).model_dump(),
-        })
-        return self.get_instrument_status(instrument_id)
-
-    async def update_instrument_connection(
-        self, instrument_id: str, connection_params: dict[str, Any]
-    ) -> InstrumentStatus:
-        """Replace an instrument's connection parameters (e.g. a new VISA
-        address) by re-instantiating its adapter under the same id/name.
-
-        Disconnects first if currently connected — repointing a live adapter
-        at different hardware mid-connection isn't safe. If the new params
-        are rejected, the previous entry is left in place (untouched, since
-        `_instantiate` only replaces `self.instruments[instrument_id]` after
-        the new adapter is constructed successfully) so the instrument isn't
-        left in a half-broken state — just disconnected, as if you'd hit
-        Disconnect.
-        """
-        if instrument_id not in self.instruments:
-            raise ValueError(f"Instrument {instrument_id} not found")
-
-        inst = self.instruments[instrument_id]
-        adapter_key = inst["adapter_type"]
-        name = inst["name"]
-        custom_settings = inst.get("custom_settings", {})
-
-        if inst["adapter"].connected:
-            try:
-                await inst["adapter"].disconnect()
-            except Exception:
-                pass  # Best-effort — we're about to replace the adapter anyway
-
-        self._instantiate(adapter_key, instrument_id, name, connection_params, custom_settings)
-        self._save_active_config()
-        await self.broadcast_to_websockets({
-            "type": "instrument_status",
-            "instrument_id": instrument_id,
-            "data": self.get_instrument_status(instrument_id).model_dump(),
-        })
-        return self.get_instrument_status(instrument_id)
-
-    async def remove_instrument(self, instrument_id: str) -> None:
-        """Disconnect (if needed) and remove an instrument from the dashboard."""
-        if instrument_id not in self.instruments:
-            raise ValueError(f"Instrument {instrument_id} not found")
-
-        adapter = self.instruments[instrument_id]["adapter"]
-        if adapter.connected:
-            try:
-                await adapter.disconnect()
-            except Exception:
-                pass  # Remove regardless of disconnect failure
-        del self.instruments[instrument_id]
-        self._save_active_config()
 
     def create_instrument(
         self,
@@ -552,17 +225,137 @@ class DashboardManager:
         connection_params: dict[str, Any],
     ) -> InstrumentStatus:
         """Instantiate (but don't connect) a new instrument from the catalog."""
-        instrument_id = instrument_id or f"{adapter_key}_{len(self.instruments) + 1}"
-        if instrument_id in self.instruments:
+        instrument_id = instrument_id or f"{adapter_key}_{len(self.lab) + 1}"
+        if instrument_id in self.lab:
             raise ValueError(f"Instrument id {instrument_id!r} already exists")
 
+        spec = InstrumentSpec(
+            id=instrument_id,
+            adapter_key=adapter_key,
+            name=name or adapter_key,
+            connection=connection_params,
+        )
         try:
-            self._instantiate(adapter_key, instrument_id, name or adapter_key, connection_params)
+            self.lab.add(spec)
         except UnknownAdapterError as e:
             raise ValueError(str(e)) from e
 
-        self._save_active_config()
+        self.lab.save()
         return self.get_instrument_status(instrument_id)
+
+    async def connect_instrument(self, instrument_id: str) -> InstrumentStatus:
+        """Connect an instrument's adapter to real hardware.
+
+        The spec's startup settings are applied right after — the earliest
+        point a real adapter can accept a write, since most only build
+        their underlying handle in `connect()`. Nothing is saved: connecting
+        does not change the configuration.
+        """
+        try:
+            await self.lab.connect(instrument_id)
+        finally:
+            await self._broadcast_status(instrument_id)
+        return self.get_instrument_status(instrument_id)
+
+    async def disconnect_instrument(self, instrument_id: str) -> InstrumentStatus:
+        """Disconnect an instrument's adapter from hardware."""
+        try:
+            await self.lab.disconnect(instrument_id)
+        finally:
+            await self._broadcast_status(instrument_id)
+        return self.get_instrument_status(instrument_id)
+
+    async def write_instrument_settings(
+        self, instrument_id: str, values: dict[str, Any], *, persist: bool = True
+    ) -> InstrumentStatus:
+        """Set one or more of an instrument's settable parameters.
+
+        With `persist` (the Settings UI) the values also become part of the
+        instrument's spec, so they are re-applied the next time it
+        connects. `persist=False` is an ordinary runtime write — a console
+        loop stepping a stage, a jog control. Those used to take the same
+        path, so every point of a scan rewrote the config file and the
+        position the scan stopped at became the stage's startup setting.
+        """
+        handle = self.lab.get(instrument_id)
+
+        # Validate first, and validate even while disconnected: this
+        # endpoint saves settings for later application, so otherwise an
+        # out-of-range value would be stored, reported as saved, and then
+        # fail on the next connect — far from where it was typed. Needs no
+        # hardware, only the schema.
+        checked = handle.validate_write(values)
+
+        if handle.connected:
+            await handle.write(values)
+
+        if persist:
+            # The coerced values, not the raw ones, so what is replayed on
+            # the next connect is what the device actually accepted.
+            self.lab.update_spec(instrument_id, handle.spec.with_defaults(checked))
+            self.lab.save()
+        return self.get_instrument_status(instrument_id)
+
+    async def set_instrument_staged(self, instrument_id: str, staged: bool) -> InstrumentStatus:
+        """Stage or unstage an instrument for acquisition.
+
+        `stage()`/`unstage()` are part of every adapter's contract and are
+        what a real acquisition loop brackets its reads with (arm the
+        camera, allocate the counter's buffer), but they had no route, so
+        a scan driven from a notebook silently ran every point unstaged.
+        """
+        await self.lab.get(instrument_id).set_staged(staged)
+        return self.get_instrument_status(instrument_id)
+
+    async def stop_instrument(self, instrument_id: str) -> InstrumentStatus:
+        """Stop a moving instrument where it is (`Motor.stop()`).
+
+        The half of "abort" that reaches hardware: ending the loop that
+        commands a stage does not stop the stage, which keeps travelling to
+        the position last commanded. Routed rather than reimplemented for
+        the console, so a remote handle and an in-process wrapper stop a
+        device the same way.
+        """
+        await self.lab.get(instrument_id).stop()
+        return self.get_instrument_status(instrument_id)
+
+    async def call_instrument_action(self, instrument_id: str, action_name: str) -> InstrumentStatus:
+        """Invoke one of an instrument's declared `DeviceSchema.actions` —
+        a zero-argument adapter method that isn't a settable-parameter
+        write (a microwave source's `cw_on`, a pulse sequencer's `start`).
+        Requires the instrument to be connected: unlike a setting, an
+        action is a state transition, so it cannot be staged for later."""
+        await self.lab.get(instrument_id).call(action_name)
+        await self._broadcast_status(instrument_id)
+        return self.get_instrument_status(instrument_id)
+
+    async def update_instrument_connection(
+        self, instrument_id: str, connection_params: dict[str, Any]
+    ) -> InstrumentStatus:
+        """Point an instrument at different hardware (a new VISA address),
+        rebuilding its adapter under the same id.
+
+        Disconnects first — repointing a live adapter mid-connection isn't
+        safe. If the new parameters are rejected the previous instrument is
+        left in place, disconnected, because `Lab.add` only stores the
+        handle once the adapter has been constructed successfully.
+        """
+        handle = self.lab.get(instrument_id)
+        if handle.connected:
+            try:
+                await self.lab.disconnect(instrument_id)
+            except Exception:
+                pass  # Best-effort — the adapter is about to be replaced.
+
+        self.lab.add(handle.spec.with_connection(connection_params))
+        self.lab.save()
+        await self._broadcast_status(instrument_id)
+        return self.get_instrument_status(instrument_id)
+
+    async def remove_instrument(self, instrument_id: str) -> None:
+        """Disconnect (if needed) and remove an instrument from the lab."""
+        await self.lab.remove(instrument_id)
+        self.lab.save()
 
     def get_dashboard_state(self) -> DashboardState:
         """Get complete dashboard state.
@@ -570,40 +363,39 @@ class DashboardManager:
         Workflows are a separate, real system (core/workflow/ + the
         /api/workflows* routes in server.py) — not part of dashboard state.
         """
-        instruments = [
-            self.get_instrument_status(inst_id) for inst_id in self.instruments.keys()
-        ]
-        return DashboardState(instruments=instruments)
+        return DashboardState(
+            instruments=[self.get_instrument_status(i) for i in self.lab.ids]
+        )
+
+    # --- WebSockets -------------------------------------------------------
 
     async def stream_instrument_data(self, instrument_id: str, websocket: WebSocket):
         """Stream real-time data from an instrument to a WebSocket."""
-        if instrument_id not in self.instruments:
-            raise ValueError(f"Instrument {instrument_id} not found")
-
-        inst = self.instruments[instrument_id]
-        adapter = inst["adapter"]
-
+        handle = self.lab.get(instrument_id)
         try:
             while True:
-                # Read from instrument
-                data = await adapter.read()
-
-                # Send to WebSocket
-                message = {
+                data = await handle.adapter.read()
+                await websocket.send_json({
                     "type": "instrument_data",
                     "instrument_id": instrument_id,
                     "data": _jsonable_read(data),
                     "timestamp": time.time(),
-                }
-                await websocket.send_json(message)
-
-                # Update rate: 10 Hz
-                await asyncio.sleep(0.1)
-
+                })
+                await asyncio.sleep(0.1)  # 10 Hz
         except WebSocketDisconnect:
             pass
         except Exception as e:
             print(f"Error streaming {instrument_id}: {e}")
+
+    async def _broadcast_status(self, instrument_id: str) -> None:
+        """Push one instrument's current status to every listening client."""
+        if instrument_id not in self.lab:
+            return
+        await self.broadcast_to_websockets({
+            "type": "instrument_status",
+            "instrument_id": instrument_id,
+            "data": self.get_instrument_status(instrument_id).model_dump(),
+        })
 
     async def broadcast_to_websockets(self, message: dict[str, Any]):
         """Broadcast message to all connected WebSockets."""
@@ -614,7 +406,6 @@ class DashboardManager:
             except Exception:
                 disconnected.append(ws)
 
-        # Remove disconnected WebSockets
         for ws in disconnected:
             self.websockets.remove(ws)
 
@@ -648,7 +439,7 @@ async def list_instruments():
     manager = get_dashboard_manager()
     instruments = [
         manager.get_instrument_status(inst_id).model_dump()
-        for inst_id in manager.instruments.keys()
+        for inst_id in manager.lab.ids
     ]
     return {"success": True, "data": instruments}
 
@@ -658,9 +449,9 @@ async def get_instrument_schema(instrument_id: str):
     """Get an instrument's real DeviceSchema (readable/settable/units/limits),
     for rendering an instrument-specific settings form."""
     manager = get_dashboard_manager()
-    if instrument_id not in manager.instruments:
+    if instrument_id not in manager.lab:
         raise HTTPException(status_code=404, detail=f"Instrument {instrument_id} not found")
-    schema = manager.instruments[instrument_id]["schema"]
+    schema = manager.lab[instrument_id].schema
     # The whole schema, not a hand-picked subset: this listed eight keys by
     # name, so `parameters` — with the roles, tags and choices every client
     # needs to stop guessing from key names — would have been invisible on
@@ -673,13 +464,13 @@ async def get_instrument_schema(instrument_id: str):
 async def read_instrument_data(instrument_id: str):
     """One-shot read of an instrument's current values (must be connected)."""
     manager = get_dashboard_manager()
-    if instrument_id not in manager.instruments:
+    if instrument_id not in manager.lab:
         raise HTTPException(status_code=404, detail=f"Instrument {instrument_id} not found")
-    inst = manager.instruments[instrument_id]
-    if not inst["adapter"].connected:
+    handle = manager.lab[instrument_id]
+    if not handle.connected:
         raise HTTPException(status_code=409, detail="Instrument is not connected")
     try:
-        data = await inst["adapter"].read()
+        data = await handle.read()
         return {"success": True, "data": _jsonable_read(data)}
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Read failed: {e}")
@@ -695,9 +486,9 @@ async def write_instrument_settings(instrument_id: str, request: WriteSettingsRe
     applied immediately.
     """
     manager = get_dashboard_manager()
-    if instrument_id not in manager.instruments:
+    if instrument_id not in manager.lab:
         raise HTTPException(status_code=404, detail=f"Instrument {instrument_id} not found")
-    was_connected = manager.instruments[instrument_id]["adapter"].connected
+    was_connected = manager.lab[instrument_id].connected
     try:
         await manager.write_instrument_settings(
             instrument_id, request.values, persist=request.persist
@@ -736,7 +527,7 @@ async def _set_staged(instrument_id: str, staged: bool):
     try:
         status = await manager.set_instrument_staged(instrument_id, staged)
         return {"success": True, "data": status.model_dump()}
-    except ValueError as e:
+    except UnknownInstrumentError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except NotConnectedError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
@@ -752,7 +543,7 @@ async def stop_instrument(instrument_id: str):
     try:
         status = await manager.stop_instrument(instrument_id)
         return {"success": True, "data": status.model_dump()}
-    except ValueError as e:
+    except UnknownInstrumentError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except NotConnectedError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
@@ -771,9 +562,7 @@ async def call_instrument_action(instrument_id: str, action_name: str):
     try:
         status = await manager.call_instrument_action(instrument_id, action_name)
         return {"success": True, "data": status.model_dump()}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except KeyError as e:
+    except (UnknownInstrumentError, KeyError) as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ConnectionError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -788,7 +577,7 @@ async def read_instrument_ui_prefs(instrument_id: str):
     Settings modal, not a device parameter. See
     core/config/instrument_ui_prefs.py."""
     manager = get_dashboard_manager()
-    if instrument_id not in manager.instruments:
+    if instrument_id not in manager.lab:
         raise HTTPException(status_code=404, detail=f"Instrument {instrument_id} not found")
     return {"success": True, "data": get_instrument_ui_prefs(instrument_id)}
 
@@ -800,9 +589,9 @@ async def read_instrument_ui_prefs_schema(instrument_id: str):
     can render its "Native UI" section generically instead of one-off JSX
     per preference. See core/config/instrument_ui_prefs.py."""
     manager = get_dashboard_manager()
-    if instrument_id not in manager.instruments:
+    if instrument_id not in manager.lab:
         raise HTTPException(status_code=404, detail=f"Instrument {instrument_id} not found")
-    schema = manager.instruments[instrument_id]["schema"]
+    schema = manager.lab[instrument_id].schema
     return {"success": True, "data": get_display_pref_schema(schema.kind)}
 
 
@@ -810,7 +599,7 @@ async def read_instrument_ui_prefs_schema(instrument_id: str):
 async def write_instrument_ui_prefs(instrument_id: str, request: UIPrefsRequest):
     """Save this instrument's native-UI display preferences."""
     manager = get_dashboard_manager()
-    if instrument_id not in manager.instruments:
+    if instrument_id not in manager.lab:
         raise HTTPException(status_code=404, detail=f"Instrument {instrument_id} not found")
     set_instrument_ui_prefs(instrument_id, request.prefs)
     return {"success": True, "data": {"message": "UI preferences saved"}}
@@ -868,7 +657,7 @@ async def connect_instrument(instrument_id: str):
     try:
         status = await manager.connect_instrument(instrument_id)
         return {"success": True, "data": status.model_dump()}
-    except ValueError as e:
+    except UnknownInstrumentError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Connection failed: {e}")
@@ -881,7 +670,7 @@ async def disconnect_instrument(instrument_id: str):
     try:
         status = await manager.disconnect_instrument(instrument_id)
         return {"success": True, "data": status.model_dump()}
-    except ValueError as e:
+    except UnknownInstrumentError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Disconnect failed: {e}")
@@ -896,7 +685,7 @@ async def update_instrument_connection(instrument_id: str, request: UpdateConnec
     try:
         status = await manager.update_instrument_connection(instrument_id, request.connection_params)
         return {"success": True, "data": status.model_dump()}
-    except ValueError as e:
+    except UnknownInstrumentError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except TypeError as e:
         raise HTTPException(status_code=422, detail=f"Invalid connection parameters: {e}")
@@ -909,7 +698,7 @@ async def remove_instrument(instrument_id: str):
     try:
         await manager.remove_instrument(instrument_id)
         return {"success": True, "data": {"message": f"Removed {instrument_id}"}}
-    except ValueError as e:
+    except UnknownInstrumentError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
 
@@ -950,7 +739,7 @@ async def upload_instrument_config(request: UploadInstrumentConfigRequest):
     try:
         await manager.import_instrument_set(name, request.devices)
         instruments = [
-            manager.get_instrument_status(i).model_dump() for i in manager.instruments
+            manager.get_instrument_status(i).model_dump() for i in manager.lab.ids
         ]
         return {"success": True, "data": {"active": name, "instruments": instruments}}
     except (InstrumentSetError, TypeError) as e:
@@ -964,7 +753,7 @@ async def activate_instrument_config(name: str):
     try:
         await manager.load_instrument_set(name)
         instruments = [
-            manager.get_instrument_status(i).model_dump() for i in manager.instruments
+            manager.get_instrument_status(i).model_dump() for i in manager.lab.ids
         ]
         return {"success": True, "data": {"active": name, "instruments": instruments}}
     except InstrumentSetError as e:

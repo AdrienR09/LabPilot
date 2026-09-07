@@ -22,11 +22,13 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import asdict
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from labpilot.core.config import DeviceConfig
 from labpilot.core.config.paths import config_dir as _config_dir
+
+if TYPE_CHECKING:
+    from labpilot.core.lab.spec import InstrumentSpec
 
 __all__ = ["InstrumentSetError", "InstrumentSetPersistence"]
 
@@ -79,28 +81,42 @@ class InstrumentSetPersistence:
         self._validate_name(name)
         self._active_marker.write_text(name)
 
-    def save(self, name: str, entries: list[DeviceConfig]) -> Path:
-        """Write a named config (overwriting if it already exists)."""
+    def save(self, name: str, entries: list[InstrumentSpec]) -> Path:
+        """Write a named config (overwriting if it already exists).
+
+        Only specs are written. A config file used to also carry each
+        instrument's `status` and `last_connected` — facts about a process
+        rather than a configuration, saved because the two shared one
+        record. Nothing ever read them back.
+        """
         path = self._path(name)
         payload = {
             "name": name,
             "updated_at": time.time(),
-            "devices": [asdict(e) for e in entries],
+            "devices": [e.to_dict() for e in entries],
         }
         temp_path = path.with_suffix(".cfg.tmp")
         temp_path.write_text(json.dumps(payload, indent=2))
         temp_path.rename(path)
         return path
 
-    def load(self, name: str) -> list[DeviceConfig]:
-        """Read a named config's device entries."""
+    def load(self, name: str) -> list[InstrumentSpec]:
+        """Read a named config's instrument specs.
+
+        `InstrumentSpec.from_dict` reads both the current key names and the
+        ones files on disk already use, so an existing config loads
+        unchanged. Imported here rather than at module scope: `core.lab`
+        imports *this* module, and a top-level import would close the loop.
+        """
+        from labpilot.core.lab.spec import InstrumentSpec
+
         path = self._path(name)
         if not path.exists():
             raise InstrumentSetError(f"No instrument config named {name!r}")
         try:
             payload = json.loads(path.read_text())
-            return [DeviceConfig(**d) for d in payload.get("devices", [])]
-        except (json.JSONDecodeError, TypeError) as e:
+            return [InstrumentSpec.from_dict(d) for d in payload.get("devices", [])]
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
             raise InstrumentSetError(f"Failed to load instrument config {name!r}: {e}") from e
 
     def delete(self, name: str) -> None:

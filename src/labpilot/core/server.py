@@ -37,6 +37,7 @@ from labpilot.core.config import (
 from labpilot.core.config.paths import user_workflow_dir
 from labpilot.core.config.template_params import TemplateParamPersistence
 from labpilot.core.config.workflow_sets import WorkflowSetPersistence
+from labpilot.core.lab import UnknownInstrumentError
 from labpilot.core.run import OptimizePlan, RunAbortedError, prepare
 from labpilot.core.run.manager import RunManager
 from labpilot.core.session import Session
@@ -409,7 +410,7 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
 
         try:
             status = await manager.connect_instrument(request.name)
-        except ValueError as e:
+        except UnknownInstrumentError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Connection failed: {e}") from e
@@ -431,7 +432,7 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         manager = get_dashboard_manager()
         try:
             status = await manager.disconnect_instrument(device_name)
-        except ValueError as e:
+        except UnknownInstrumentError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Disconnect failed: {e}") from e
@@ -873,16 +874,15 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
                 detail=f"Bind both {actuator_role!r} and {detector_role!r} before optimizing",
             )
 
-        manager = get_dashboard_manager()
-        if actuator_id not in manager.instruments or detector_id not in manager.instruments:
+        lab = get_dashboard_manager().lab
+        if actuator_id not in lab or detector_id not in lab:
             raise HTTPException(status_code=404, detail="Bound instrument not found")
-        actuator = manager.instruments[actuator_id]["adapter"]
-        detector = manager.instruments[detector_id]["adapter"]
+        actuator, detector = lab[actuator_id], lab[detector_id]
         if not actuator.connected or not detector.connected:
             raise HTTPException(status_code=409, detail="Both instruments must be connected to optimize")
 
-        actuator_schema = manager.instruments[actuator_id]["schema"]
-        if not manager.instruments[detector_id]["schema"].readable:
+        actuator_schema = actuator.schema
+        if not detector.schema.readable:
             raise HTTPException(status_code=400, detail="Bound detector declares no readable value")
         if not (server.session.has(actuator_id) and server.session.has(detector_id)):
             raise HTTPException(
@@ -1206,13 +1206,13 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"This workflow declares no role {role!r}")
 
         if request.instrument_id is not None:
-            manager = get_dashboard_manager()
-            inst = manager.instruments.get(request.instrument_id)
-            if inst is None:
+            lab = get_dashboard_manager().lab
+            if request.instrument_id not in lab:
                 raise HTTPException(status_code=404, detail=f"Instrument {request.instrument_id!r} not found")
+            handle = lab[request.instrument_id]
             requirement = required[role]
-            actual_kind = inst["schema"].kind
-            actual_dim = inst["dimensionality"]
+            actual_kind = handle.schema.kind
+            actual_dim = handle.dimensionality
             if requirement.get("kind") and actual_kind != requirement["kind"]:
                 raise HTTPException(
                     status_code=422,
