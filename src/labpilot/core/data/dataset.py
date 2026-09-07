@@ -36,6 +36,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -366,7 +367,7 @@ class Dataset(dict):
     # --- Storage ----------------------------------------------------------
 
     def to_hdf5(self, group: Any) -> None:
-        """Write this dataset into an open `h5py` group.
+        """Write this dataset into an open `h5py` group, or to a path.
 
         Each array becomes a dataset carrying its unit; each axis becomes
         an HDF5 *dimension scale* attached to the dimension it indexes, so
@@ -375,7 +376,18 @@ class Dataset(dict):
 
         The previous writer stored bare arrays with no coordinates and no
         units at all, which is one reason nothing ever subscribed it.
+
+        Passing a filename writes a new file with this dataset at its root:
+        `run.result().to_hdf5("scan.h5")` at a console should not require
+        knowing that h5py has groups.
         """
+        if isinstance(group, (str, Path)):
+            import h5py
+
+            with h5py.File(group, "w") as handle:
+                self.to_hdf5(handle)
+            return
+
         coordinates = group.require_group("axes")
         written: dict[str, Any] = {}
         for array in self.arrays.values():

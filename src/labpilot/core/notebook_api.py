@@ -25,6 +25,14 @@ you can now type here,
 
 is the same loop a template writes, with `await` in front of each call.
 
+Or you can skip the loop: `lp.scan(...)` starts a real `ScanPlan` on the
+server — the same plan a template builds, run by the same engine, with the
+same pause and abort and the same automatic HDF5 save — and hands back a
+`RunHandle`.
+
+    >>> run = lp.scan(over={"stage.x": (0, 10, 51)}, read="apd")
+    >>> run.wait().result()["data"]
+
 The settle rule is not reimplemented here: `move_abs` polls with
 `core.device.motion.is_settled` and that module's tolerance and poll
 budget, so a move from the console and a move from a scan agree on when
@@ -65,6 +73,7 @@ __all__ = [
     "Instrument",
     "LabPilotSession",
     "Motor",
+    "RunHandle",
     "Source",
     "WorkflowHandle",
 ]
@@ -324,6 +333,99 @@ class WorkflowHandle:
         return f"<WorkflowHandle {self.id!r}>"
 
 
+class RunHandle:
+    """One running or finished scan — see `LabPilotSession.scan()`.
+
+    The console half of `core/run/run.py`'s `Run`: the same three controls,
+    the same progress, over REST. `pause()` and `abort()` mean here exactly
+    what they mean there — a hold at the next point boundary, and a stop
+    that keeps its points and stops the actuators — because they are the
+    same object underneath, reached by id.
+    """
+
+    def __init__(self, client: LabPilotClient, run_id: str, name: str = "scan") -> None:
+        self._client = client
+        self.id = run_id
+        self.name = name
+
+    def state(self) -> dict[str, Any]:
+        """{running, completed, total, paused, ...}."""
+        return self._client.get_run_state(self.id)
+
+    @property
+    def running(self) -> bool:
+        return bool(self.state().get("running"))
+
+    @property
+    def progress(self) -> tuple[int, int]:
+        """(points measured, points planned)."""
+        state = self.state()
+        return int(state.get("completed") or 0), int(state.get("total") or 0)
+
+    def pause(self) -> None:
+        """Hold at the next point boundary. The detector is not left staged
+        mid-integration and the stage is at a known position."""
+        self._client.pause_run(self.id)
+
+    def resume(self) -> None:
+        self._client.resume_run(self.id)
+
+    def abort(self) -> None:
+        """Stop for good, keeping the points already measured.
+
+        Not a cancellation: the run stops at its next point boundary, tells
+        its actuators to stop, unstages the detector, and is saved as a
+        partial run.
+        """
+        self._client.stop_run(self.id)
+
+    stop = abort
+
+    def wait(self, poll_interval: float = 0.2,
+             timeout: float | None = None) -> RunHandle:
+        """Block until the scan finishes, then return this handle.
+
+        `lp.scan(...).wait().result()` is the whole synchronous form; the
+        scan runs on the server either way, so a notebook cell that wants
+        to plot at the end waits and one that wants to watch does not.
+        """
+        start = time.monotonic()
+        while self.running:
+            if timeout is not None and time.monotonic() - start > timeout:
+                raise TimeoutError(f"Run {self.id} still running after {timeout}s")
+            time.sleep(poll_interval)
+        return self
+
+    def result(self) -> Any:
+        """What the scan measured, as a `Dataset`.
+
+        A `Dataset` *is* the result dict — same keys, same values — with
+        the axes, units and shape attached, so `result()["data"]` works
+        exactly as it always did and `result().to_hdf5("scan.h5")` also
+        does. While the scan is still running this is its latest frame,
+        with the untaken points still None.
+
+        Every run is already written to HDF5 and indexed as it finishes
+        (`lp.runs`), so this is for looking at one now, not for keeping it.
+        """
+        from labpilot.core.data.dataset import Dataset, RunMeta
+
+        payload = self._client.get_run_result(self.id)
+        described = Dataset.from_result(
+            payload, RunMeta(run_uid=self.id, plan_name=self.name)
+        )
+        # Keep the server's payload as the dict half rather than only the
+        # arrays `from_result` recognised: `result()["shape"]` and the rest
+        # of the flat convention are what an existing script reads, and a
+        # partial run's untaken points stay None instead of becoming NaN
+        # through a numpy round trip.
+        return Dataset(described.arrays, described.meta, raw=payload)
+
+    def __repr__(self) -> str:
+        done, total = self.progress
+        return f"<RunHandle {self.name!r} {done}/{total}>"
+
+
 class LabPilotSession:
     """Entry point for interactive use — see the module docstring. Wraps a
     `LabPilotClient` with the kind-typed handles; use `.client` directly
@@ -368,6 +470,81 @@ class LabPilotSession:
         """Alias for `lp[instrument_id]`, for symmetry with a template's
         `session.get(role)`."""
         return self[instrument_id]
+
+    def scan(
+        self,
+        over: dict[str, tuple[float, float, int]],
+        read: str | list[str],
+        using: str | None = None,
+        name: str = "scan",
+        hold: dict[str, float] | None = None,
+    ) -> RunHandle:
+        """Run a scan, without writing a workflow first.
+
+            >>> run = lp.scan(over={"stage.x": (0, 10, 51)}, read="apd")
+            >>> run.wait().result()["data"][:3]
+
+        `over` maps each swept axis to `(start, stop, points)`. Name the
+        axis as `"<instrument>.<parameter>"`, or as a bare parameter with
+        `using=` naming the instrument once for all of them. Axes vary in
+        the order given, the first slowest — the convention every result
+        view already reads.
+
+        `hold` parks the other parameters of the first axis's instrument
+        before the grid starts, e.g. `hold={"z": 1.0}` on an XYZ stage.
+
+        This is the same `ScanPlan` a workflow template builds, run by the
+        same engine on the same worker loop: it streams patches, it can be
+        paused and aborted, and it is saved to HDF5 and indexed when it
+        finishes. The difference is only that nobody wrote a workflow
+        record for it.
+
+        Returns immediately with a `RunHandle`; call `.wait()` to block.
+        """
+        detector = read[0] if isinstance(read, list) else read
+        if isinstance(read, list) and len(read) != 1:
+            raise ValueError(
+                "A scan reads one detector — pass read='apd'. Reading several "
+                "at once needs a workflow (see lp.workflows)."
+            )
+        if not over:
+            raise ValueError("A scan needs at least one axis in `over`")
+
+        axes = []
+        for key, span in over.items():
+            device, _, parameter = key.rpartition(".")
+            device = device or using
+            if not device:
+                raise ValueError(
+                    f"{key!r} does not say which instrument to move — write it "
+                    f"as 'instrument.{parameter}', or pass using='instrument'."
+                )
+            try:
+                start, stop, points = span
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"Axis {key!r} needs (start, stop, points), got {span!r}"
+                ) from None
+            axes.append({
+                "name": parameter, "device": device,
+                "start": float(start), "stop": float(stop), "points": int(points),
+            })
+
+        run_id = self.client.start_scan(
+            axes, detector=detector, name=name, hold=hold or {}
+        )
+        return RunHandle(self.client, run_id, name)
+
+    def run(self, run_id: str) -> RunHandle:
+        """A handle on a run already in flight — including one started from
+        the Workflows tab, whose id is its workflow id."""
+        return RunHandle(self.client, run_id)
+
+    @property
+    def runs(self) -> list[dict[str, Any]]:
+        """Every saved run, newest first — the provenance index every run
+        is written into as it finishes."""
+        return self.client.list_runs()
 
     @property
     def workflows(self) -> list[str]:

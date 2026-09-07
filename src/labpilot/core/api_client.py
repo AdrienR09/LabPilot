@@ -266,5 +266,62 @@ class LabPilotClient:
         _check(resp)
         return resp.json()["data"]
 
+    # --- Ad-hoc runs ------------------------------------------------------
+
+    def start_scan(
+        self,
+        axes: list[dict[str, Any]],
+        detector: str,
+        name: str = "scan",
+        hold: dict[str, float] | None = None,
+        hold_device: str | None = None,
+    ) -> str:
+        """Start a scan that belongs to no workflow, and return its run id.
+
+        The transport under `lp.scan(...)`. Each axis is
+        `{"name", "device", "start", "stop", "points"}` — the fields of a
+        `ScanAxis`, which the server builds the plan from. Raises
+        NotConnectedError (409) if an instrument named here is not
+        connected."""
+        resp = self._client.post("/api/runs/scan", json={
+            "axes": axes, "detector": detector, "name": name,
+            "hold": hold or {}, "hold_device": hold_device,
+        })
+        _check(resp)
+        return resp.json()["data"]["run_id"]
+
+    def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Every saved run, newest first — see GET /api/runs."""
+        resp = self._client.get("/api/runs", params={"limit": limit})
+        _check(resp)
+        return resp.json()["data"]
+
+    def get_run_state(self, run_id: str) -> dict[str, Any]:
+        """{running, completed, total, paused, ...} — see
+        GET /api/runs/{id}/state."""
+        resp = self._client.get(f"/api/runs/{run_id}/state")
+        _check(resp)
+        return resp.json()["data"]
+
+    def get_run_result(self, run_id: str) -> dict[str, Any]:
+        """The last live frame while a run is going, its full result once
+        it has finished."""
+        resp = self._client.get(f"/api/runs/{run_id}/result")
+        _check(resp)
+        return resp.json()["data"]
+
+    def stop_run(self, run_id: str) -> None:
+        """Stop at the next point boundary, keeping the measured points."""
+        resp = self._client.post(f"/api/runs/{run_id}/stop")
+        _check(resp)
+
+    def pause_run(self, run_id: str) -> None:
+        resp = self._client.post(f"/api/runs/{run_id}/pause")
+        _check(resp)
+
+    def resume_run(self, run_id: str) -> None:
+        resp = self._client.post(f"/api/runs/{run_id}/resume")
+        _check(resp)
+
     def close(self) -> None:
         self._client.close()

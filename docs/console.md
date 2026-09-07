@@ -62,6 +62,10 @@ apd.read_value()                     # one scalar reading
 apd.acquire_once()                   # stage -> read -> unstage
 apd.set_integration_time(50.0)       # however this device spells it, in its own unit
 
+lp.scan(over={'stage.x': (0, 10, 51)}, read='apd')   # a run, without writing a workflow
+lp.runs                              # every saved run, newest first
+lp.run('<id>')                       # a handle on a run already in flight
+
 lp.workflows                         # ['641a113f-...', ...] every loaded workflow's id
 wf = lp.workflow('641a113f-...')
 wf.params                            # this workflow's own tunable parameters
@@ -94,6 +98,56 @@ try:
 finally:
     apd.unstage()
 ```
+
+### Running a scan without writing one
+
+You do not have to type the loop at all. `lp.scan(...)` starts a real run
+on the server — the same `ScanPlan` a template builds, executed by the
+same engine on the same worker thread:
+
+```python
+run = lp.scan(over={'mock_xyz_stage_2.x': (0, 10, 51)}, read='fake_apd_8')
+run.progress                          # (points measured, points planned)
+run.wait()                            # blocks until it finishes
+run.result()['data']                  # the flat result, as a template returns it
+```
+
+Name each axis as `instrument.parameter`, or once with `using=`. Axes
+vary in the order given, the first slowest:
+
+```python
+run = lp.scan(
+    over={'x': (-5, 5, 101), 'y': (-5, 5, 101)},
+    using='mock_xyz_stage_2',
+    read='fake_apd_8',
+    hold={'z': 1.2},                  # park the axes this scan is not sweeping
+)
+```
+
+Because it is a run and not a console-side loop, it has the controls a
+run has — and they mean what they say. `pause()` holds at a **point
+boundary**, so the detector is never left staged mid-integration and the
+stage is at a known position; `abort()` stops there too, tells the
+actuators to stop, and keeps the points already measured:
+
+```python
+run.pause(); run.resume()
+run.abort()                           # keeps what it measured
+run.result()['data']                  # the partial scan, untaken points None
+```
+
+Every run is written to HDF5 and indexed as it finishes, whether it came
+from here or from the Workflows tab:
+
+```python
+lp.runs[0]                            # the newest saved run
+run.result().to_hdf5('scan.h5')       # or write a copy wherever you like
+```
+
+`result()` is the plain dict a template returns *and* a `Dataset`, so
+`result()['shape']` works and so does `result().primary().unit`. The
+HDF5 it writes carries units and axis coordinates as dimension scales,
+which h5py, xarray and MATLAB all read.
 
 Values are validated against the device's own limits before they reach
 hardware, so an out-of-range setpoint raises here rather than being sent:

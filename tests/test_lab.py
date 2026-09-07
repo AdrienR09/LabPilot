@@ -25,6 +25,7 @@ import pytest
 from labpilot.core.config.instrument_sets import InstrumentSetPersistence
 from labpilot.core.lab import InstrumentSpec, Lab, UnknownInstrumentError
 from labpilot.core.session import Session
+from labpilot.instruments.factory import UnknownAdapterError
 
 STAGE = InstrumentSpec(
     id="stage", adapter_key="mock_basic_actuator_nd", name="Sample stage"
@@ -138,6 +139,14 @@ def test_an_instrument_is_one_object_not_a_lookup(lab):
     assert lab["stage"].adapter is lab.get("stage").adapter
 
 
+async def test_a_workflow_gets_the_same_instrument_object_too(lab):
+    """`session.get()` built a fresh wrapper per call, so `is` was never
+    true and a wrapper could hold no state of its own."""
+    await lab.connect("stage")
+    assert lab.session.get("stage") is lab.session.get("stage")
+    assert lab.session.get("stage") is lab["stage"].device
+
+
 def test_the_handle_knows_what_it_is_doing(lab):
     handle = lab["stage"]
     assert (handle.status, handle.error, handle.connected) == ("idle", None, False)
@@ -189,7 +198,7 @@ def test_an_adapter_that_will_not_build_leaves_the_lab_untouched(lab):
     """Re-pointing an instrument at a bad address must not cost you the
     instrument you had."""
     before = lab["stage"]
-    with pytest.raises(Exception):
+    with pytest.raises(UnknownAdapterError):
         lab.add(InstrumentSpec(id="stage", adapter_key="no_such_adapter"))
     assert lab["stage"] is before
 

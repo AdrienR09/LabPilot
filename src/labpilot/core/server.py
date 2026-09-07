@@ -39,7 +39,7 @@ from labpilot.core.config.template_params import TemplateParamPersistence
 from labpilot.core.config.workflow_sets import WorkflowSetPersistence
 from labpilot.core.lab import UnknownInstrumentError
 from labpilot.core.run import OptimizePlan, RunAbortedError, prepare
-from labpilot.core.run.manager import RunManager
+from labpilot.core.run.manager import RunManager, WorkflowExecutionError
 from labpilot.core.session import Session
 from labpilot.core.workflow import WorkflowGraph, WorkflowStore
 from labpilot.core.workflow.instrument_roles import (
@@ -127,6 +127,32 @@ class WorkflowBindingRequest(BaseModel):
     """Request to bind (or, with instrument_id=None, unbind) one
     instrument role to a real connected instrument."""
     instrument_id: str | None
+
+
+class ScanAxisRequest(BaseModel):
+    """One swept dimension of an ad-hoc scan — see `run.plans.ScanAxis`."""
+    name: str
+    device: str
+    start: float
+    stop: float
+    points: int
+    unit: str = ""
+
+
+class ScanRequest(BaseModel):
+    """Start a scan that belongs to no workflow.
+
+    What `lp.scan(...)` posts. The console cannot reach the in-process
+    `ScanPlan` — instruments live in the server — so it describes the plan
+    it wants and the server builds it. Everything past that point is the
+    ordinary run machinery: the worker loop, live patches, pause, abort and
+    the automatic HDF5 save.
+    """
+    axes: list[ScanAxisRequest]
+    detector: str
+    name: str = "scan"
+    hold: dict[str, float] = {}
+    hold_device: str | None = None
 
 
 class QtLaunchRequest(BaseModel):
@@ -341,6 +367,91 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"Run catalogue unavailable: {e}") from e
         return ApiResponse(success=True, data=runs)
+
+    # --- Ad-hoc runs ------------------------------------------------------
+    #
+    # A scan that belongs to no workflow. These share `RunManager`'s run
+    # table with workflow runs, so the id one returns is accepted by
+    # /stop, /pause and /resume below rather than needing its own set.
+
+    @app.post("/api/runs/scan", response_model=ApiResponse)
+    async def start_scan(request: ScanRequest, server: LabPilotServer = Depends(get_server)):
+        """Start a scan described in the request, and return its run id.
+
+        The console's `lp.scan(...)`. Instruments are named by their
+        registered ids, which is what the console already has; the
+        instruments must be connected, and saying so here is better than
+        accepting the run and failing on the worker loop after the caller
+        has been told it started.
+        """
+        from labpilot.core.run import ScanAxis, ScanPlan
+
+        if not request.axes:
+            raise HTTPException(status_code=422, detail="A scan needs at least one axis")
+
+        needed = {axis.device for axis in request.axes} | {request.detector}
+        missing = sorted(name for name in needed if not server.session.has(name))
+        if missing:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Not connected: {', '.join(missing)}. "
+                       f"Connect them before scanning.",
+            )
+
+        plan = ScanPlan(
+            axes=[ScanAxis(**axis.model_dump()) for axis in request.axes],
+            detector=request.detector,
+            name=request.name,
+            hold=request.hold,
+            hold_device=request.hold_device,
+        )
+        try:
+            run_id = await server.workflow_engine.start_plan(plan)
+        except WorkflowExecutionError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        return ApiResponse(success=True, data={"run_id": run_id, "name": request.name})
+
+    @app.get("/api/runs/{run_id}/state", response_model=ApiResponse)
+    async def get_run_state(run_id: str, server: LabPilotServer = Depends(get_server)):
+        """How far through a run is, and whether it is still going."""
+        engine = server.workflow_engine
+        state = engine.run_state(run_id)
+        running = engine.is_running(run_id)
+        if state is None and not running and engine.result(run_id) is None:
+            raise HTTPException(status_code=404, detail=f"No run {run_id!r}")
+        return ApiResponse(
+            success=True,
+            data={"run_id": run_id, "running": running, **(state or {})},
+        )
+
+    @app.get("/api/runs/{run_id}/result", response_model=ApiResponse)
+    async def get_run_result(run_id: str, server: LabPilotServer = Depends(get_server)):
+        """What the run measured — the last live frame while it is going,
+        its full result once it has finished."""
+        result = server.workflow_engine.result(run_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail=f"No run {run_id!r}")
+        return ApiResponse(success=True, data=result)
+
+    @app.post("/api/runs/{run_id}/stop", response_model=ApiResponse)
+    async def stop_run(run_id: str, server: LabPilotServer = Depends(get_server)):
+        """Stop at the next point boundary, keeping what was measured."""
+        if not server.workflow_engine.is_running(run_id):
+            raise HTTPException(status_code=409, detail=f"Run {run_id!r} is not running")
+        await server.workflow_engine.stop_workflow(run_id)
+        return ApiResponse(success=True, data={"run_id": run_id, "stopped": True})
+
+    @app.post("/api/runs/{run_id}/pause", response_model=ApiResponse)
+    async def pause_run(run_id: str, server: LabPilotServer = Depends(get_server)):
+        if not await server.workflow_engine.pause_workflow(run_id):
+            raise HTTPException(status_code=409, detail=f"Run {run_id!r} is not running a plan")
+        return ApiResponse(success=True, data={"run_id": run_id, "paused": True})
+
+    @app.post("/api/runs/{run_id}/resume", response_model=ApiResponse)
+    async def resume_run(run_id: str, server: LabPilotServer = Depends(get_server)):
+        if not await server.workflow_engine.resume_workflow(run_id):
+            raise HTTPException(status_code=409, detail=f"Run {run_id!r} is not running a plan")
+        return ApiResponse(success=True, data={"run_id": run_id, "paused": False})
 
     @app.get("/api/session/status", response_model=ApiResponse)
     async def get_session_status(server: LabPilotServer = Depends(get_server)):

@@ -28,8 +28,9 @@ their own binding rather than the last writer's.
 
 from __future__ import annotations
 
+import contextlib
 import difflib
-from typing import TYPE_CHECKING, Any, Iterator, Mapping
+from typing import TYPE_CHECKING, Any
 
 from labpilot.core.config.instrument_sets import (
     InstrumentSetError,
@@ -41,6 +42,8 @@ from labpilot.instruments import INSTRUMENT_CATALOG
 from labpilot.instruments.factory import create_adapter
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping
+
     from labpilot.core.session import Session
 
 __all__ = ["Lab", "UnknownInstrumentError"]
@@ -161,10 +164,9 @@ class Lab:
         """Disconnect if needed, then forget the instrument entirely."""
         handle = self.get(instrument_id)
         if handle.connected:
-            try:
+            # Remove it regardless — the caller asked it to go.
+            with contextlib.suppress(Exception):
                 await handle.disconnect()
-            except Exception:
-                pass  # Remove it regardless — the caller asked it to go.
         self._unregister(instrument_id)
         del self._handles[instrument_id]
 

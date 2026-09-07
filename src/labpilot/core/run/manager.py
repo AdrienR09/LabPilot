@@ -183,6 +183,117 @@ class RunManager:
         except Exception as e:
             raise WorkflowExecutionError(f"Failed to start workflow: {e}") from e
 
+    async def start_plan(
+        self,
+        plan: Any,
+        bindings: dict[str, str] | None = None,
+        run_id: str | None = None,
+    ) -> str:
+        """Run a plan that belongs to no workflow, and return its id.
+
+        What `lp.scan(...)` starts. A console scan is a real run — it gets
+        the worker loop, the progress stream, pause, abort and the
+        automatic HDF5 save — it simply has no stored workflow record
+        behind it, because nobody wrote one.
+
+        The id it returns doubles as the "workflow id" every control is
+        already keyed by, so `stop`, `pause`, `resume` and `run_state` work
+        on it unchanged rather than growing a second set of routes that
+        would then have to be kept in step.
+
+        `bindings` maps a role the plan names (`"actuator"`, `"detector"`)
+        to a registered instrument id. A plan may also name instrument ids
+        directly, in which case there is nothing to bind.
+        """
+        run_id = run_id or str(uuid.uuid4())
+        if run_id in self._running_workflows:
+            raise WorkflowExecutionError(f"Run {run_id} already running")
+
+        future = self._runner.submit(self._execute_plan(plan, run_id, bindings or {}))
+        self._running_workflows[run_id] = future
+        await self.session.bus.emit(
+            Event(
+                kind=EventKind.WORKFLOW_STARTED,
+                data={
+                    "workflow_id": run_id,
+                    "execution_id": run_id,
+                    "name": getattr(plan, "name", type(plan).__name__),
+                },
+            )
+        )
+        return run_id
+
+    async def _execute_plan(
+        self, plan: Any, run_id: str, bindings: dict[str, str]
+    ) -> None:
+        """Execute one ad-hoc plan on the workflow loop.
+
+        The same shape as `_execute_workflow` minus the stored graph: apply
+        the bindings, publish the progress context (which is what lets a
+        `Run` register itself for Stop and Pause), run, save.
+        """
+        from labpilot.core.run import execute as _execute
+
+        for role, instrument_id in bindings.items():
+            if instrument_id:
+                self.session.register_alias(role, instrument_id)
+        self._live_progress.pop(run_id, None)
+        self.session.set_progress_context(run_id, run_id, self._live_progress)
+        self._execution_results[run_id] = {}
+
+        status = "completed"
+        try:
+            self._execution_results[run_id] = await _execute(self.session, plan)
+        except (asyncio.CancelledError, RunAbortedError):
+            status = "cancelled"
+            self._execution_results[run_id] = self._live_progress.get(run_id) or {}
+            await self.session.bus.emit(
+                Event(
+                    kind=EventKind.WORKFLOW_STOPPED,
+                    data={"workflow_id": run_id, "execution_id": run_id},
+                )
+            )
+        except Exception as e:
+            status = "failed"
+            self._execution_results[run_id] = {
+                **(self._live_progress.get(run_id) or {}), "error": str(e),
+            }
+            await self.session.bus.emit(
+                Event(
+                    kind=EventKind.WORKFLOW_ERROR,
+                    data={"workflow_id": run_id, "execution_id": run_id, "error": str(e)},
+                )
+            )
+        finally:
+            await self._save_result(
+                plan_name=getattr(plan, "name", type(plan).__name__),
+                run_uid=run_id,
+                result=self._execution_results.get(run_id) or {},
+                status=status,
+                bindings=bindings,
+                metadata={"run_id": run_id, "source": "plan"},
+            )
+            self.session.clear_aliases()
+            self.session.clear_progress_context()
+            self._running_workflows.pop(run_id, None)
+            if status == "completed":
+                await self.session.bus.emit(
+                    Event(
+                        kind=EventKind.WORKFLOW_COMPLETED,
+                        data={
+                            "workflow_id": run_id,
+                            "execution_id": run_id,
+                            "results": summarise_arrays(self._execution_results[run_id]),
+                        },
+                    )
+                )
+
+    def result(self, run_id: str) -> dict[str, Any] | None:
+        """What a finished run returned, or the last frame of a live one."""
+        if run_id in self._running_workflows:
+            return self._live_progress.get(run_id)
+        return self._execution_results.get(run_id)
+
     async def stop_workflow(self, workflow_id: str) -> None:
         """Stop a running workflow.
 
@@ -512,7 +623,38 @@ class RunManager:
         self, graph: WorkflowGraph, execution_id: str,
         result: dict[str, Any], status: str,
     ) -> None:
-        """Write this run to HDF5 and index it.
+        """Write one workflow run to HDF5 and index it."""
+        script_path = graph.metadata.get("script_path")
+        # A saved workflow instance's file is `<template>_<epoch>.py`; the
+        # template name is what identifies the run to a person.
+        stem = Path(script_path).stem if script_path else graph.id
+        await self._save_result(
+            plan_name=re.sub(r"_\d{9,}$", "", stem),
+            run_uid=execution_id,
+            result=result,
+            status=status,
+            bindings=graph.metadata.get("instrument_bindings") or {},
+            result_ui=read_result_ui_from_file(script_path) if script_path else {},
+            metadata={"workflow_id": graph.id, "execution_id": execution_id},
+            what=f"workflow {graph.id}",
+        )
+
+    async def _save_result(
+        self,
+        plan_name: str,
+        run_uid: str,
+        result: dict[str, Any],
+        status: str,
+        bindings: dict[str, str],
+        result_ui: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        what: str = "run",
+    ) -> None:
+        """Write a run to HDF5 and index it, whatever started it.
+
+        One path for a workflow and for an ad-hoc plan, so a scan typed at
+        the console lands on disk the same way and in the same index as one
+        started from the Workflows tab.
 
         Never raises: a scan that acquired real data must not be reported
         as failed because the disk was full, and a save failure must not
@@ -522,34 +664,25 @@ class RunManager:
         if not result:
             return
         try:
-            script_path = graph.metadata.get("script_path")
-            # A saved workflow instance's file is `<template>_<epoch>.py`;
-            # the template name is what identifies the run to a person.
-            stem = Path(script_path).stem if script_path else graph.id
-            plan_name = re.sub(r"_\d{9,}$", "", stem)
             meta = RunMeta(
-                # The execution id is already a uuid4 and already appears
-                # in every lifecycle event and the store's execution log, so
-                # it is the run's identity everywhere rather than a second
-                # one invented here.
-                run_uid=execution_id,
+                # The execution id is already a uuid4 and already appears in
+                # every lifecycle event and the store's execution log, so it
+                # is the run's identity everywhere rather than a second one
+                # invented here.
+                run_uid=run_uid,
                 plan_name=plan_name,
                 devices={
                     role: self.session.get_raw(name).schema.model_dump(mode="json")
-                    for role, name in (graph.metadata.get("instrument_bindings") or {}).items()
+                    for role, name in bindings.items()
                     if name and name in self.session.devices
                 },
             )
-            result_ui = read_result_ui_from_file(script_path) if script_path else {}
-            dataset = Dataset.from_result(result, meta, result_ui)
+            dataset = Dataset.from_result(result, meta, result_ui or {})
             if not dataset.arrays:
                 return  # nothing numeric to store (e.g. a pure-action workflow)
-            await self.runs.save(
-                dataset, status=status,
-                metadata={"workflow_id": graph.id, "execution_id": execution_id},
-            )
+            await self.runs.save(dataset, status=status, metadata=metadata or {})
         except Exception as e:
-            print(f"⚠️  Could not persist run for workflow {graph.id}: {e}")
+            print(f"⚠️  Could not persist {what}: {e}")
 
     def get_running_workflows(self) -> list[str]:
         """Get list of currently running workflow IDs."""

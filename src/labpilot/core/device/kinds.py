@@ -47,6 +47,8 @@ See docs/scripting.md for the full per-kind method reference.
 
 from __future__ import annotations
 
+import contextlib
+import weakref
 from typing import Any, Optional, Union
 
 from labpilot.core.device.motion import (
@@ -309,10 +311,33 @@ class GenericInstrument(_InstrumentWrapper):
     passthrough."""
 
 
+# One wrapper per adapter, so `session.get("stage")` is the same object
+# every call. It used to build a fresh one each time, which made an
+# instrument something you could only look up, never hold: two callers
+# naming the same device got two objects, `is` was never true, and a
+# wrapper could not carry any state of its own. Weak keys, so a wrapper
+# never keeps a disconnected adapter alive.
+_WRAPPERS: weakref.WeakKeyDictionary[Any, _InstrumentWrapper] = weakref.WeakKeyDictionary()
+
+
 def wrap(adapter: Any) -> _InstrumentWrapper:
     """Chooses the right wrapper for `adapter` based on its own
     `schema.kind` — called by `Session.get()`, not normally by a workflow
-    script directly."""
+    script directly.
+
+    The same adapter always wraps to the same object.
+    """
+    cached = _WRAPPERS.get(adapter)
+    if cached is not None:
+        return cached
+    wrapper = _build(adapter)
+    # An adapter that cannot be weak-referenced simply isn't cached.
+    with contextlib.suppress(TypeError):
+        _WRAPPERS[adapter] = wrapper
+    return wrapper
+
+
+def _build(adapter: Any) -> _InstrumentWrapper:
     kind = adapter.schema.kind
     if kind == "motor":
         return Motor(adapter)

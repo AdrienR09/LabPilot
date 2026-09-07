@@ -93,6 +93,25 @@ actually use — a separate, richer instrument registry from the legacy
 | POST | `/api/workflows/{id}/optimize/stop` | |
 | GET | `/api/workflows/{id}/optimize/state` | `{running, progress, last_result, error}` |
 
+## Runs
+
+A run started here belongs to no workflow — it is what `lp.scan(...)`
+posts (see [console.md](console.md)). It is otherwise an ordinary run: the
+worker loop, live patches, pause and abort at a point boundary, and the
+automatic HDF5 save. Its id is accepted by the controls below, and by
+`/api/workflows/{id}/...`'s stop/pause/resume, because both share one run
+table.
+
+| Method | Endpoint | Notes |
+|---|---|---|
+| GET | `/api/runs` | Every saved run, newest first — the provenance index |
+| POST | `/api/runs/scan` | `{axes: [{name, device, start, stop, points}], detector, name?, hold?}` → `{run_id}`. 409 if an instrument is not connected |
+| GET | `/api/runs/{id}/state` | `{running, completed, total, paused, aborting, plan_name}` |
+| GET | `/api/runs/{id}/result` | The last live frame while running, the full result once finished |
+| POST | `/api/runs/{id}/stop` | Stop at the next point boundary, keeping the measured points |
+| POST | `/api/runs/{id}/pause` | 409 if this run is not executing a plan |
+| POST | `/api/runs/{id}/resume` | |
+
 ## WebSocket (`/ws`)
 
 One shared connection, broadcasting every server-side event as
