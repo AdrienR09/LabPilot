@@ -50,10 +50,18 @@ from labpilot.core.workflow.instrument_roles import (
     read_template_description,
     read_workflow_params,
 )
+from labpilot.core.workflow.migrate import migrate_library_workflows
 from labpilot.core.workflow.presets import load_presets
 from labpilot.core.workflow.scan_params import resolve_scan_axes
 
 __all__ = ["LabPilotServer", "create_app"]
+
+
+def _workflow_templates_dir() -> Path:
+    """Where the shipped templates live, inside the installed package."""
+    import labpilot.core.workflow_templates as templates
+
+    return Path(templates.__path__[0])
 
 # API Models
 class ApiResponse(BaseModel):
@@ -101,8 +109,8 @@ class WorkflowParamUpdateRequest(BaseModel):
 class WorkflowOptimizeRequest(BaseModel):
     """Request to re-center a workflow's optimizer-capability-bound
     actuator on the detector's local maximum — a small ad-hoc sequence of
-    sub-scans around its current position (`core/workflow/capabilities.py`'s
-    `OptimizerCapability`), not a full run of the workflow's own script.
+    sub-scans around its current position (`core/run/plans.py`'s
+    `OptimizePlan`), not a full run of the workflow's own script.
 
     `axes`, if given, is the EXACT set of actuator axes to optimize over
     (validated against what's actually available — see
@@ -230,6 +238,13 @@ class LabPilotServer:
         db_path = self.config_persistence.config_dir / "workflows" / "workflows.db"
         self.workflow_store = WorkflowStore(db_path)
         self.workflow_engine = RunManager(self.session, self.workflow_store)
+
+        # Workflows saved before an instance became a row still point at a
+        # timestamped copy of a template's source inside the installed
+        # package. Repoint them at the template itself — see
+        # core/workflow/migrate.py. Idempotent: a row already pointing at a
+        # template is not a copy and is skipped.
+        migrate_library_workflows(self.workflow_store, _workflow_templates_dir())
 
         # First run: nothing loaded yet — seed the active workflow-set from
         # whatever's already in the store with a real script_path, so
@@ -651,10 +666,6 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
             )
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
-
-    def _workflow_templates_dir() -> Path:
-        import labpilot.core.workflow_templates as _workflow_templates
-        return Path(_workflow_templates.__path__[0])
 
     # NOTE: must be registered before GET /api/workflows/{workflow_id}
     # below — FastAPI matches routes in registration order, and that

@@ -5,7 +5,7 @@ Each script here references the instruments it needs by *role* — e.g.
 declares those roles via a `REQUIRED_INSTRUMENTS` module constant (see
 `core/workflow/instrument_roles.py`). Loading a template
 (`POST /api/workflows/templates/{name}/load`) copies it into
-`core/workflow_library/` as a new, independent workflow with every role
+the workflow store as a new, independent workflow with every role
 unbound; binding a role to a real connected instrument (via the
 flowchart, or `PUT /api/workflows/{id}/bindings/{role}` directly) is what
 actually makes it runnable, and can be changed again later without

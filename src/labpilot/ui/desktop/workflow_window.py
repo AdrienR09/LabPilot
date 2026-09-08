@@ -435,7 +435,7 @@ class WorkflowWindow(QMainWindow):
         with its own (display-only — see `add_crosshair(on_move=None)`)
         marker on the fit-found center, refined as the background
         optimize task (see server.py's /optimize/start,
-        core/workflow/capabilities.py's `OptimizerCapability`) reports
+        core/run/plans.py's `OptimizePlan`) reports
         more of each step — qudi's real `OptimizerDockWidget`, not the
         single blocking call this used to be, and not limited to its
         fixed 2-axis/0D-detector shape either. Reuses `_ScanImagePanel`/

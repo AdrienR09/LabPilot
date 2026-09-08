@@ -61,7 +61,7 @@ def fit_peak(x, y, shape: str = "gaussian") -> dict | None:
 def fit_peak_2d(x, y, z) -> dict | None:
     """2D single-peak Gaussian fit over a grid — `x`/`y` are the two axes'
     1D coordinate arrays, `z` a 2D array of shape `(len(x), len(y))`. Used
-    by `core/workflow/capabilities.py`'s `OptimizerCapability` for each 2D
+    by `core/run/plans.py`'s `OptimizePlan` for each 2D
     step of an optimize sequence — qudi's own confocal optimizer
     (`scanning_optimize_logic.py`'s `_get_pos_from_2d_gauss_fit`,
     `LOGIC_LIBRARY_NOTES.md` §2.1) fits the same shape of data; this is an

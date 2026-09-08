@@ -217,8 +217,8 @@ class LabPilotClient:
         """Starts (as a background task on the server) re-centering a
         workflow's optimizer-capability-bound actuator on its detector's
         local maximum — a small ad-hoc sequence of <=2D sub-scans (any
-        number of actuator axes; see `core/workflow/capabilities.py`'s
-        `OptimizerCapability`), not a full run of the workflow. `axes`,
+        number of actuator axes; see `core/run/plans.py`'s
+        `OptimizePlan`), not a full run of the workflow. `axes`,
         if given, restricts which actuator axes to optimize over
         (omit for every available one — today's default); `ranges`/
         `points_per_axis` override the per-axis search span/resolution
