@@ -107,10 +107,10 @@ def test_a_sweep_needs_at_least_one_point(factory):
 # --- Counting readouts -----------------------------------------------------
 
 
-def test_readouts_are_counted_as_laser_rising_edges():
+def test_readouts_are_counted_as_gate_rising_edges():
     """Counted the way the gated counter will see them, so the counter's
     gate count and the sequence cannot silently disagree."""
-    assert rabi(points=50).laser_pulses() == 50
+    assert rabi(points=50).readouts() == 50
 
 
 def test_a_laser_held_high_across_elements_is_one_readout_not_two():
@@ -120,7 +120,7 @@ def test_a_laser_held_high_across_elements_is_one_readout_not_two():
         PulseElement(1e-6, {"laser": False}),
     ))
     sequence = PulseSequence("s", (block,))
-    assert sequence.laser_pulses() == 1
+    assert sequence.readouts() == 1
 
 
 def test_alternating_halves_the_points():
@@ -132,7 +132,7 @@ def test_alternating_halves_the_points():
         PulseElement(1e-6, {"laser": False}),
     ), repetitions=10)
     sequence = PulseSequence("s", (block,), alternating=True)
-    assert sequence.laser_pulses() == 20
+    assert sequence.readouts() == 20
     assert sequence.points == 10
 
 

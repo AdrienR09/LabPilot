@@ -253,19 +253,34 @@ class PulseSequence:
         return frozenset().union(*(b.channels for b in self.blocks)) \
             if self.blocks else frozenset()
 
-    def laser_pulses(self) -> int:
-        """How many readouts this sequence produces.
+    @property
+    def readout_channel(self) -> str:
+        """The channel whose rising edges mark a readout.
 
-        Counted as *rising edges* of the laser channel across every
-        repetition — the same thing the gated counter will see, so the
-        counter's gate count and the sequence can never silently disagree.
+        The **gate**, when the sequence has one: not every laser pulse is
+        a measurement. T1 polarises with the laser, waits, and only then
+        reads out — counting laser edges would score that as two readouts
+        per point and silently halve the sweep. The gated counter counts
+        gates, so the sequence counts gates too, and the two cannot
+        disagree.
+
+        An ungated rig has no such channel and its laser pulses *are* its
+        readouts, which is the fallback.
         """
+        if self.gate_channel and self.gate_channel in self.channels:
+            return self.gate_channel
+        return self.laser_channel
+
+    def readouts(self) -> int:
+        """How many readout windows this sequence produces, counted as
+        rising edges of `readout_channel` across every repetition."""
+        channel = self.readout_channel
         count = 0
         previous = False
         for block in self.blocks:
             for _ in range(block.repetitions):
                 for element in block.elements:
-                    high = element.is_high(self.laser_channel)
+                    high = element.is_high(channel)
                     if high and not previous:
                         count += 1
                     previous = high
@@ -278,8 +293,8 @@ class PulseSequence:
         is not its own point)."""
         if self.sweep is not None:
             return len(self.sweep)
-        lasers = self.laser_pulses()
-        return lasers // 2 if self.alternating else lasers
+        windows = self.readouts()
+        return windows // 2 if self.alternating else windows
 
     # --- Validation -------------------------------------------------------
 
@@ -302,21 +317,21 @@ class PulseSequence:
                 f"channels are {sorted(self.channels)}"
             )
 
-        lasers = self.laser_pulses()
-        if lasers == 0:
+        windows = self.readouts()
+        if windows == 0:
             raise SequenceError(
-                f"Sequence {self.name!r} never raises {self.laser_channel!r}, "
-                f"so it produces no readout"
+                f"Sequence {self.name!r} never raises "
+                f"{self.readout_channel!r}, so it produces no readout"
             )
-        if self.alternating and lasers % 2:
+        if self.alternating and windows % 2:
             raise SequenceError(
-                f"Sequence {self.name!r} is alternating but has {lasers} "
+                f"Sequence {self.name!r} is alternating but has {windows} "
                 f"readouts; signal and reference must pair up"
             )
 
         if self.sweep is not None:
             expected = len(self.sweep)
-            produced = lasers // 2 if self.alternating else lasers
+            produced = windows // 2 if self.alternating else windows
             if expected != produced:
                 raise SequenceError(
                     f"Sequence {self.name!r} sweeps {expected} point(s) but "
@@ -325,10 +340,10 @@ class PulseSequence:
                 )
 
         for index in self.ignore_lasers:
-            if not 0 <= index < lasers:
+            if not 0 <= index < windows:
                 raise SequenceError(
                     f"Sequence {self.name!r} ignores readout {index}, but it "
-                    f"has only {lasers}"
+                    f"has only {windows}"
                 )
 
     # --- Serialisation ----------------------------------------------------
