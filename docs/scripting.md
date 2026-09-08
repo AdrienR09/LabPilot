@@ -101,9 +101,13 @@ chunk = await scanner.get_scan_data()   # poll until chunk["done"]
 await scanner.stop_scan()
 ```
 
-In practice you won't call these directly — `core.workflow.capabilities`'s
-`HardwareTimedScanCapability` (used by `omniscan.py`'s `scanner` role) already
+In practice you won't call these directly — `core/run/plans.py`'s
+`HardwareTimedScanPlan` (used by `omniscan.py`'s `scanner` role) already
 drives this whole poll loop for you.
+
+A device declares this contract with the `hardware_scan` capability, which
+`core/device/capabilities.py` composes onto its schema; that is what makes
+`session.get(role)` hand back a `Scanner` wrapper.
 
 ## `GenericInstrument` and escape hatches
 
@@ -188,7 +192,7 @@ Not every template benefits equally: `odmr_sweep.py`'s source-sweep logic
 manual `source.write({...})` — genuinely instrument-specific business
 logic a generic wrapper can't honestly guess — while its detector read
 does simplify the same way (`read_value()`). `omniscan.py` doesn't change
-at all: it already delegates to `ScanCapability`/`HardwareTimedScanCapability`
-(`core/workflow/capabilities.py`), which call the same generic
+at all: it already delegates to `ScanPlan`/`HardwareTimedScanPlan`
+(`core/run/plans.py`), which call the same generic
 `.read()/.write()/.schema` surface the wrapper already passes through
 unchanged.

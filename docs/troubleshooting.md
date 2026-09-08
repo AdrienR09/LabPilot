@@ -24,7 +24,7 @@ against the same result buffer, or against the same instrument mid-move.
 Stop it first, or wait for it to finish.
 
 **A scan's result array would need N elements... over the safety
-limit.** `ScanCapability.run_grid` refuses to start a grid over 200,000
+limit.** `ScanPlan` refuses to start a grid over 200,000
 actuator points, and templates that compute a detector-shape-multiplied
 total (like `omniscan.py`) refuse over 50,000,000 elements — both fail
 before any hardware motion, with the actual numbers in the error, rather

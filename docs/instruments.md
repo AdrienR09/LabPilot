@@ -85,6 +85,97 @@ an unknown name, a read-only parameter, a value of the wrong type, out of
 range, or not among the choices all raise a `ParameterError` subclass
 (`src/labpilot/core/errors.py`), which the REST layer reports as HTTP 422.
 
+### Structured parameters
+
+A setpoint that isn't a scalar — a pulse table, an AWG channel map, an NI
+task's channel list — is described rather than escaped. Declaring `fields`
+makes a parameter a **record**; `shape=(None,)` makes it a table of them:
+
+```python
+Parameter("sequence", shape=(None,), settable=True, fields=(
+    Parameter("duration_ns", unit="ns", limits=(8.0, None), settable=True),
+    Parameter("channel", dtype="i8", limits=(0, 23), settable=True),
+    Parameter("level", dtype="str", choices=("low", "high"), settable=True),
+))
+```
+
+Fields are `Parameter`s, so they carry their own units, limits and
+choices, and a limit on a field is enforced on **every row** by the same
+code that enforces a scalar setpoint's. A missing field, an undeclared key
+or an out-of-range value is rejected with the field named. The settings
+tree renders a single record as a group of its own fields; a table is left
+to a dedicated component.
+
+`dtype="json"` still exists and still validates nothing — it is the escape
+hatch, no longer the only door.
+
+### Actions
+
+An action is a command that isn't a parameter write. A bare name means a
+zero-argument one; declaring `params` gives it typed arguments:
+
+```python
+from labpilot.core.device.action import Action
+
+actions = [
+    "cw_on", "off",                                   # zero-argument
+    Action(
+        name="configure",
+        params=(Parameter("bin_width_s", unit="s", limits=(1e-12, 1.0), settable=True),
+                Parameter("gates", dtype="i8", limits=(1, None), settable=True)),
+        returns=(Parameter("bin_width_s", unit="s"),),
+        defaults={"gates": 1},
+    ),
+]
+```
+
+Arguments validate before the call leaves the caller, and the return value
+is what the hardware *actually* applied — see Constraints below. From the
+console:
+
+```python
+actual = counter.call("configure", bin_width_s=1e-9, gates=50)
+```
+
+### Constraints
+
+`Parameter.validate` asks "is this legal?" and raises. `Constraints.quantise`
+asks "what will the hardware really do?" and never raises — it clips, snaps
+and reports:
+
+```python
+from labpilot.core.device.constraints import ScalarConstraint, scalars_from
+
+constraints = scalars_from([
+    ScalarConstraint("bin_width_s", allowed=(1e-9, 2e-9, 4e-9), unit="s"),
+    ScalarConstraint("duration_ns", bounds=(8.0, 1e6), step=8.0, unit="ns"),
+])
+result = constraints.quantise({"bin_width_s": 1.4e-9})
+result["bin_width_s"]   # 1e-9
+result.report()         # "bin_width_s: asked 1.4e-09, got 1e-09 (nearest of 3 supported value(s))"
+```
+
+Use it in a `configure` action and return `result.values`, so a silently
+ignored request never happens.
+
+### Capabilities
+
+A contract beyond read/write is declared by a mixin and composed onto the
+schema:
+
+```python
+from labpilot.core.device.capabilities import HARDWARE_SCAN
+
+class HardwareScanMixin:
+    CAPABILITY = HARDWARE_SCAN
+```
+
+`capabilities_of()` collects these off the MRO, so a device satisfying two
+contracts reports both and its wrapper is composed from both. Capabilities
+serialise, which is what lets `ui_blocks.toml` select a window with
+`[capability.<name>]` instead of putting every `kind="generic"` device in
+one bucket.
+
 ## Connecting an instrument
 
 **From the Manager:**
@@ -134,7 +225,7 @@ pick as a form built from these fields.
 
 ## The instrument catalog
 
-262 instruments are catalogued across 80 manufacturers: mock/test-fixture
+301 instruments are catalogued across 95 manufacturers: mock/test-fixture
 devices (for development without real hardware), PyMeasure-backed
 adapters (hand-written and auto-generated from every class in the
 installed `pymeasure` library), and pylablib-backed adapters. `catalog.py`

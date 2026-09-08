@@ -227,36 +227,49 @@ bounded-size companion for templates producing many points quickly (see
 `omniscan.py`'s `on_progress`) — call both together if your scan is
 high-rate, or just `report_progress` alone otherwise.
 
-## `ScanCapability` and `OptimizerCapability`
+## `ScanPlan` and `OptimizePlan`
 
-Both live in `core/workflow/capabilities.py` and share one move+read
-engine, so a full N-D scan and an optimizer's own sub-scans don't each
-reimplement actuator movement/settling:
+These replaced `core/workflow/capabilities.py`'s `ScanCapability` /
+`OptimizerCapability`, which are gone. Both live in `core/run/plans.py`
+and share one move+read engine, so a full N-D scan and an optimiser's own
+sub-scans don't each reimplement actuator movement and settling:
 
 ```python
-from labpilot.core.workflow.capabilities import ScanCapability, OptimizerCapability
+from labpilot.core.run import execute
+from labpilot.core.run.plans import ScanAxis, ScanPlan
 
-scan = ScanCapability(actuator, detector, settle_tolerance=0.02, max_settle_polls=5000)
-result = await scan.run_grid(
-    axes=["x", "y"],
-    axis_ranges={"x": (-2.0, 2.0, 40), "y": (-2.0, 2.0, 40)},   # (start, stop, num_points)
-    hold_positions={"z": 0.0},          # parked once before the grid starts
-    on_progress=my_async_callback,       # called after every point
+plan = ScanPlan(
+    axes=[ScanAxis("x", actuator_id, -2.0, 2.0, 40),
+          ScanAxis("y", actuator_id, -2.0, 2.0, 40)],
+    detector=detector_id,
+    hold={"z": 0.0},                 # parked once before the grid starts
+    settle_tolerance=0.02, max_settle_polls=5000,
 )
-# {"axes": [...], "positions": [[...], ...], "shape": [...], "readings": [dict, ...]}
+result = await execute(session, plan)
 ```
 
-A grid over `_MAX_GRID_POINTS` (200,000) raises immediately, before any
-hardware motion — a misconfigured range (e.g. a typo'd point count) fails
-fast with the real numbers instead of thrashing memory for minutes first.
+The important difference from the old capability classes: a plan
+**describes itself before it runs**. `describe()` returns the axes, shape
+and units up front, so the run manager allocates the grid, counts
+progress, streams `DatasetPatch`es, writes HDF5 and registers the run —
+none of which a template does by hand any more.
 
-`OptimizerCapability` decomposes any number of actuator axes into a
-sequence of <=2D sub-scans, each fit (`core/analysis/fits.py`'s
-`fit_peak`/`fit_peak_2d`) and centered before the next runs — the
-generalization of Qudi's own confocal optimizer past its native 1D/2D
-ceiling. Declare `CAPABILITIES = {"optimizer": {"around": "<role>"}}` (see
-below) and the server auto-wires `/optimize/start|stop|state` for your
-template with no extra code.
+A grid over 200,000 points or 50,000,000 elements raises immediately,
+before any hardware motion — a typo'd point count fails fast with the real
+numbers instead of thrashing memory for minutes first.
+
+`OptimizePlan` decomposes any number of actuator axes into a sequence of
+≤2-D sub-scans, each fit (`core/analysis/fits.py`'s `fit_peak`/
+`fit_peak_2d`) and centred before the next runs — the generalisation of
+Qudi's own confocal optimiser past its native 1-D/2-D ceiling. Declare
+`CAPABILITIES = {"optimizer": {"around": "<role>"}}` (see below) and the
+server auto-wires `/optimize/start|stop|state` for your template with no
+extra code.
+
+Note that a workflow's `CAPABILITIES` (below) and a *device's* capabilities
+(`core/device/capabilities.py`) are different things that share a word: the
+first says what a template can be asked to do, the second says which
+hardware contracts an instrument satisfies.
 
 ## `CAPABILITIES`
 

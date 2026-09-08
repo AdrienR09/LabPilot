@@ -56,6 +56,7 @@ actually use — a separate, richer instrument registry from the legacy
 | GET | `/api/dashboard/instruments/{id}/schema` | That instrument's `DeviceSchema` |
 | GET | `/api/dashboard/instruments/{id}/data` | Current readable values (409 if not connected) |
 | POST | `/api/dashboard/instruments/{id}/settings` | `{"values": {...}}` — write settable params |
+| POST | `/api/dashboard/instruments/{id}/actions/{name}` | Invoke a declared action. Body optional: `{"arguments": {...}}`. Returns `{"success", "data", "result"}` where `result` is what the hardware actually applied. 400 for a bad argument, 404 for an unknown action (the message lists the real ones), 409 if not connected |
 | GET/POST | `/api/dashboard/instruments/{id}/ui_prefs` | Native-UI display preferences (`use_slider`, ...) |
 | GET | `/api/dashboard/instruments/{id}/ui_prefs_schema` | What preferences this instrument type declares |
 | GET | `/api/dashboard/catalog` | The full instrument catalog (see [instruments.md](instruments.md)) |
@@ -89,7 +90,7 @@ actually use — a separate, richer instrument registry from the legacy
 | POST | `/api/workflows/{id}/execute` | Start execution — 400 if already running |
 | POST | `/api/workflows/{id}/stop` | Cancel a running execution |
 | GET | `/api/workflows/{id}/execution_state` | Live progress (while running) + last-completed status/results |
-| POST | `/api/workflows/{id}/optimize/start` | `{axes?, ranges?, points?, points_per_axis?}` — see [workflows.md](workflows.md)'s `OptimizerCapability` |
+| POST | `/api/workflows/{id}/optimize/start` | `{axes?, ranges?, points?, points_per_axis?}` — see [workflows.md](workflows.md)'s `OptimizePlan` |
 | POST | `/api/workflows/{id}/optimize/stop` | |
 | GET | `/api/workflows/{id}/optimize/state` | `{running, progress, last_result, error}` |
 

@@ -47,7 +47,12 @@ lp['mock_xyz_stage_2'].disconnect()
 # Every device
 inst.stage(); inst.unstage()         # bracket an acquisition
 inst.call('cw_on')                   # invoke one of inst.actions
+inst.call('configure', bin_width_s=1e-9, gates=50)   # with arguments; returns what
+                                     # the hardware actually applied
 inst.connected                       # bool
+inst.actions                         # ['cw_on', 'off', ...] — the names
+inst.action_specs                    # full records: each action's declared arguments,
+                                     # their units and limits, and what it reports back
 inst.parameters                      # full Parameter records: role, unit, limits, choices, tags
 
 # Motors (kind="motor")
