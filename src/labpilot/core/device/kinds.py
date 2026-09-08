@@ -205,8 +205,7 @@ class Motor(_InstrumentWrapper):
                     await result
                 return
 
-        actions = dict(getattr(adapter.schema, "actions", {}) or {})
-        for name in actions:
+        for name in getattr(adapter.schema, "action_names", ()) or ():
             if name.lower() in {"stop", "halt", "abort", "stop_motion"}:
                 method = getattr(adapter, name, None)
                 if callable(method):
@@ -278,7 +277,7 @@ class Source(_InstrumentWrapper):
 
     @property
     def actions(self) -> list[str]:
-        return self._adapter.schema.actions
+        return self._adapter.schema.action_names
 
 
 class Scanner(_InstrumentWrapper):

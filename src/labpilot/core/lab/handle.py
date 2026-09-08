@@ -137,11 +137,26 @@ class InstrumentHandle:
         self._require_connected()
         await (self.adapter.stage() if staged else self.adapter.unstage())
 
-    async def call(self, action: str) -> None:
-        if action not in self.schema.actions:
-            raise KeyError(f"Instrument {self.id} declares no action {action!r}")
+    async def call(self, action: str, arguments: dict[str, Any] | None = None) -> Any:
+        """Invoke a declared action, validating its arguments first.
+
+        Arguments are checked against the action's declared `Parameter`s
+        here rather than in the adapter, so a bad call fails identically
+        over REST, from the console and from a workflow script. The return
+        value is whatever the adapter reports — for a command that
+        negotiates with hardware (a counter's `configure`), that is the
+        settings it actually applied.
+        """
+        declared = self.schema.action(action)
+        if declared is None:
+            known = ", ".join(self.schema.action_names) or "none"
+            raise KeyError(
+                f"Instrument {self.id} declares no action {action!r} "
+                f"(has: {known})"
+            )
+        bound = declared.bind(arguments)
         self._require_connected()
-        await getattr(self.adapter, action)()
+        return await getattr(self.adapter, action)(**bound)
 
     async def stop(self) -> None:
         """Stop a moving instrument where it is.

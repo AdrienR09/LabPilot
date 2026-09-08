@@ -55,6 +55,28 @@ def _jsonable_read(data: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _jsonable(value: Any) -> Any:
+    """JSON-safe form of an arbitrary action return value.
+
+    Unlike `_jsonable_read` this takes anything, because an action reports
+    whatever its adapter chose to return — a dict of the settings it
+    actually applied, a single corrected number, or nothing at all.
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(v) for v in value]
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    return str(value)
+
+
 class InstrumentStatus(BaseModel):
     """Status of a connected instrument."""
 
@@ -321,15 +343,26 @@ class DashboardManager:
         await self.lab.get(instrument_id).stop()
         return self.get_instrument_status(instrument_id)
 
-    async def call_instrument_action(self, instrument_id: str, action_name: str) -> InstrumentStatus:
+    async def call_instrument_action(
+        self,
+        instrument_id: str,
+        action_name: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> tuple[InstrumentStatus, Any]:
         """Invoke one of an instrument's declared `DeviceSchema.actions` —
-        a zero-argument adapter method that isn't a settable-parameter
-        write (a microwave source's `cw_on`, a pulse sequencer's `start`).
-        Requires the instrument to be connected: unlike a setting, an
-        action is a state transition, so it cannot be staged for later."""
-        await self.lab.get(instrument_id).call(action_name)
+        an adapter method that isn't a settable-parameter write (a
+        microwave source's `cw_on`, a pulse sequencer's `start`, a gated
+        counter's `configure(...)`). Requires the instrument to be
+        connected: unlike a setting, an action is a state transition, so it
+        cannot be staged for later.
+
+        Returns the new status *and* whatever the action reported, which
+        for a command that negotiates with hardware is the configuration it
+        actually applied.
+        """
+        result = await self.lab.get(instrument_id).call(action_name, arguments)
         await self._broadcast_status(instrument_id)
-        return self.get_instrument_status(instrument_id)
+        return self.get_instrument_status(instrument_id), result
 
     async def update_instrument_connection(
         self, instrument_id: str, connection_params: dict[str, Any]
@@ -618,17 +651,41 @@ async def stop_instrument(instrument_id: str):
         raise HTTPException(status_code=502, detail=f"Stop failed: {e}") from e
 
 
+class ActionCall(BaseModel):
+    """Arguments for an action, if it declares any.
+
+    The body is optional so every existing caller — which posts nothing at
+    all — keeps working unchanged and means "no arguments".
+    """
+
+    arguments: dict[str, Any] = {}
+
+
 @router.post("/instruments/{instrument_id}/actions/{action_name}")
-async def call_instrument_action(instrument_id: str, action_name: str):
+async def call_instrument_action(
+    instrument_id: str, action_name: str, body: ActionCall | None = None
+):
     """Invoke one of an instrument's declared non-settable actions (see
     DeviceSchema.actions) — e.g. a microwave source's `cw_on`, a pulse
-    sequencer's `start`. Requires the instrument to be connected."""
+    sequencer's `start`, a gated counter's `configure(...)`. Requires the
+    instrument to be connected.
+
+    Arguments are validated against the action's declared parameters, so an
+    out-of-range value is a 400 here rather than a driver exception later.
+    `result` carries whatever the action reported.
+    """
     manager = get_dashboard_manager()
     try:
-        status = await manager.call_instrument_action(instrument_id, action_name)
-        return {"success": True, "data": status.model_dump()}
+        status, result = await manager.call_instrument_action(
+            instrument_id, action_name, body.arguments if body else None
+        )
+        return {"success": True, "data": status.model_dump(), "result": _jsonable(result)}
     except (UnknownInstrumentError, KeyError) as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ParameterError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except NotConnectedError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ConnectionError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:

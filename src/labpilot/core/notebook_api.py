@@ -116,11 +116,19 @@ class Instrument:
         """Release after acquisition."""
         self._client.unstage(self.id)
 
-    def call(self, action: str) -> None:
-        """Invoke one of this device's declared `actions` — a zero-argument
-        state transition that isn't a parameter write, e.g. a microwave
-        source's `cw_on`."""
-        self._client.call_action(self.id, action)
+    def call(self, action: str, **arguments: Any) -> Any:
+        """Invoke one of this device's declared `actions` — a state
+        transition or command that isn't a parameter write.
+
+            mw.call("cw_on")
+            actual = counter.call("configure", bin_width_s=1e-9, gates=50)
+
+        Arguments are keyword-only and validated against the action's
+        declared parameters, so a typo or an out-of-range value is an error
+        here rather than a driver exception later. Returns whatever the
+        action reported.
+        """
+        return self._client.call_action(self.id, action, arguments or None)
 
     # --- Introspection ----------------------------------------------------
 
@@ -139,7 +147,20 @@ class Instrument:
 
     @property
     def actions(self) -> list[str]:
-        return list(self.schema.get("actions") or ())
+        """The names of this device's callable actions."""
+        schema = self.schema
+        names = schema.get("action_names")
+        if names is not None:
+            return list(names)
+        # An older backend, whose `actions` was a plain list of names.
+        return [a if isinstance(a, str) else a.get("name", "") for a in schema.get("actions") or ()]
+
+    @property
+    def action_specs(self) -> list[dict[str, Any]]:
+        """The full action records — declared arguments, their units and
+        limits, and what the action reports back. `actions` is just the
+        names."""
+        return [a for a in self.schema.get("actions") or () if isinstance(a, dict)]
 
     @property
     def parameters(self) -> list[dict[str, Any]]:

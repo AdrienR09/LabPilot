@@ -28,8 +28,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
+from labpilot.core.device.action import Action
 from labpilot.core.device.parameter import INTEGRATION_TIME, Parameter, ParamRole
 from labpilot.core.errors import UnknownParameterError
 
@@ -93,19 +101,36 @@ class DeviceSchema(BaseModel):
         default_factory=list,
         description="Supported trigger modes (e.g., ['software', 'hardware'])",
     )
-    actions: list[str] = Field(
-        default_factory=list,
+    actions: tuple[Action, ...] = Field(
+        default=(),
         description=(
-            "Zero-argument adapter methods callable as UI buttons, beyond "
-            "the settable/set_<key> write contract (e.g. 'cw_on', "
-            "'reset_scan') — for state transitions that aren't a single "
-            "parameter write."
+            "Adapter methods callable as commands, beyond the settable/"
+            "set_<key> write contract — state transitions like 'cw_on' or "
+            "'reset_scan', and parameterised commands like a gated counter's "
+            "configure(bin_width_s, record_length_s, gates). A bare name is "
+            "still accepted and means a zero-argument action."
         ),
     )
     tags: list[str] = Field(
         default_factory=list,
         description="Searchable tags (e.g., ['spectroscopy', 'NI', 'VISA'])",
     )
+
+    @field_validator("actions", mode="before")
+    @classmethod
+    def _coerce_actions(cls, value: Any) -> Any:
+        """Accept `["cw_on", "off"]`, dicts, or `Action`s, in any mix.
+
+        Every adapter in this repo declares actions as a list of bare
+        names, and a `model_dump()` round trip brings them back as dicts.
+        Both mean the same thing as an `Action`, so both are read as one
+        rather than made into a migration.
+        """
+        if value is None:
+            return ()
+        if isinstance(value, (str, bytes)):
+            raise TypeError("actions must be a sequence, not a single string")
+        return tuple(Action.from_any(item) for item in value)
 
     # --- Legacy construction ---------------------------------------------
 
@@ -122,6 +147,11 @@ class DeviceSchema(BaseModel):
         """
         if not isinstance(data, dict):
             return data
+        if "action_names" in data:
+            # A computed view, like the four below: it comes back in a
+            # `model_dump()` round trip and `actions` already carries it.
+            data = dict(data)
+            data.pop("action_names")
         if not any(key in data for key in _LEGACY_FIELDS):
             return data
 
@@ -212,7 +242,19 @@ class DeviceSchema(BaseModel):
             if p.limits is not None and p.limits[0] is not None and p.limits[1] is not None
         }
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def action_names(self) -> list[str]:
+        """Just the names, for the many callers that only ask "is `stop` one
+        of this device's actions?" — and so `model_dump()` keeps carrying a
+        plain name list beside the richer `actions`."""
+        return [a.name for a in self.actions]
+
     # --- Lookup -----------------------------------------------------------
+
+    def action(self, name: str) -> Action | None:
+        """This device's action of that name, or None."""
+        return next((a for a in self.actions if a.name == name), None)
 
     def __iter__(self) -> Iterator[Parameter]:  # type: ignore[override]
         return iter(self.parameters)

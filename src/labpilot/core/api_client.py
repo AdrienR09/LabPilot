@@ -124,14 +124,22 @@ class LabPilotClient:
         )
         _check(resp)
 
-    def call_action(self, instrument_id: str, name: str) -> None:
+    def call_action(
+        self, instrument_id: str, name: str, arguments: dict[str, Any] | None = None
+    ) -> Any:
         """Invoke one of an instrument's declared `DeviceSchema.actions`
-        (e.g. a microwave source's "cw_on") — a zero-argument adapter
-        method that isn't a settable-parameter write. Raises DeviceError
-        for an undeclared action name, NotConnectedError if the instrument
-        isn't connected."""
-        resp = self._client.post(f"/api/dashboard/instruments/{instrument_id}/actions/{name}")
+        (e.g. a microwave source's "cw_on", a gated counter's
+        "configure") — an adapter method that isn't a settable-parameter
+        write. Returns whatever the action reported, which for a command
+        that negotiates with hardware is the configuration actually
+        applied. Raises DeviceError for an undeclared action name or a bad
+        argument, NotConnectedError if the instrument isn't connected."""
+        resp = self._client.post(
+            f"/api/dashboard/instruments/{instrument_id}/actions/{name}",
+            json={"arguments": arguments or {}},
+        )
         _check(resp)
+        return (resp.json() or {}).get("result")
 
     def connect(self, instrument_id: str) -> None:
         resp = self._client.post(f"/api/dashboard/instruments/{instrument_id}/connect")
