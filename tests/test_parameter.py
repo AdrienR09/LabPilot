@@ -315,3 +315,132 @@ def test_tag_search_is_case_insensitive():
     found = adapter_registry.search(tags=["spectrometer"])
     assert "mock_spectrometer" in found
     assert found.keys() == adapter_registry.search(tags=["SPECTROMETER"]).keys()
+
+
+# --- Structured parameters (records), which retire dtype="json" ------------
+#
+# `dtype="json"` was the only way to declare a setpoint that isn't a scalar,
+# and it describes nothing: `validate()` returned it untouched, the settings
+# tree rendered it as nothing, and the one adapter using it needed a
+# hand-written widget keyed to its exact dict shape. A record says what the
+# structure *is*, in the same vocabulary as everything else.
+
+PULSE_STEP = Parameter(
+    "sequence", shape=(None,), settable=True, role=ParamRole.SETTING,
+    fields=(
+        Parameter("duration_ns", unit="ns", limits=(8.0, None), settable=True),
+        Parameter("channel", dtype="i8", limits=(0, 23), settable=True),
+        Parameter("level", dtype="str", choices=("low", "high"), settable=True),
+    ),
+)
+
+
+def test_declaring_fields_is_enough_to_mean_a_record():
+    assert PULSE_STEP.dtype == "record"
+    assert PULSE_STEP.is_record and PULSE_STEP.is_table
+    assert PULSE_STEP.field("channel").limits == (0, 23)
+    assert PULSE_STEP.field("nope") is None
+
+
+def test_a_record_reads_as_json_through_the_legacy_view():
+    """An older consumer must not mistake a table of records for an array
+    of numbers and try to plot or float() it."""
+    assert PULSE_STEP.legacy_dtype() == "json"
+
+
+def test_a_table_validates_every_row():
+    rows = PULSE_STEP.validate([
+        {"duration_ns": 100, "channel": 2, "level": "high"},
+        {"duration_ns": 40.0, "channel": 0, "level": "low"},
+    ])
+    assert rows[0]["duration_ns"] == 100.0  # coerced, like any f8
+    assert rows[1]["channel"] == 0
+
+
+def test_a_limit_declared_on_a_field_is_enforced_on_every_row():
+    """The whole point of describing the structure: the nested limit is
+    enforced by the same code that enforces a scalar setpoint's."""
+    with pytest.raises(LimitError) as excinfo:
+        PULSE_STEP.validate(
+            [{"duration_ns": 100, "channel": 2, "level": "high"},
+             {"duration_ns": 4.0, "channel": 2, "level": "high"}],
+            device="pulser",
+        )
+    # Named against the field, not the table, so the message is actionable.
+    assert "duration_ns" in str(excinfo.value)
+
+
+def test_a_field_outside_its_choices_is_rejected():
+    with pytest.raises(ChoiceError):
+        PULSE_STEP.validate([{"duration_ns": 100, "channel": 2, "level": "sideways"}])
+
+
+def test_a_missing_field_is_rejected_and_named():
+    with pytest.raises(ParameterError, match="level"):
+        PULSE_STEP.validate([{"duration_ns": 100, "channel": 2}])
+
+
+def test_an_undeclared_key_is_rejected_and_says_what_is_declared():
+    with pytest.raises(ParameterError) as excinfo:
+        PULSE_STEP.validate([{"duration_ns": 100, "channel": 2, "level": "low", "x": 1}])
+    assert "duration_ns" in str(excinfo.value)
+
+
+def test_a_table_needs_a_sequence_and_a_row_needs_a_mapping():
+    with pytest.raises(ParameterError, match="sequence of rows"):
+        PULSE_STEP.validate({"duration_ns": 100})
+    with pytest.raises(ParameterError, match="mapping"):
+        PULSE_STEP.validate([7])
+
+
+def test_a_single_record_is_a_mapping_not_a_table():
+    one = Parameter("gate_config", settable=True, fields=(
+        Parameter("bin_width_s", unit="s", limits=(1e-12, 1.0), settable=True),
+        Parameter("gates", dtype="i8", settable=True),
+    ))
+    assert one.is_record and not one.is_table
+    assert one.validate({"bin_width_s": 1e-9, "gates": 4}) == {
+        "bin_width_s": 1e-9, "gates": 4,
+    }
+
+
+def test_records_nest():
+    outer = Parameter("element", settable=True, fields=(
+        Parameter("duration_ns", unit="ns", settable=True),
+        Parameter("mw", settable=True, fields=(
+            Parameter("amplitude_v", unit="V", limits=(0.0, 1.0), settable=True),
+        )),
+    ))
+    assert outer.validate({"duration_ns": 10, "mw": {"amplitude_v": 0.5}})["mw"] == {
+        "amplitude_v": 0.5,
+    }
+    with pytest.raises(LimitError):
+        outer.validate({"duration_ns": 10, "mw": {"amplitude_v": 9.0}})
+
+
+@pytest.mark.parametrize("kwargs, match", [
+    ({"dtype": "str", "fields": (Parameter("a"),)}, "must be 'record'"),
+    ({"dtype": "record"}, "declares no fields"),
+    ({"fields": (Parameter("a"), Parameter("a"))}, "twice"),
+    ({"fields": (Parameter("a"),), "shape": (2, 2)}, "shape must be"),
+])
+def test_a_malformed_record_is_refused_at_declaration(kwargs, match):
+    """Caught when the adapter is written, not when someone writes to it."""
+    with pytest.raises(ParameterError, match=match):
+        Parameter("x", **kwargs)
+
+
+def test_a_record_survives_a_schema_round_trip():
+    """The settings tree builds its widgets from exactly this."""
+    schema = DeviceSchema(
+        name="pulser", kind="generic", readable={"running": "bool"},
+        parameters=(PULSE_STEP,),
+    )
+    revived = DeviceSchema(**schema.model_dump())
+    field_names = [f["name"] if isinstance(f, dict) else f.name
+                   for f in revived.require("sequence").fields]
+    assert field_names == ["duration_ns", "channel", "level"]
+    with pytest.raises(LimitError):
+        revived.require("sequence").validate([
+            {"duration_ns": 1.0, "channel": 0, "level": "low"}
+        ])

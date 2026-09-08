@@ -30,6 +30,12 @@ class SettingsTreeComponent(UIComponent):
         settable = schema.get("settable", {})
         units = schema.get("units", {})
         limits = schema.get("limits", {})
+        # The rich records, keyed by name. Everything below prefers these
+        # and falls back to the flat views, so an older backend — or a
+        # parameter the schema somehow omits — still renders as before.
+        declared = {
+            p["name"]: p for p in (schema.get("parameters") or []) if p.get("name")
+        }
 
         current: dict = {}
         try:
@@ -39,25 +45,77 @@ class SettingsTreeComponent(UIComponent):
         except Exception:
             pass
 
-        def _param_for(name: str):
-            dtype = settable.get(name, "float64")
-            if dtype == "json":
-                # No generic editor for a structured value here — a
-                # dedicated component (e.g. pulse_sequence_editor) owns
-                # rendering/writing it instead. float(list-or-dict) would
-                # otherwise crash the whole tree the moment a real value
-                # is staged.
-                return None
-            unit = units.get(name, "")
-            if dtype == "bool":
-                return {"name": name, "type": "bool", "value": bool(current.get(name, False))}
-            opts = {"name": name, "type": "float", "value": float(current.get(name, 0.0))}
+        def _leaf(name: str, param: dict, value):
+            """One editable row, from a declared `Parameter`.
+
+            Choices come first: an enumerated setting is a dropdown
+            whatever its element type is, and rendering it as a free
+            numeric field is how an invalid value gets typed in the first
+            place.
+            """
+            unit = (param.get("unit") if param else None) or units.get(name, "")
+            dtype = str((param.get("dtype") if param else None)
+                        or settable.get(name, "float64"))
+            lim = (param.get("limits") if param else None) or limits.get(name)
+            choices = param.get("choices") if param else None
+
+            if choices:
+                return {"name": name, "type": "list", "limits": list(choices),
+                        "value": value if value in choices else choices[0]}
+
+            if dtype in ("bool",):
+                return {"name": name, "type": "bool", "value": bool(value or False)}
+
+            if dtype in ("str", "string"):
+                return {"name": name, "type": "str", "value": "" if value is None else str(value)}
+
+            if dtype in ("i8", "int", "int32", "int64"):
+                opts = {"name": name, "type": "int", "value": int(value or 0)}
+            else:
+                opts = {"name": name, "type": "float", "value": float(value or 0.0)}
             if unit:
                 opts["suffix"] = f" {unit}"
-            lim = limits.get(name)
             if lim:
-                opts["limits"] = tuple(lim)
+                low, high = lim
+                # pyqtgraph wants a pair; an open side stays open.
+                opts["limits"] = (
+                    float("-inf") if low is None else low,
+                    float("inf") if high is None else high,
+                )
             return opts
+
+        def _param_for(name: str):
+            param = declared.get(name)
+            fields = (param or {}).get("fields") or []
+
+            if fields:
+                if list((param or {}).get("shape") or []):
+                    # A *table* of records — rows a tree can't add or
+                    # reorder. A dedicated component owns those.
+                    return None
+                # One structured value: a real group whose children are the
+                # record's own fields, each carrying its own unit, limits
+                # and choices. Marked as a record so a change to any child
+                # writes the whole structure, not the bare field.
+                staged = current.get(name) or {}
+                children = [
+                    _leaf(f["name"], f, staged.get(f["name"]))
+                    for f in fields if f.get("name")
+                ]
+                if not children:
+                    return None
+                return {"name": name, "type": "group", "children": children,
+                        "expanded": True, "record": name}
+
+            dtype = str((param or {}).get("dtype") or settable.get(name, "float64"))
+            if dtype == "json":
+                # Structure this module cannot see into — the old escape
+                # hatch. A dedicated component (e.g. pulse_sequence_editor)
+                # owns rendering it; float(list-or-dict) would otherwise
+                # crash the whole tree the moment a real value is staged.
+                return None
+
+            return _leaf(name, param, current.get(name))
 
         # Group names sharing a prefix before the first "_" (e.g. a
         # microwave source's cw_frequency/cw_power -> "cw",
@@ -94,12 +152,23 @@ class SettingsTreeComponent(UIComponent):
             for changed_param, change_type, value in changes:
                 if change_type != "value":
                     continue
+                # A record's field is not itself a settable parameter: the
+                # device accepts the whole structure, so editing one field
+                # writes the record with that field replaced. The prefix
+                # groups above are display-only and have no `record` opt,
+                # so their children keep writing themselves.
+                parent = changed_param.parent()
+                record = parent.opts.get("record") if parent is not None else None
+                if record:
+                    name = record
+                    payload = {c.name(): c.value() for c in parent.children()}
+                else:
+                    name = changed_param.name()
+                    payload = value
                 try:
-                    ctx.client.write(
-                        ctx.instrument.id, {changed_param.name(): value}, persist=True
-                    )
+                    ctx.client.write(ctx.instrument.id, {name: payload}, persist=True)
                 except Exception as e:
-                    print(f"[InstrumentWindow] Failed to write {changed_param.name()}: {e}")
+                    print(f"[InstrumentWindow] Failed to write {name}: {e}")
 
         params.sigTreeStateChanged.connect(_on_change)
 

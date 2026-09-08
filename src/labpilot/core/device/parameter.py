@@ -36,6 +36,7 @@ REST payload and the Qt widgets keep working unchanged.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
@@ -45,6 +46,7 @@ from labpilot.core.errors import ChoiceError, LimitError, ParameterError
 __all__ = [
     "CANONICAL_DTYPES",
     "INTEGRATION_TIME",
+    "RECORD",
     "ParamRole",
     "Parameter",
     "legacy_dtype_to_parts",
@@ -79,9 +81,25 @@ class ParamRole(StrEnum):
     stable, error code)."""
 
 
-CANONICAL_DTYPES = frozenset({"f8", "i8", "bool", "str", "json"})
+CANONICAL_DTYPES = frozenset({"f8", "i8", "bool", "str", "json", "record"})
 """Element types this module can coerce and range-check. Anything else is
 carried through untouched — see the module docstring."""
+
+RECORD = "record"
+"""A structured value, described by `Parameter.fields`.
+
+`dtype="json"` was the only way to declare a setpoint that isn't a scalar,
+and it describes nothing: `validate()` returns a json value untouched, the
+settings tree renders it as nothing at all, and the one adapter using it
+needed a hand-written widget keyed to its exact dict shape. A `record`
+says what the structure *is*, in the same vocabulary as everything else —
+its fields are `Parameter`s, so they carry units, limits and choices, and
+they validate and render with the machinery that already exists.
+
+With `shape=()` a record is one mapping. With `shape=(None,)` it is a
+table of them — a list of rows of that shape, which is what a pulse-block
+table, an AWG channel map or an NI task's channel list actually is.
+"""
 
 INTEGRATION_TIME = "integration_time"
 """Standard tag for "the parameter that sets how long one reading takes".
@@ -101,6 +119,7 @@ _LEGACY_SCALARS: dict[str, str] = {
     "bool": "bool",
     "str": "str", "string": "str",
     "json": "json", "tuple": "json", "dict": "json", "list": "json",
+    "record": "record",
 }
 
 # Reverse map, for reconstructing the legacy string. Chosen so the
@@ -109,6 +128,11 @@ _LEGACY_SCALARS: dict[str, str] = {
 # the integer names, `schema_utils.py` for "ndarray1d".
 _CANONICAL_TO_LEGACY: dict[str, str] = {
     "f8": "float64", "i8": "int32", "bool": "bool", "str": "str", "json": "json",
+    # A record has no legacy spelling — it did not exist. "json" is the
+    # honest answer for a caller reading the old flat views: structured,
+    # and not something a float widget should try to render. Consumers that
+    # understand records read `fields` instead.
+    "record": "json",
 }
 
 # Numeric, readable-and-settable parameters that a motor has but that are
@@ -157,6 +181,15 @@ class Parameter:
     axes: tuple[str, ...] = ()
     tags: frozenset[str] = field(default_factory=frozenset)
     description: str = ""
+    fields: tuple[Parameter, ...] = ()
+    """The members of a structured value — see `RECORD`. Empty for every
+    ordinary parameter. Declaring any implies `dtype="record"`.
+
+    Every declared field is required and no undeclared key is accepted: a
+    partially-specified structure is almost always a typo, and there is no
+    per-field default to fall back on. (If optional members are ever
+    needed, a `default` on `Parameter` is the natural way to add them.)
+    """
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -172,6 +205,41 @@ class Parameter:
         object.__setattr__(self, "shape", tuple(self.shape))
         object.__setattr__(self, "axes", tuple(self.axes))
         object.__setattr__(self, "tags", frozenset(self.tags))
+        object.__setattr__(self, "fields", tuple(self.fields))
+
+        if self.fields:
+            if self.dtype in ("f8", RECORD):
+                # `f8` is the field default, so declaring members is enough
+                # to mean "this is a record" without also saying so.
+                object.__setattr__(self, "dtype", RECORD)
+            else:
+                raise ParameterError(
+                    f"Parameter {self.name!r} declares fields, so its dtype "
+                    f"must be {RECORD!r}, not {self.dtype!r}",
+                    parameter=self.name,
+                )
+            seen: set[str] = set()
+            for member in self.fields:
+                if member.name in seen:
+                    raise ParameterError(
+                        f"Parameter {self.name!r} declares the field "
+                        f"{member.name!r} twice",
+                        parameter=self.name,
+                    )
+                seen.add(member.name)
+            if self.shape not in ((), (None,)):
+                raise ParameterError(
+                    f"Parameter {self.name!r} is a record, so its shape must "
+                    f"be () for one or (None,) for a table of them, "
+                    f"not {self.shape}",
+                    parameter=self.name,
+                )
+        elif self.dtype == RECORD:
+            raise ParameterError(
+                f"Parameter {self.name!r} is a {RECORD!r} but declares no "
+                f"fields, so nothing describes its structure",
+                parameter=self.name,
+            )
         if self.choices is not None:
             object.__setattr__(self, "choices", tuple(self.choices))
         if self.limits is not None:
@@ -193,6 +261,20 @@ class Parameter:
     def is_array(self) -> bool:
         return bool(self.shape)
 
+    @property
+    def is_record(self) -> bool:
+        """One structured value, or a table of them."""
+        return bool(self.fields)
+
+    @property
+    def is_table(self) -> bool:
+        """A sequence of records — a pulse-block table, a channel map."""
+        return bool(self.fields) and self.shape == (None,)
+
+    def field(self, name: str) -> Parameter | None:
+        """This record's member of that name, or None."""
+        return next((f for f in self.fields if f.name == name), None)
+
     def legacy_dtype(self) -> str:
         """The old single-string dtype, reconstructed exactly.
 
@@ -200,6 +282,10 @@ class Parameter:
         the REST payload and every Qt widget reading those dicts keep
         seeing what they saw before `Parameter` existed.
         """
+        if self.dtype == RECORD:
+            # Before ndarray: a table of records is not an array of numbers,
+            # and a caller reading the flat views must not treat it as one.
+            return _CANONICAL_TO_LEGACY[RECORD]
         if self.shape:
             return f"ndarray{len(self.shape)}d"
         return _CANONICAL_TO_LEGACY.get(self.dtype, self.dtype)
@@ -239,10 +325,15 @@ class Parameter:
             ChoiceError: value not among `choices`.
             ParameterError: value of a type this parameter cannot hold.
         """
+        if self.is_record:
+            return self._validate_record(value, device=device)
+
         if self.is_array or self.dtype not in CANONICAL_DTYPES:
-            # An array setpoint (a waveform, a pulse table) or a dtype this
+            # A numeric array setpoint (a sampled waveform) or a dtype this
             # module doesn't model: nothing to coerce, and range-checking
             # element-wise is Phase 2's job once arrays are first-class.
+            # A *structured* setpoint is no longer in this bucket — that is
+            # what `fields` is for.
             return value
 
         coerced = self._coerce(value, device=device)
@@ -270,6 +361,61 @@ class Parameter:
                 )
 
         return coerced
+
+    def _validate_record(self, value: Any, *, device: str | None) -> Any:
+        """Validate one structured value, or a table of them.
+
+        Recurses through `fields`, so a limit declared on a pulse element's
+        duration is enforced on every row of a pulse table by the same code
+        that enforces a scalar setpoint's limit — which is the whole point
+        of describing the structure rather than escaping it as json.
+        """
+        where = f"{f'{device}.' if device else ''}{self.name}"
+
+        if self.is_table:
+            if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+                raise ParameterError(
+                    f"{where} is a table, so it needs a sequence of rows, "
+                    f"not {type(value).__name__}",
+                    device=device, parameter=self.name,
+                )
+            return [
+                self._validate_row(row, device=device, index=index)
+                for index, row in enumerate(value)
+            ]
+
+        return self._validate_row(value, device=device, index=None)
+
+    def _validate_row(self, value: Any, *, device: str | None, index: int | None) -> Any:
+        at = f"[{index}]" if index is not None else ""
+        where = f"{f'{device}.' if device else ''}{self.name}{at}"
+
+        if not isinstance(value, Mapping):
+            raise ParameterError(
+                f"{where} needs a mapping with the keys "
+                f"{[f.name for f in self.fields]}, not {type(value).__name__}",
+                device=device, parameter=self.name,
+            )
+
+        unknown = set(value) - {f.name for f in self.fields}
+        if unknown:
+            raise ParameterError(
+                f"{where} has no field(s) {', '.join(sorted(unknown))} — "
+                f"it declares: {', '.join(f.name for f in self.fields)}",
+                device=device, parameter=self.name,
+            )
+
+        validated: dict[str, Any] = {}
+        for member in self.fields:
+            if member.name not in value:
+                raise ParameterError(
+                    f"{where} is missing the field {member.name!r}",
+                    device=device, parameter=self.name,
+                )
+            # Reported against the nested parameter, so a bad duration on
+            # row 7 names the duration and its limits, not the table.
+            validated[member.name] = member.validate(value[member.name], device=device)
+        return validated
 
     def _coerce(self, value: Any, *, device: str | None) -> Any:
         try:
