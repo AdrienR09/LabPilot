@@ -31,11 +31,11 @@ itself:
 
 from __future__ import annotations
 
-import os
+# Pin the Qt binding before qtpy is imported by anything — the rule,
+# and why it matters, live in labpilot/ui/qt_api.py.
+import labpilot.ui.qt_api  # noqa: F401 — imported for its side effect
 
-# Must be set before qtpy (pulled in by the viewer toolkit) is imported
-# anywhere — see instrument_window.py's identical guard for why.
-os.environ.setdefault("QT_API", "pyqt6")
+# isort: split
 
 import ast
 import warnings
@@ -59,6 +59,12 @@ from PyQt6.QtWidgets import (
 
 warnings.filterwarnings("ignore", category=DataIndexWarning)
 
+# Pure backend modules — no session, no hardware, no Qt. This process
+# reaches *state* only over HTTP, which is why `backend_client` exists;
+# a rule against importing backend *code* was a different claim, and the
+# copies it produced (an axis decomposition, an optimizer axis list, two
+# AST readers, two curve fits) each had to be kept in step with an
+# original by hand. See core/workflow/scan_params.py.
 from backend_client import (
     AsyncWriter,
     BackendClient,
@@ -70,7 +76,7 @@ from components.axes_control import (
     AxisRangeSettingsDialog,
     OptimizerSettingsDialog,
 )
-from components.base import InstrumentContext
+from components.base import InstrumentContext, component_for
 from components.hdf5_export import save_workflow_result_hdf5
 from components.odmr_control import (
     OdmrFitControlWidget,
@@ -81,7 +87,6 @@ from components.odmr_control import (
 from components.schema_utils import fetch_schema, pick_1d_series, primary_key
 from components.widgets import StatusLabel, dock
 from components.workflow_result import (
-    RESULT_VIEW_REGISTRY,
     Image2DResultView,
     NDScanResultView,
     OdmrResultView,
@@ -90,6 +95,13 @@ from components.workflow_result import (
     _ScanImagePanel,
 )
 from main import DashboardInstrument, LabPilotStyle
+
+from labpilot.core.run.plans import decompose
+from labpilot.core.workflow.instrument_roles import (
+    read_required_instruments,
+    read_result_ui,
+)
+from labpilot.core.workflow.scan_params import resolve_scan_axes
 
 __all__ = ["WorkflowWindow"]
 
@@ -183,38 +195,6 @@ def _referenced_instrument_ids(graph: dict[str, Any], script_text: Optional[str]
     return ids
 
 
-def _required_instrument_roles(script_text: str) -> dict[str, dict]:
-    """{role: {"kind":..., "optional":...}, ...} declared by this script's
-    `REQUIRED_INSTRUMENTS` constant — mirrors
-    core/workflow/instrument_roles.py's `read_required_instruments`
-    (the desktop app talks to the backend only over HTTP, so it re-parses
-    the script text it already fetched rather than importing that
-    backend module directly, same pattern as `_result_ui` above)."""
-    try:
-        tree = ast.parse(script_text)
-    except SyntaxError:
-        return {}
-    for stmt in tree.body:
-        is_plain = (
-            isinstance(stmt, ast.Assign)
-            and len(stmt.targets) == 1
-            and isinstance(stmt.targets[0], ast.Name)
-            and stmt.targets[0].id == "REQUIRED_INSTRUMENTS"
-        )
-        is_annotated = (
-            isinstance(stmt, ast.AnnAssign)
-            and isinstance(stmt.target, ast.Name)
-            and stmt.target.id == "REQUIRED_INSTRUMENTS"
-            and stmt.value is not None
-        )
-        if is_plain or is_annotated:
-            try:
-                return ast.literal_eval(stmt.value)
-            except Exception:
-                pass
-    return {}
-
-
 def _unbound_roles(graph: dict[str, Any], script_text: Optional[str]) -> list[str]:
     """Role names this script declares (session.get("...") calls) that
     have no entry, or a null entry, in instrument_bindings — used to warn
@@ -230,7 +210,7 @@ def _unbound_roles(graph: dict[str, Any], script_text: Optional[str]) -> list[st
         tree = ast.parse(script_text)
     except SyntaxError:
         return []
-    required = _required_instrument_roles(script_text)
+    required = read_required_instruments(script_text)
     return [
         role for role in _scan_session_get_roles(tree)
         if role in bindings and not bindings.get(role) and not required.get(role, {}).get("optional")
@@ -238,52 +218,20 @@ def _unbound_roles(graph: dict[str, Any], script_text: Optional[str]) -> list[st
 
 
 def _result_ui(script_text: Optional[str]) -> dict:
-    """{"type": "image2d"|"spectrum", "value_key": ..., ...} declared by a
-    role-based template's `RESULT_UI` constant (see
-    core/workflow/instrument_roles.py's `read_result_ui`, which this
-    mirrors — the desktop app talks to the backend only over HTTP, so it
-    re-parses the script text it already fetched rather than importing
-    that backend module directly). {} if the script declares none.
+    """This template's `RESULT_UI` declaration, or {} if it has none.
 
-    The one exception to "never import a backend module": parsing the
-    value node itself goes through `core.workflow.result_types`'s
-    `parse_result_ui_literal` (imported below, not duplicated a third
-    time) — that module is deliberately pure Python (no Qt/session/
-    hardware dependency), the same property that already lets this
-    process import `core.api_client` directly (see backend_client.py)."""
+    `read_result_ui` itself, not a copy of it. This process re-parsed the
+    script text it had already fetched, on the rule that "the desktop app
+    talks to the backend only over HTTP, so it never imports a backend
+    module" — but the rule is about *state*, not about code: instruments
+    and the running session are live objects in another process and can
+    only be reached over HTTP, while a function that turns script text
+    into a dict is neither. This module already imported
+    `core.workflow.result_types` for the hard half of exactly this parse.
+    """
     if not script_text:
         return {}
-    try:
-        tree = ast.parse(script_text)
-    except SyntaxError:
-        return {}
-    from labpilot.core.workflow.result_types import (
-        ResultUIError,
-        parse_result_ui_literal,
-    )
-
-    result: dict = {}
-    for stmt in tree.body:
-        is_plain = (
-            isinstance(stmt, ast.Assign)
-            and len(stmt.targets) == 1
-            and isinstance(stmt.targets[0], ast.Name)
-            and stmt.targets[0].id == "RESULT_UI"
-        )
-        is_annotated = (
-            isinstance(stmt, ast.AnnAssign)
-            and isinstance(stmt.target, ast.Name)
-            and stmt.target.id == "RESULT_UI"
-            and stmt.value is not None
-        )
-        if is_plain or is_annotated:
-            try:
-                result = parse_result_ui_literal(stmt.value)
-            except ResultUIError:
-                raise
-            except Exception:
-                pass
-    return result
+    return read_result_ui(script_text)
 
 
 class WorkflowWindow(QMainWindow):
@@ -313,6 +261,8 @@ class WorkflowWindow(QMainWindow):
         # any scan has run; see that class's docstring for why this
         # matters), not lazily from the first frame's data.
         self._omniscan_axis_ranges: Optional[dict] = None
+        # The optimizer's axes, in the order the server sweeps them.
+        self._scan_axes: list[str] = []
         self._omniscan_hold_positions: Optional[dict] = None
         # ODMR sweep/fit docks (see _add_odmr_sweep_control) — only built
         # for a workflow whose params match odmr_sweep.py's shape.
@@ -511,33 +461,24 @@ class WorkflowWindow(QMainWindow):
             self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, d)
 
     def _resolve_optimizer_axes(self, crosshair: dict) -> list[str]:
-        """Which actuator axes the optimizer runs over — mirrors
-        server.py's own `_resolve_optimize_axes` exactly (both need to
-        agree on pane layout vs. which step each server progress update
-        belongs to), without importing across the process boundary (this
-        Qt app only ever talks to the backend over HTTP — see this
-        module's own docstring): an omniscan-style workflow's already-
-        resolved `_omniscan_axis_ranges` (SCAN_AXES ∩ AXIS_RANGES ∩ the
-        bound actuator's own settable schema, see `_add_params_dock`) IS
-        that same axis set; a workflow with no AXIS_RANGES at all (e.g.
-        confocal_scanner.py) falls back to the crosshair's fixed
-        x_axis/y_axis pair, exactly as before this phase."""
-        if self._omniscan_axis_ranges:
-            return list(self._omniscan_axis_ranges.keys())
-        return [crosshair.get("x_axis", "x"), crosshair.get("y_axis", "y")]
+        """Which actuator axes the optimizer runs over.
 
-    @staticmethod
-    def _decompose_axes(axes: list[str]) -> list[tuple[str, ...]]:
-        """Local mirror of `core/workflow/capabilities.py`'s
-        `OptimizerSequence.decompose` — same reason as
-        `_resolve_optimizer_axes` above (no cross-process import), same
-        deterministic two-at-a-time pairing."""
-        sequence: list[tuple[str, ...]] = []
-        remaining = list(axes)
-        while remaining:
-            sequence.append(tuple(remaining[:2]))
-            remaining = remaining[2:]
-        return sequence
+        Resolved by `core/workflow/scan_params.py`'s `resolve_scan_axes` —
+        the same call the server makes — when this workflow declares a
+        grid (see `_add_params_dock`); a workflow that declares none
+        (confocal_scanner.py) falls back to the crosshair's fixed
+        x_axis/y_axis pair.
+
+        This used to be a hand-kept copy of the server's rule, on the
+        grounds that the two "need to agree" and could not share code
+        across the process boundary. They are separate processes but one
+        installed package, and the rule is a pure function of the
+        parameters — so they now agree by construction instead of by
+        assertion.
+        """
+        if self._scan_axes:
+            return list(self._scan_axes)
+        return [crosshair.get("x_axis", "x"), crosshair.get("y_axis", "y")]
 
     def _build_optimizer_panel(self, crosshair: dict) -> QDockWidget:
         """Builds `self.optimizer_panels` (one per step of the optimize
@@ -562,7 +503,7 @@ class WorkflowWindow(QMainWindow):
         leftover single-axis step (an odd axis count, e.g. qudi's own
         3-axis confocal case) gets a `_OptimizerCurvePanel` instead."""
         axes = self._resolve_optimizer_axes(crosshair)
-        self.optimizer_sequence = self._decompose_axes(axes)
+        self.optimizer_sequence = decompose(axes)
         # Only called once _result_ui_spec is set (_add_result_view's
         # first line) — for both the early (ndscan) and late (image2d)
         # call sites.
@@ -964,6 +905,16 @@ class WorkflowWindow(QMainWindow):
             if axis_ranges:
                 self._omniscan_axis_ranges = axis_ranges
                 self._omniscan_hold_positions = hold_positions
+                # The optimizer's axes come from the shared rule, not from
+                # this table's row order: `axis_ranges` is a dict keyed
+                # however the template happened to author it, while the
+                # server sweeps in SCAN_AXES order. Reading the panes'
+                # axis list off the dict meant the two could pair axes
+                # differently and a step's results could land in the wrong
+                # pane. See core/workflow/scan_params.py.
+                self._scan_axes = resolve_scan_axes(
+                    {"AXIS_RANGES": axis_ranges, "SCAN_AXES": scan_axes}, actuator_schema
+                )[0]
                 self._add_axes_control(actuator_id, axis_ranges, scan_axes, hold_positions, actuator_schema)
         elif all(k in params for k in ("SWEEP_START", "SWEEP_STOP", "SWEEP_POINTS")):
             self._add_odmr_sweep_control(graph, params)
@@ -1257,13 +1208,13 @@ class WorkflowWindow(QMainWindow):
 
     def _add_result_view(self, result_ui: dict) -> None:
         """Builds `self.result_view` from `result_ui["type"]` via
-        `RESULT_VIEW_REGISTRY` (components/workflow_result.py) — one
+        the registry's "result" context (components/workflow_result.py) — one
         adapter class per type, auto-registered there, replacing what used
         to be a hardcoded if/elif chain here. Adding a 5th result kind
         means adding one adapter subclass in that module, not editing this
         method at all."""
         self._result_ui_spec = result_ui
-        adapter_cls = RESULT_VIEW_REGISTRY.get(result_ui.get("type"))
+        adapter_cls = component_for("result", result_ui.get("type") or "")
         if adapter_cls is None:
             return
         view = adapter_cls.build(self, result_ui)

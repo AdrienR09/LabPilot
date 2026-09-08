@@ -10,15 +10,13 @@ full rationale.
 
 from __future__ import annotations
 
-import os
-
 # Must be set before qtpy (pulled in by the viewer toolkit) is imported
 # anywhere. This env can also have a standalone PyQt5 install alongside our
-# PyQt6; qtpy would otherwise auto-pick PyQt5, silently mixing two
-# incompatible Qt bindings in one process. main.py sets this too (belt and
-# suspenders — this module can in principle be imported before main.py's
-# guard runs).
-os.environ.setdefault("QT_API", "pyqt6")
+# Pin the Qt binding before qtpy is imported by anything — the rule,
+# and why it matters, live in labpilot/ui/qt_api.py.
+import labpilot.ui.qt_api  # noqa: F401 — imported for its side effect
+
+# isort: split
 
 import shutil
 import tomllib
@@ -37,7 +35,7 @@ from PyQt6.QtWidgets import QDockWidget, QMainWindow, QStatusBar, QWidget
 warnings.filterwarnings("ignore", category=DataIndexWarning)
 
 from backend_client import BackendClient
-from components import COMPONENT_REGISTRY
+from components import component_for, components_in
 from components.base import InstrumentContext
 from components.schema_utils import fetch_schema, pick_1d_series, primary_key
 from instrument_blocks import resolve_blocks, should_auto_start_polling, title_suffix
@@ -63,7 +61,7 @@ class InstrumentWindow(QMainWindow):
     """One native instrument window, assembled entirely from `block_specs`.
 
     Each spec is a plain dict (`{"type": "viewer", "dimensionality": "1D"}`,
-    etc.) — `type` looks up a `UIComponent` subclass in `COMPONENT_REGISTRY`,
+    etc.) — `type` looks up a `UIComponent` subclass in the registry,
     everything else is passed through as that component's params (merged
     over its own `default_params`). Components attach whatever docks/
     toolbars they need in the order given; `InstrumentWindow` itself only
@@ -118,7 +116,13 @@ class InstrumentWindow(QMainWindow):
 
         for spec in block_specs:
             spec = dict(spec)
-            component_cls = COMPONENT_REGISTRY[spec.pop("type")]
+            component_type = spec.pop("type")
+            component_cls = component_for("instrument", component_type)
+            if component_cls is None:
+                raise KeyError(
+                    f"ui_blocks.toml names no such block type {component_type!r}. "
+                    f"Known: {', '.join(sorted(components_in('instrument')))}"
+                )
             component = component_cls(self, self.ctx, **spec)
             component.build()
             self.ctx.components.append(component)

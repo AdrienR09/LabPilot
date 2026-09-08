@@ -1,14 +1,16 @@
 """Single-peak/dip fit models — Qudi's own `fit_models` concept (a named
 model fit against x/y data, returning physically-meaningful parameters).
 
-The canonical implementation for backend-side code: workflow scripts doing
-programmatic fitting (odmr_sweep, peak_fit_series) import this directly.
-The native Qt desktop app (src/ui/desktop/) is a separate process with no
-shared Python path to core/ (it only ever talks to the backend over HTTP —
-see backend_client.py), so its own spectrometer-controls fit button
-(components/viewer.py's `_fit_peak`) keeps an independent copy of the same
-formulas rather than importing this module directly; keep the two in sync
-if the fit model itself ever changes.
+The one implementation. Workflow scripts doing programmatic fitting
+(odmr_sweep, peak_fit_series) import it, and so do the desktop app's
+spectrometer fit button and its ODMR fit dock.
+
+The desktop app used to carry two independent copies of these formulas,
+on the stated grounds that it "is a separate process with no shared Python
+path to core/". The first half is true and is why it reaches instruments
+over HTTP; the second half was not — it is the same installed package, and
+the same file already imported `core.api_client`. A pure function of
+numbers has no process to be on the wrong side of.
 """
 
 from __future__ import annotations

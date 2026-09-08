@@ -25,6 +25,7 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 import pyqtgraph as pg
+from components.base import ComponentMeta
 from components.nd_math import (
     compute_1d_projection,
     compute_panel_projection,
@@ -48,7 +49,7 @@ pg.setConfigOption("imageAxisOrder", "row-major")  # match numpy's (row, col) co
 
 __all__ = [
     "Image2DResultView", "SpectrumResultView", "NDScanResultView", "OdmrResultView",
-    "RESULT_VIEW_REGISTRY", "ResultViewAdapter",
+    "ResultViewAdapter",
     "Image2DResultViewAdapter", "SpectrumResultViewAdapter", "OdmrResultViewAdapter", "NDScanResultViewAdapter",
 ]
 
@@ -1737,43 +1738,34 @@ class NDScanResultView:
         self._submit_projection_request()
 
 
-# ---- RESULT_UI["type"] -> result-view dispatch registry ----
+# ---- RESULT_UI["type"] -> result-view dispatch ----
 #
-# Generalizes the same registry idea `components/base.py`'s `UIComponent`/
-# `ComponentMeta`/`COMPONENT_REGISTRY` already uses for per-instrument
-# windows (keyed there by `[kind."dimensionality"]` in ui_blocks.toml) to
-# workflow result views instead — keyed here by `RESULT_UI["type"]`.
-# workflow_window.py's `_add_result_view`/`_on_execution_state` used to be
-# two separately hand-maintained if/elif chains over the same 4 type
-# strings; both now do one registry lookup instead. Deliberately a
-# *separate* registry from `COMPONENT_REGISTRY` (not folding these view
-# classes into `UIComponent` itself) — per this module's own docstring,
-# a workflow result view has no per-instrument `InstrumentContext` to hang
-# off of, a real structural difference from a `UIComponent`, not just a
-# naming one.
-
-RESULT_VIEW_REGISTRY: dict[str, type["ResultViewAdapter"]] = {}
-
-
-class ResultViewMeta(type):
-    def __new__(mcs, name, bases, namespace, **kwargs):
-        cls = super().__new__(mcs, name, bases, namespace, **kwargs)
-        result_type = namespace.get("result_type")
-        if result_type:
-            RESULT_VIEW_REGISTRY[result_type] = cls
-        return cls
+# Registered through `components/base.py`'s one registry, in the "result"
+# context. workflow_window.py's `_add_result_view`/`_on_execution_state`
+# used to be two separately hand-maintained if/elif chains over the same
+# four type strings; both do one lookup instead, and adding a fifth result
+# kind means adding one adapter subclass here.
+#
+# These briefly had a registry and a metaclass of their own, on the
+# grounds that a result view has no per-instrument `InstrumentContext` and
+# so is structurally unlike a `UIComponent`. That much is true, and it is
+# why this stays a separate base class with its own build/update shape —
+# but a different shape is not a different *question*, and the question a
+# registry answers ("which class does this `type` string mean?") is the
+# same one in both cases. See base.py.
 
 
-class ResultViewAdapter(metaclass=ResultViewMeta):
-    """One subclass per `RESULT_UI["type"]` string, auto-registered into
-    `RESULT_VIEW_REGISTRY` via `ResultViewMeta` the moment it's defined
-    (same auto-registration convention `ComponentMeta` already uses) —
-    adding a 5th result kind means adding one adapter subclass here, not
-    editing workflow_window.py's dispatch at all."""
+class ResultViewAdapter(metaclass=ComponentMeta):
+    """One subclass per `RESULT_UI["type"]` string, auto-registered the
+    moment it is defined — adding a 5th result kind means adding one
+    adapter subclass here, not editing workflow_window.py's dispatch."""
+
+    #: Registered under ("result", component_type) — see base.ComponentMeta.
+    context: str = "result"
 
     #: The `RESULT_UI["type"]` string this adapter handles — must be set
     #: on every concrete subclass (an empty string never registers).
-    result_type: str = ""
+    component_type: str = ""
 
     #: True only for a view that manages its own QDockWidget(s) directly
     #: on the window (currently just NDScanResultView) — workflow_window.py
@@ -1800,7 +1792,7 @@ class ResultViewAdapter(metaclass=ResultViewMeta):
 
 
 class Image2DResultViewAdapter(ResultViewAdapter):
-    result_type = "image2d"
+    component_type = "image2d"
 
     @staticmethod
     def build(window: Any, result_ui: dict) -> Any:
@@ -1816,7 +1808,7 @@ class Image2DResultViewAdapter(ResultViewAdapter):
 
 
 class SpectrumResultViewAdapter(ResultViewAdapter):
-    result_type = "spectrum"
+    component_type = "spectrum"
 
     @staticmethod
     def build(window: Any, result_ui: dict) -> Any:
@@ -1836,7 +1828,7 @@ class SpectrumResultViewAdapter(ResultViewAdapter):
 
 
 class OdmrResultViewAdapter(ResultViewAdapter):
-    result_type = "odmr"
+    component_type = "odmr"
 
     @staticmethod
     def build(window: Any, result_ui: dict) -> Any:
@@ -1862,7 +1854,7 @@ class OdmrResultViewAdapter(ResultViewAdapter):
 
 
 class NDScanResultViewAdapter(ResultViewAdapter):
-    result_type = "ndscan"
+    component_type = "ndscan"
     manages_own_docks = True
 
     @staticmethod

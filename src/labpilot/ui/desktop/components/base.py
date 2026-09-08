@@ -1,20 +1,51 @@
-"""Metaclass-based component registry.
+"""The component registry — one registry, for every kind of UI block.
 
 `instruments/_base.py` already has a registry (`AdapterRegistry`), but it's
 a plain instance with an explicit `.register(key, cls)` call site per
 adapter module. This is deliberately different: `ComponentMeta` registers
-every concrete `UIComponent` subclass automatically at class-definition
-time, keyed by its `component_type` attribute — defining a component class
-*is* registering it, no separate call needed anywhere. That's what lets
+every concrete component class automatically at class-definition time,
+keyed by its `component_type` — defining a component class *is*
+registering it, no separate call needed anywhere. That's what lets
 `ui_blocks.toml` reference component types by name and have
 `instrument_window.py` look them up generically.
+
+There were briefly two of these. Workflow result views got their own
+`RESULT_VIEW_REGISTRY` and their own metaclass, on the reasoning that a
+result view has no per-instrument `InstrumentContext` to hang off — "a
+real structural difference, not just a naming one". The difference is
+real, and it is a difference of *shape*, which a base class expresses;
+what it is not is a reason for a second registry, because the question a
+registry answers — "which class does this `type` string in a config file
+mean?" — is the same question in both cases, and a config format cannot
+say "must name a registered component type" while there are two places
+that could be.
+
+So the key carries a **context**: `("instrument", "viewer")` and
+`("result", "image2d")` live in one table. `UIComponent` and
+`ResultViewAdapter` (components/workflow_result.py) are two shapes
+registered through one mechanism.
 """
 
 from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-COMPONENT_REGISTRY: dict[str, type["UIComponent"]] = {}
+#: Every registered component, by (context, component_type).
+REGISTRY: dict[tuple[str, str], type] = {}
+
+
+def component_for(context: str, component_type: str) -> Optional[type]:
+    """The class a config file's `type` names, or None if nothing claims it."""
+    return REGISTRY.get((context, component_type))
+
+
+def components_in(context: str) -> dict[str, type]:
+    """Every component registered for one context, by type name."""
+    return {
+        component_type: cls
+        for (registered, component_type), cls in REGISTRY.items()
+        if registered == context
+    }
 
 
 class InstrumentContext:
@@ -156,14 +187,17 @@ class ComponentMeta(type):
 
     Abstract/intermediate bases (like `UIComponent` itself, which has
     `component_type = ""`) are skipped, so only concrete, usable component
-    classes ever appear in `COMPONENT_REGISTRY`.
+    classes ever appear in `REGISTRY`.
+
+    The entry is keyed by `(context, component_type)` — `context` comes
+    from the base class, so a subclass only ever names its own type.
     """
 
     def __new__(mcs, name, bases, namespace, **kwargs):
         cls = super().__new__(mcs, name, bases, namespace, **kwargs)
         component_type = namespace.get("component_type")
         if component_type:
-            COMPONENT_REGISTRY[component_type] = cls
+            REGISTRY[(getattr(cls, "context", "instrument"), component_type)] = cls
         return cls
 
 
@@ -172,8 +206,8 @@ class UIComponent(metaclass=ComponentMeta):
 
     A block spec from `ui_blocks.toml` (e.g. `{ type = "viewer",
     dimensionality = "1D" }`) becomes one `UIComponent` instance:
-    `COMPONENT_REGISTRY[spec["type"]](window, ctx, **{k: v for k, v in
-    spec.items() if k != "type"})`. `default_params` supplies the
+    `component_for("instrument", spec["type"])(window, ctx, **{k: v
+    for k, v in spec.items() if k != "type"})`. `default_params` supplies the
     type-level acquisition defaults (tier 2 of the two-tier parameter
     system) so a block spec only needs to name what it wants to override;
     the per-instrument schema-driven parameters (tier 3, e.g.
@@ -193,11 +227,14 @@ class UIComponent(metaclass=ComponentMeta):
         component_type: the registry key used in `ui_blocks.toml`.
         default_params: fallback values merged under the block's own
             params (block params win on conflict).
+    And inherit:
+        context: "instrument" — which config file's `type` names them.
     And implement:
         build(): attach this component's widgets/actions to `self.window`.
         on_data(data): optional — called with every poll's data dict.
     """
 
+    context: str = "instrument"
     component_type: str = ""
     default_params: dict[str, Any] = {}
 

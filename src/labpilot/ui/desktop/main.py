@@ -4,14 +4,13 @@ LabPilot Qt Frontend - Individual Instrument Windows Only
 Launches specific instrument Qt windows when called by the backend API
 """
 
-import os
 
 # Must be set before qtpy (pulled in by the viewer toolkit, imported lazily
-# from instrument_windows.py) is imported anywhere in the process. This env
-# also happens to have a standalone PyQt5 install alongside our PyQt6 —
-# qtpy would otherwise auto-pick PyQt5, silently mixing two incompatible
-# Qt bindings in one process (crashes). We only ever use PyQt6.
-os.environ.setdefault("QT_API", "pyqt6")
+# Pin the Qt binding before qtpy is imported by anything — the rule,
+# and why it matters, live in labpilot/ui/qt_api.py.
+import labpilot.ui.qt_api  # noqa: F401 — imported for its side effect
+
+# isort: split
 
 import argparse
 import sys

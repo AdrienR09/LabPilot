@@ -30,66 +30,20 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from labpilot.core.analysis.fits import evaluate_dip, fit_dip
+
+# `fit_dip`/`evaluate_dip` are re-exported so `from
+# components.odmr_control import fit_dip` still reads naturally where the
+# ODMR docks use them. They were an identical second implementation,
+# kept on the convention that the desktop app writes its own fit code
+# rather than importing core.analysis.fits — a convention whose stated
+# reason (a separate process with no shared path to core/) stopped being
+# true when this became one installed package.
+__all__ = ["OdmrFitControlWidget", "OdmrSweepControlWidget", "evaluate_dip", "fit_dip"]
+
 
 def _freq_spinbox(value: float, bounds: tuple = (1e5, 20e9)) -> pg.SpinBox:
     return pg.SpinBox(value=value, bounds=bounds, suffix="Hz", siPrefix=True, step=1e6, dec=True, minStep=1.0)
-
-
-def fit_dip(x, y, shape: str = "lorentzian") -> "dict | None":
-    """Independent copy of `core/analysis/fits.py`'s `fit_dip`/`fit_peak`
-    (same formulas — keep in sync if that model ever changes), matching
-    this project's existing convention (`components/viewer.py`'s
-    `_fit_peak` docstring) of the desktop app keeping its own fit code
-    rather than importing `core.analysis.fits` — this one exists so the
-    ODMR Fit dock can re-fit instantly against whatever the result view
-    currently shows, with no backend round-trip and no hardware re-run.
-    Returns {center, amplitude, fwhm, baseline}, or None if it didn't
-    converge."""
-    import numpy as np
-    from scipy.optimize import curve_fit
-
-    x = np.asarray(x, dtype=float)
-    y = -np.asarray(y, dtype=float)  # invert about zero — dip becomes a peak
-    if len(x) < 4:
-        return None
-
-    baseline = float(np.median(y))
-    amplitude0 = float(np.max(y) - baseline)
-    center0 = float(x[np.argmax(y)])
-    width0 = max((x[-1] - x[0]) / 4, 1e-9)
-
-    if shape == "lorentzian":
-        def model(xx, amp, x0, gamma, base):
-            return base + amp * gamma**2 / ((xx - x0) ** 2 + gamma**2)
-    else:
-        def model(xx, amp, x0, sigma, base):
-            return base + amp * np.exp(-((xx - x0) ** 2) / (2 * sigma**2))
-
-    try:
-        popt, _ = curve_fit(model, x, y, p0=[amplitude0, center0, width0, baseline], maxfev=5000)
-    except Exception:
-        return None
-
-    amp, x0, w, base = popt
-    fwhm = abs(w) * (2.3548 if shape == "gaussian" else 2.0)
-    return {"center": float(x0), "amplitude": float(amp), "fwhm": float(fwhm), "baseline": -float(base)}
-
-
-def evaluate_dip(fit: dict, x, shape: str = "lorentzian") -> list:
-    """Reconstructs a `fit_dip()` result's curve over `x`, for the result
-    view's overlay — same formula as `core/analysis/fits.py`'s
-    `evaluate_dip`."""
-    import numpy as np
-
-    x = np.asarray(x, dtype=float)
-    amp, x0, base = fit["amplitude"], fit["center"], fit["baseline"]
-    if shape == "lorentzian":
-        gamma = fit["fwhm"] / 2.0
-        y = base - amp * gamma**2 / ((x - x0) ** 2 + gamma**2)
-    else:
-        sigma = fit["fwhm"] / 2.3548
-        y = base - amp * np.exp(-((x - x0) ** 2) / (2 * sigma**2))
-    return y.tolist()
 
 
 def _power_spinbox(value: float, bounds: tuple = (-60.0, 20.0)) -> pg.SpinBox:

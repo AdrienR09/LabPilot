@@ -19,7 +19,11 @@ import os
 import sys
 from pathlib import Path
 
-os.environ.setdefault("QT_API", "pyqt6")
+# Pin the Qt binding before qtpy is imported by anything — the rule,
+# and why it matters, live in labpilot/ui/qt_api.py.
+import labpilot.ui.qt_api  # noqa: F401 — imported for its side effect
+
+# isort: split
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QMainWindow

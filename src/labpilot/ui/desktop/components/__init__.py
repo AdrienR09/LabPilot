@@ -1,10 +1,14 @@
 """UI component library for native instrument windows.
 
 Importing this package registers every built-in component (via
-`ComponentMeta` in `base.py`) into `COMPONENT_REGISTRY`, so
+`ComponentMeta` in `base.py`) into the one `REGISTRY`, so
 `instrument_window.py` can build a window purely from the block list in
 `ui_blocks.toml` without importing each component module by name.
 """
+
+import labpilot.ui.qt_api  # pins QT_API before qtpy loads
+
+# isort: split
 
 from components import (  # noqa: F401 — import for registration side effect
     actions,
@@ -17,6 +21,12 @@ from components import (  # noqa: F401 — import for registration side effect
     toolbar,
     viewer,
 )
-from components.base import COMPONENT_REGISTRY, ComponentMeta, UIComponent
+from components.base import (
+    REGISTRY,
+    ComponentMeta,
+    UIComponent,
+    component_for,
+    components_in,
+)
 
-__all__ = ["COMPONENT_REGISTRY", "ComponentMeta", "UIComponent"]
+__all__ = ["REGISTRY", "ComponentMeta", "UIComponent", "component_for", "components_in"]

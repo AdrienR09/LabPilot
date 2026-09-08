@@ -31,40 +31,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from labpilot.core.analysis.fits import fit_peak
+
 _VIEWER_CLASSES = {"0D": Viewer0D, "1D": Viewer1D, "2D": Viewer2D, "ND": ViewerND}
-
-
-def _fit_peak(x: np.ndarray, y: np.ndarray, shape: str) -> "dict | None":
-    """Single-peak fit over an already-sliced (region-of-interest) trace.
-    Returns {center, amplitude, fwhm} in x's units, or None if the fit
-    didn't converge (too few points, no real peak, ...)."""
-    from scipy.optimize import curve_fit
-
-    if len(x) < 4:
-        return None
-
-    baseline = float(np.median(y))
-    amplitude0 = float(np.max(y) - baseline)
-    center0 = float(x[np.argmax(y)])
-    width0 = max((x[-1] - x[0]) / 4, 1e-9)
-
-    if shape == "lorentzian":
-        def model(xx, amp, x0, gamma, base):
-            return base + amp * gamma**2 / ((xx - x0) ** 2 + gamma**2)
-    else:
-        def model(xx, amp, x0, sigma, base):
-            return base + amp * np.exp(-((xx - x0) ** 2) / (2 * sigma**2))
-
-    try:
-        popt, _ = curve_fit(
-            model, x, y, p0=[amplitude0, center0, width0, baseline], maxfev=5000,
-        )
-    except Exception:
-        return None
-
-    amp, x0, w, _base = popt
-    fwhm = abs(w) * (2.3548 if shape == "gaussian" else 2.0)
-    return {"center": float(x0), "amplitude": float(amp), "fwhm": float(fwhm)}
 
 
 class ViewerComponent(UIComponent):
@@ -161,7 +130,7 @@ class ViewerComponent(UIComponent):
             lo, hi = self._fit_region
             mask = (x >= lo) & (x <= hi)
             x, y = x[mask], y[mask]
-        result = _fit_peak(x, y, self.fit_shape_combo.currentText())
+        result = fit_peak(x, y, self.fit_shape_combo.currentText())
         if result is None:
             self.fit_result_label.setText("Fit failed")
             return

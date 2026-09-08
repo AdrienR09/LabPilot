@@ -50,6 +50,7 @@ from labpilot.core.workflow.instrument_roles import (
     read_template_description,
     read_workflow_params,
 )
+from labpilot.core.workflow.scan_params import resolve_scan_axes
 
 __all__ = ["LabPilotServer", "create_app"]
 
@@ -104,7 +105,7 @@ class WorkflowOptimizeRequest(BaseModel):
 
     `axes`, if given, is the EXACT set of actuator axes to optimize over
     (validated against what's actually available — see
-    `_resolve_optimize_axes`) — "select if you want to optimize along one
+    `core/workflow/scan_params.py`) — "select if you want to optimize along one
     dimension or multiple dimensions"; omit to use every available axis
     (today's default behavior, unchanged). `ranges`/`points_per_axis`, if
     given, override the per-axis search span/resolution (an axis not
@@ -892,53 +893,6 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
 
         return ApiResponse(success=True, data={"name": param_name, "value": new_value})
 
-    def _resolve_optimize_axes(
-        params: dict[str, Any], actuator_schema, x_axis: str | None, y_axis: str | None,
-        requested_axes: list[str] | None = None,
-    ) -> tuple[list[str], dict[str, tuple[float, float, int]]]:
-        """Which actuator axes to run the optimize sequence over, and each
-        one's own declared span (used only to derive a default search
-        range — see `WorkflowOptimizeRequest.ranges`). Prefers an
-        omniscan-style `AXIS_RANGES`/`SCAN_AXES` declaration (any number of
-        axes, intersected with what the bound actuator's schema actually
-        has); falls back to the crosshair's own fixed `x_axis`/`y_axis`
-        pair (e.g. confocal_scanner.py, which declares neither) using
-        whatever `X_POSITIONS`/`Y_POSITIONS`-style explicit lists it has
-        for a span, or a harmless placeholder span if it has none at all —
-        that workflow's optimize behavior is otherwise unchanged from
-        before this phase.
-
-        `requested_axes` (`WorkflowOptimizeRequest.axes` — "select if you
-        want to optimize along one dimension or multiple dimensions"), if
-        given, narrows the result to just that subset (still validated
-        against what's actually available — a requested axis this
-        workflow doesn't have is silently dropped rather than erroring,
-        matching how an unavailable SCAN_AXES entry is already handled
-        elsewhere)."""
-        axis_ranges = params.get("AXIS_RANGES")
-        scan_axes = params.get("SCAN_AXES")
-        if isinstance(axis_ranges, dict) and isinstance(scan_axes, list):
-            settable = actuator_schema.settable
-            axes = [a for a in scan_axes if a in axis_ranges and a in settable]
-            if axes:
-                if requested_axes is not None:
-                    axes = [a for a in requested_axes if a in axes]
-                return axes, {a: tuple(axis_ranges[a]) for a in axes}
-
-        axes = [a for a in (x_axis, y_axis) if a]
-        if requested_axes is not None:
-            axes = [a for a in requested_axes if a in axes]
-        ranges: dict[str, tuple[float, float, int]] = {}
-        for axis, list_key in ((x_axis, "X_POSITIONS"), (y_axis, "Y_POSITIONS")):
-            if not axis:
-                continue
-            positions = params.get(list_key)
-            if isinstance(positions, list) and len(positions) >= 2:
-                ranges[axis] = (float(min(positions)), float(max(positions)), len(positions))
-            else:
-                ranges[axis] = (-0.5, 0.5, 5)
-        return axes, ranges
-
     def _resolve_optimize_targets(workflow_id: str, server: LabPilotServer, requested_axes: list[str] | None = None):
         """Shared validation for both start/stop/state — resolves the
         optimizer capability's target actuator/detector roles (falling
@@ -1004,7 +958,7 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         # This workflow's own parameters, not the template's defaults: a
         # scan reconfigured to a different AXIS_RANGES must be optimized
         # over the range it actually scans.
-        axes, axis_ranges = _resolve_optimize_axes(
+        axes, axis_ranges = resolve_scan_axes(
             _workflow_params(graph), actuator_schema, x_axis, y_axis, requested_axes
         )
         if not axes:
