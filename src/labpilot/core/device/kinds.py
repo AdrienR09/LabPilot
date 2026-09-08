@@ -51,6 +51,7 @@ import contextlib
 import weakref
 from typing import Any, Optional, Union
 
+from labpilot.core.device.capabilities import HARDWARE_SCAN, capabilities_of
 from labpilot.core.device.motion import (
     DEFAULT_MAX_POLLS,
     DEFAULT_TOLERANCE,
@@ -336,17 +337,59 @@ def wrap(adapter: Any) -> _InstrumentWrapper:
     return wrapper
 
 
+#: The wrapper each `schema.kind` gets. `generic` says only "none of the
+#: other four", so it starts from the bare passthrough and earns its
+#: methods from its capabilities instead.
+_BY_KIND: dict[str, type] = {
+    "motor": Motor,
+    "detector": Detector,
+    "counter": Detector,
+    "source": Source,
+    "generic": GenericInstrument,
+}
+
+#: The extra API each capability contributes, in a fixed order so the
+#: composed class is deterministic.
+_BY_CAPABILITY: tuple[tuple[str, type], ...] = (
+    (HARDWARE_SCAN, Scanner),
+)
+
+#: Composed classes, keyed by what went into them — so a hundred pulsers
+#: of the same shape share one class rather than minting a hundred.
+_COMPOSED: dict[tuple[type, tuple[str, ...]], type] = {}
+
+
+def _wrapper_class(kind: str, capabilities: frozenset[str]) -> type:
+    """The wrapper class for one kind plus a set of capabilities.
+
+    A device is not required to be exactly one thing. A pulse sequencer
+    that also counts, or a detector that plays sequences, is a real
+    instrument, and the `isinstance` chain this replaces could not express
+    one: it returned the first match and dropped the rest. Composing means
+    the wrapper carries every contract the device actually satisfies.
+    """
+    base = _BY_KIND.get(kind, GenericInstrument)
+    extras = tuple(w for capability, w in _BY_CAPABILITY if capability in capabilities)
+    if not extras:
+        return base
+
+    # `GenericInstrument` adds nothing over the bare passthrough every
+    # capability wrapper already has, so it drops out rather than turning
+    # the single-capability case into a composed class with a vaguer name.
+    bases = extras if base is GenericInstrument else (*extras, base)
+    if len(bases) == 1:
+        return bases[0]
+
+    key = (base, tuple(sorted(capabilities)))
+    composed = _COMPOSED.get(key)
+    if composed is None:
+        # Capability wrappers first, so their typed methods win over the
+        # kind's; every one is an `_InstrumentWrapper`, so the MRO is
+        # linear and `__init__` is shared.
+        composed = type("Instrument", bases, {})
+        _COMPOSED[key] = composed
+    return composed
+
+
 def _build(adapter: Any) -> _InstrumentWrapper:
-    kind = adapter.schema.kind
-    if kind == "motor":
-        return Motor(adapter)
-    if kind in ("detector", "counter"):
-        return Detector(adapter)
-    if kind == "source":
-        return Source(adapter)
-    if kind == "generic":
-        # Local import — see this module's own docstring for why this
-        # must not be a module-level import.
-        from labpilot.instruments.hardware_scan_mixin import HardwareScanMixin
-        return Scanner(adapter) if isinstance(adapter, HardwareScanMixin) else GenericInstrument(adapter)
-    return GenericInstrument(adapter)
+    return _wrapper_class(adapter.schema.kind, capabilities_of(adapter))(adapter)

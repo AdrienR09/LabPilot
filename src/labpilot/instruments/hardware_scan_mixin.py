@@ -18,10 +18,14 @@ mixin declares real (`NotImplementedError`-stub) methods instead of
 building on the generic read/write dispatch. Opt-in by inheritance, same
 convention as that module: `class MyScanner(HardwareScanMixin, AdapterBase): ...`.
 
-See `core/workflow/capabilities.py`'s `HardwareTimedScanCapability` for
-the engine that drives this contract, and
-`core/workflow_library/hardware_timed_scan.py` for the workflow template
-built on it.
+See `core/run/plans.py`'s `HardwareTimedScanPlan` for the engine that
+drives this contract, and `core/workflow_templates/hardware_timed_scan.py`
+for the workflow template built on it.
+
+Declaring `CAPABILITY` is what makes the contract visible outside this
+process: `core/device/capabilities.py` composes it off the MRO onto the
+schema, so the wrapper choice, the REST payload and `ui_blocks.toml` all
+select on the same fact.
 """
 
 from __future__ import annotations
@@ -29,6 +33,8 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+
+from labpilot.core.device.capabilities import HARDWARE_SCAN
 
 __all__ = ["HardwareScanMixin", "build_scan_waveform"]
 
@@ -76,6 +82,8 @@ def build_scan_waveform(
 class HardwareScanMixin:
     """A device that can scan a hardware-clocked position waveform against
     a synchronized detector readback, configured once per whole frame."""
+
+    CAPABILITY = HARDWARE_SCAN
 
     async def configure_scan(
         self, axes: list[str], ranges: dict[str, tuple[float, float]],

@@ -60,6 +60,7 @@ class InstrumentWindow(QMainWindow):
         block_specs: list[dict],
         auto_start_polling: bool = False,
         parent=None,
+        schema: dict | None = None,
     ) -> None:
         super().__init__(parent)
         # Kept directly on the window (not just reachable via self.ctx) since
@@ -67,7 +68,11 @@ class InstrumentWindow(QMainWindow):
         self.instrument = instrument
         self.client = client
 
-        schema = fetch_schema(client, instrument.id)
+        # The factory has usually fetched this already, to pick blocks by
+        # the instrument's capabilities — reuse it rather than asking the
+        # backend for the same schema twice per window open.
+        if schema is None:
+            schema = fetch_schema(client, instrument.id)
         if instrument.kind == "detector" and instrument.dimensionality == "1D":
             value_key, axis_key = pick_1d_series(schema)
         else:
@@ -179,10 +184,15 @@ def create_instrument_window(instrument: DashboardInstrument, client: Optional[B
         client = BackendClient()
 
     config = load_ui_blocks()
-    blocks = resolve_blocks(instrument.kind, instrument.dimensionality, config)
+    schema = fetch_schema(client, instrument.id)
+    blocks = resolve_blocks(
+        instrument.kind, instrument.dimensionality, config,
+        schema.get("capabilities") or (),
+    )
     auto_start_polling = should_auto_start_polling(instrument.kind, instrument.dimensionality)
 
     window = InstrumentWindow(
         instrument, client, blocks, auto_start_polling=auto_start_polling,
+        schema=schema,
     )
     return window

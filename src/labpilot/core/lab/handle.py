@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from labpilot.core.device.capabilities import with_capabilities
 from labpilot.core.device.kinds import wrap as wrap_instrument
 from labpilot.core.errors import NotConnectedError, UnsupportedOperationError
 
@@ -61,7 +62,10 @@ class InstrumentHandle:
 
     @property
     def schema(self) -> DeviceSchema:
-        return self.adapter.schema
+        """The adapter's schema, carrying the capabilities its mixins
+        declare — see `core/device/capabilities.py`. Joined here because
+        this is what the REST payload and every UI client read."""
+        return with_capabilities(self.adapter.schema, self.adapter)
 
     @property
     def kind(self) -> str:

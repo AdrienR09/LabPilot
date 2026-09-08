@@ -22,6 +22,7 @@ from typing import Any
 import anyio
 
 from labpilot.core.data.dataset import Dataset
+from labpilot.core.device.capabilities import with_capabilities
 from labpilot.core.device.protocols import Readable
 from labpilot.core.device.schema import DeviceSchema
 from labpilot.core.errors import (
@@ -180,7 +181,11 @@ class AdapterBase(Readable):
         if cached is not None:
             return cached[0]
         try:
-            schema = cls(**_placeholder_kwargs(cls)).schema
+            probe = cls(**_placeholder_kwargs(cls))
+            # Carry the capabilities its mixins declare, so a contract like
+            # `hardware_scan` is visible in the catalogue listing and not
+            # only once the device is connected.
+            schema = with_capabilities(probe.schema, probe)
         except Exception:
             schema = None
         # Cached on the class itself (not an inherited attribute) — one

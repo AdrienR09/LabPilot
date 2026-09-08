@@ -16,7 +16,10 @@ place, shared by both windows.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 _TITLE_SUFFIX = {
     ("detector", "0D"): "Time Series",
@@ -43,10 +46,31 @@ def config_dimensionality(kind: str, dimensionality: str) -> str:
     return dimensionality if config_kind(kind) != "source" else "SOURCE"
 
 
-def resolve_blocks(kind: str, dimensionality: str, block_config: dict) -> list[dict]:
-    """This instrument's block list from a loaded `ui_blocks.toml`, falling
-    back to a plain 0D-style readout for an unknown kind/dimensionality
-    combination rather than crashing."""
+def resolve_blocks(
+    kind: str,
+    dimensionality: str,
+    block_config: dict,
+    capabilities: Iterable[str] = (),
+) -> list[dict]:
+    """This instrument's block list from a loaded `ui_blocks.toml`.
+
+    A `[capability.<name>]` section wins over the `(kind, dimensionality)`
+    one. That is what a device whose interesting contract is a capability
+    needs: `config_kind` collapses "generic" to "detector", so a pulse
+    sequencer and a hardware-timed scanner both land in the single shared
+    `detector."GENERIC"` bucket and cannot be given different windows by
+    the config file alone. Declaring the capability separates them without
+    inventing a sixth `kind`.
+
+    Falls back to a plain 0D-style readout for an unknown
+    kind/dimensionality combination rather than crashing.
+    """
+    by_capability = block_config.get("capability") or {}
+    for capability in capabilities:
+        section = by_capability.get(capability)
+        if section is not None:
+            return section.get("blocks", [])
+
     ck = config_kind(kind)
     cd = config_dimensionality(kind, dimensionality)
     type_config = block_config.get(ck, {}).get(cd)

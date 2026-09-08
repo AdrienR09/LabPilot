@@ -111,6 +111,16 @@ class DeviceSchema(BaseModel):
             "still accepted and means a zero-argument action."
         ),
     )
+    capabilities: frozenset[str] = Field(
+        default=frozenset(),
+        description=(
+            "Contracts this device satisfies beyond read/write — "
+            "'hardware_scan', 'pulser', 'gated_counter'. Usually composed "
+            "from the adapter's mixins by `capabilities_of()` rather than "
+            "declared here; declare one directly for a device that "
+            "satisfies a contract without inheriting its mixin."
+        ),
+    )
     tags: list[str] = Field(
         default_factory=list,
         description="Searchable tags (e.g., ['spectroscopy', 'NI', 'VISA'])",
