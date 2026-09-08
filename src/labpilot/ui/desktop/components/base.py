@@ -106,11 +106,41 @@ class InstrumentContext:
     # ---- polling lifecycle ----
 
     def start_polling(self) -> None:
+        """Start live acquisition — pushed if the server will, polled if not.
+
+        The backend has streamed instrument readings over a WebSocket since
+        the dashboard was written and nothing ever connected to it; every
+        window asked for each reading over HTTP instead, once per tick per
+        window. `InstrumentStream` is a drop-in for the poller, so this
+        chooses a transport and nothing downstream can tell which it got.
+
+        Falling back matters more than the upgrade does: a proxy that will
+        not upgrade the connection, or an older backend, must leave the
+        window working rather than blank. `unavailable` fires after a
+        couple of failed attempts and polling takes over.
+        """
         if self.poller is not None:
             return
+        from backend_client import InstrumentStream
+
+        stream = InstrumentStream(
+            self.client.base_url, self.instrument.id, self.poll_interval
+        )
+        stream.dataReady.connect(self._on_poll_data)
+        stream.errorOccurred.connect(self._on_poll_error)
+        stream.unavailable.connect(self._fall_back_to_polling)
+        self.poller = stream
+        stream.start()
+
+    def _fall_back_to_polling(self) -> None:
         from backend_client import InstrumentPoller
 
-        self.poller = InstrumentPoller(self.client.base_url, self.instrument.id, self.poll_interval)
+        if self.poller is not None:
+            self.poller.stop()
+        print(f"⚠️  {self.instrument.id}: no live stream, falling back to polling")
+        self.poller = InstrumentPoller(
+            self.client.base_url, self.instrument.id, self.poll_interval
+        )
         self.poller.dataReady.connect(self._on_poll_data)
         self.poller.errorOccurred.connect(self._on_poll_error)
         self.poller.start()

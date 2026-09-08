@@ -150,6 +150,8 @@ class DashboardManager:
         self.lab = Lab()
         self.websockets: list[WebSocket] = []
         self.instrument_data_streams: dict[str, asyncio.Task] = {}
+        # Live rate changes, per streaming client — see stream_instrument_data.
+        self._requested_interval: dict[WebSocket, int] = {}
 
     # --- The lab, as the routes and the rest of the server see it ---------
 
@@ -369,23 +371,86 @@ class DashboardManager:
 
     # --- WebSockets -------------------------------------------------------
 
-    async def stream_instrument_data(self, instrument_id: str, websocket: WebSocket):
-        """Stream real-time data from an instrument to a WebSocket."""
+    #: How fast a stream may be asked to run. The floor is a real device
+    #: limit, not a policy: a read that takes longer than its own interval
+    #: makes the loop fall behind, and the loop below reads *then* waits, so
+    #: the effective rate degrades gracefully rather than queueing.
+    MIN_STREAM_INTERVAL_MS = 20
+    MAX_STREAM_INTERVAL_MS = 60_000
+    DEFAULT_STREAM_INTERVAL_MS = 100
+
+    async def stream_instrument_data(
+        self, instrument_id: str, websocket: WebSocket, interval_ms: int | None = None
+    ):
+        """Stream an instrument's readings until the client goes away.
+
+        The rate is the client's to choose, and changeable while connected
+        (`{"type": "set_interval", "interval_ms": N}`). It was fixed at
+        10 Hz, which is why nothing could use this endpoint: a native
+        instrument window lets you pick a poll rate, and a stream that
+        ignored it would have been a feature regression dressed as an
+        optimisation.
+
+        A read that fails is reported as an error frame and the stream
+        stays open — an instrument disconnected from under a live window is
+        an ordinary event, and closing the socket would make the window
+        look broken rather than the instrument look disconnected.
+        """
         handle = self.lab.get(instrument_id)
+        interval = self._clamp_interval(interval_ms)
+        # One task reads the client's messages so the send loop below never
+        # blocks on receive; without it the interval could only be set at
+        # connect time.
+        control = asyncio.create_task(self._stream_control(websocket))
         try:
             while True:
-                data = await handle.adapter.read()
-                await websocket.send_json({
-                    "type": "instrument_data",
-                    "instrument_id": instrument_id,
-                    "data": _jsonable_read(data),
-                    "timestamp": time.time(),
-                })
-                await asyncio.sleep(0.1)  # 10 Hz
-        except WebSocketDisconnect:
-            pass
+                try:
+                    payload = _jsonable_read(await handle.adapter.read())
+                    frame = {
+                        "type": "instrument_data",
+                        "instrument_id": instrument_id,
+                        "data": payload,
+                        "timestamp": time.time(),
+                    }
+                except Exception as e:
+                    frame = {
+                        "type": "error",
+                        "instrument_id": instrument_id,
+                        "message": str(e),
+                        "timestamp": time.time(),
+                    }
+                await websocket.send_json(frame)
+
+                requested = self._requested_interval.get(websocket)
+                if requested is not None:
+                    interval = requested
+                await asyncio.sleep(interval / 1000.0)
+        except (WebSocketDisconnect, RuntimeError):
+            pass  # RuntimeError: sending on a socket the client already closed
         except Exception as e:
             print(f"Error streaming {instrument_id}: {e}")
+        finally:
+            control.cancel()
+            self._requested_interval.pop(websocket, None)
+
+    def _clamp_interval(self, interval_ms: int | None) -> int:
+        if not interval_ms:
+            return self.DEFAULT_STREAM_INTERVAL_MS
+        return max(
+            self.MIN_STREAM_INTERVAL_MS, min(self.MAX_STREAM_INTERVAL_MS, int(interval_ms))
+        )
+
+    async def _stream_control(self, websocket: WebSocket) -> None:
+        """Read control messages from one streaming client."""
+        try:
+            while True:
+                message = await websocket.receive_json()
+                if message.get("type") == "set_interval":
+                    self._requested_interval[websocket] = self._clamp_interval(
+                        message.get("interval_ms")
+                    )
+        except Exception:
+            pass  # The send loop owns the connection's lifetime.
 
     async def _broadcast_status(self, instrument_id: str) -> None:
         """Push one instrument's current status to every listening client."""
@@ -774,16 +839,21 @@ async def delete_instrument_config(name: str):
 
 
 @router.websocket("/ws/instruments/{instrument_id}")
-async def instrument_data_stream(websocket: WebSocket, instrument_id: str):
-    """WebSocket endpoint for real-time instrument data."""
+async def instrument_data_stream(
+    websocket: WebSocket, instrument_id: str, interval_ms: int | None = None
+):
+    """Stream one instrument's readings. `interval_ms` sets the rate."""
     manager = get_dashboard_manager()
     await websocket.accept()
     manager.websockets.append(websocket)
 
     try:
-        await manager.stream_instrument_data(instrument_id, websocket)
+        await manager.stream_instrument_data(instrument_id, websocket, interval_ms)
+    except UnknownInstrumentError as e:
+        await websocket.send_json({"type": "error", "message": str(e)})
     finally:
-        manager.websockets.remove(websocket)
+        if websocket in manager.websockets:
+            manager.websockets.remove(websocket)
 
 
 @router.websocket("/ws/workflows")

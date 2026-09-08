@@ -24,6 +24,7 @@ from PyQt6.QtCore import (
     pyqtSignal,
     pyqtSlot,
 )
+from PyQt6.QtNetwork import QAbstractSocket
 from PyQt6.QtWebSockets import QWebSocket
 
 from labpilot.core.api_client import LabPilotClient
@@ -207,6 +208,122 @@ class InstrumentPoller(QObject):
             QMetaObject.invokeMethod(self._worker, "stop", Qt.ConnectionType.BlockingQueuedConnection)
         self._thread.quit()
         self._thread.wait(1000)
+
+
+class InstrumentStream(QObject):
+    """Instrument readings pushed over a WebSocket, instead of fetched.
+
+    A drop-in for `InstrumentPoller` — same two signals, same
+    `start`/`stop`/`set_interval` — so a window does not know which one it
+    has. What changes is who initiates: the server sends a frame every
+    interval instead of the window asking for one, which is one socket per
+    open window rather than one HTTP request per window per tick.
+
+    The endpoint has existed since the dashboard was written and nothing
+    ever connected to it, for a good reason: it streamed at a fixed 10 Hz
+    and ignored the rate the window's own poll-rate control sets, so using
+    it would have quietly removed a control that works. It now takes the
+    rate at connect and accepts changes while connected, which is what
+    `set_interval` sends.
+
+    No QThread here, unlike the poller. `InstrumentPoller` needs one
+    because an httpx request blocks for its whole round trip and would
+    stall the GUI; QWebSocket is Qt-signal/slot/event-loop-driven like the
+    rest of Qt's socket I/O, so receiving does not block — the same
+    reasoning `WorkflowStatePoller` in this module already relies on.
+
+    If the socket cannot be established (a proxy that will not upgrade, an
+    older server), `unavailable` fires and the caller falls back to
+    polling. Falling back is the point: this is a better transport for the
+    same data, not a new requirement.
+    """
+
+    dataReady = pyqtSignal(dict)
+    errorOccurred = pyqtSignal(str)
+    unavailable = pyqtSignal()
+
+    #: Give up and let the caller poll instead. Deliberately small — a
+    #: window showing nothing while a socket retries is worse than one
+    #: polling.
+    _MAX_ATTEMPTS = 2
+    _RETRY_DELAY_MS = 500
+
+    def __init__(
+        self, base_url: str, instrument_id: str, interval_ms: int = 200, parent=None
+    ) -> None:
+        super().__init__(parent)
+        self._instrument_id = instrument_id
+        self._interval_ms = int(interval_ms)
+        self._attempts = 0
+        self._stopped = False
+
+        ws_base = base_url.replace("https://", "wss://").replace("http://", "ws://")
+        self._url = QUrl(
+            f"{ws_base}/api/dashboard/ws/instruments/{instrument_id}"
+            f"?interval_ms={self._interval_ms}"
+        )
+        self._socket = QWebSocket()
+        self._socket.textMessageReceived.connect(self._on_message)
+        self._socket.connected.connect(self._on_connected)
+        self._socket.disconnected.connect(self._on_disconnected)
+        self._retry_timer = QTimer(self)
+        self._retry_timer.setSingleShot(True)
+        self._retry_timer.setInterval(self._RETRY_DELAY_MS)
+        self._retry_timer.timeout.connect(self._open)
+
+    def start(self) -> None:
+        self._stopped = False
+        self._open()
+
+    def stop(self) -> None:
+        self._stopped = True
+        self._retry_timer.stop()
+        self._socket.close()
+
+    def set_interval(self, ms: int) -> None:
+        """Change the rate on a live stream, or on the next connect."""
+        self._interval_ms = int(ms)
+        self._url.setQuery(f"interval_ms={self._interval_ms}")
+        if self._socket.state() == QAbstractSocket.SocketState.ConnectedState:
+            self._socket.sendTextMessage(
+                json.dumps({"type": "set_interval", "interval_ms": self._interval_ms})
+            )
+
+    # --- Socket ----------------------------------------------------------
+
+    def _open(self) -> None:
+        if self._stopped:
+            return
+        self._attempts += 1
+        self._socket.open(self._url)
+
+    def _on_connected(self) -> None:
+        self._attempts = 0
+
+    def _on_disconnected(self) -> None:
+        if self._stopped:
+            return
+        if self._attempts >= self._MAX_ATTEMPTS:
+            # Deferred to the next event-loop pass, not emitted from here.
+            # A handler's natural response is to stop this stream and start
+            # something else, and closing a QWebSocket from inside its own
+            # `disconnected` handler crashes the process — measured, as a
+            # segfault the moment the fallback was exercised. One
+            # singleShot(0) lets the signal unwind first, which makes the
+            # obvious handler the correct one.
+            QTimer.singleShot(0, self.unavailable.emit)
+            return
+        self._retry_timer.start()
+
+    def _on_message(self, text: str) -> None:
+        try:
+            frame = json.loads(text)
+        except json.JSONDecodeError:
+            return
+        if frame.get("type") == "instrument_data":
+            self.dataReady.emit(frame.get("data") or {})
+        elif frame.get("type") == "error":
+            self.errorOccurred.emit(str(frame.get("message", "stream error")))
 
 
 class _SnapshotFetchWorker(QObject):
