@@ -20,6 +20,7 @@ from components import (  # noqa: F401 — import for registration side effect
     time_series,
     toolbar,
     viewer,
+    workflow_controls,
 )
 from components.base import (
     REGISTRY,

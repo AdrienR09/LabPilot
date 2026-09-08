@@ -30,6 +30,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DESKTOP = ROOT / "src" / "labpilot" / "ui" / "desktop"
 UI_BLOCKS = DESKTOP / "config" / "ui_blocks.toml"
+WORKFLOW_BLOCKS = DESKTOP / "config" / "workflow_blocks.toml"
 
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(DESKTOP))
@@ -56,7 +57,11 @@ from components.base import component_for, components_in  # noqa: E402
 
 instrument_blocks = components_in("instrument")
 result_views = components_in("result")
-print(f"   {len(instrument_blocks)} instrument blocks, {len(result_views)} result views")
+print(
+    f"   {len(instrument_blocks)} instrument blocks, "
+    f"{len(components_in('workflow'))} workflow controls, "
+    f"{len(result_views)} result views"
+)
 
 print("\n2. One registry, two contexts")
 check("instrument blocks registered", bool(instrument_blocks))
@@ -84,7 +89,24 @@ for kind, by_dimensionality in config.items():
             )
 check("the packaged ui_blocks.toml declares blocks at all", seen > 0)
 
-print("\n4. Every result view answers the two calls it is dispatched through")
+print("\n4. Every control in workflow_blocks.toml names a real component")
+workflow_controls = components_in("workflow")
+controls = tomllib.loads(WORKFLOW_BLOCKS.read_text()).get("controls", [])
+for block in controls:
+    check(
+        f"[[controls]] {block.get('type')}",
+        block.get("type") in workflow_controls,
+        f"no component registers {block.get('type')!r}; known: "
+        f"{', '.join(sorted(workflow_controls))}",
+    )
+    check(
+        f"  {block.get('type')} says what a workflow must declare",
+        bool(block.get("requires")),
+        "`requires` is empty, so this control would apply to every workflow",
+    )
+check("the packaged workflow_blocks.toml declares controls at all", bool(controls))
+
+print("\n5. Every result view answers the two calls it is dispatched through")
 for name, adapter in sorted(result_views.items()):
     check(
         f"{name} declares build() and update()",
@@ -98,4 +120,7 @@ if failures:
     for failure in failures:
         print(f"  • {failure}")
     sys.exit(1)
-print(f"All checks passed ({seen} configured blocks, {len(result_views)} result views).")
+print(
+    f"All checks passed ({seen} instrument blocks, {len(controls)} workflow "
+    f"controls, {len(result_views)} result views)."
+)

@@ -71,6 +71,7 @@ from backend_client import (
     OptimizePoller,
     WorkflowStatePoller,
 )
+from block_config import load_workflow_blocks
 from components.axes_control import (
     AxesControlWidget,
     AxisRangeSettingsDialog,
@@ -86,6 +87,7 @@ from components.odmr_control import (
 )
 from components.schema_utils import fetch_schema, pick_1d_series, primary_key
 from components.widgets import StatusLabel, dock
+from components.workflow_controls import controls_for
 from components.workflow_result import (
     Image2DResultView,
     NDScanResultView,
@@ -881,43 +883,61 @@ class WorkflowWindow(QMainWindow):
         if not params:
             return
 
-        if isinstance(params.get("AXIS_RANGES"), dict) and isinstance(params.get("SCAN_AXES"), list):
-            axis_ranges = params.pop("AXIS_RANGES")
-            scan_axes = params.pop("SCAN_AXES")
-            hold_positions = params.pop("HOLD_POSITIONS", {})
-            if not isinstance(hold_positions, dict):
-                hold_positions = {}
+        for control in controls_for(params, load_workflow_blocks()):
+            control.build(self, graph, dict(params))
 
-            # AXIS_RANGES is authored generically in the script (e.g. x/y/z)
-            # but the actuator actually bound to the "actuator" role may only
-            # have some of those axes (e.g. mock_xy_stage_3 has no z) — show
-            # only rows the bound instrument can actually move, not every
-            # axis the template happens to declare.
-            actuator_id = graph.get("metadata", {}).get("instrument_bindings", {}).get("actuator")
-            actuator_schema: dict = {}
-            if actuator_id:
-                actuator_schema = fetch_schema(self.client, actuator_id)
-                available = set(actuator_schema.get("settable", {}).keys())
-                axis_ranges = {k: v for k, v in axis_ranges.items() if k in available}
-                scan_axes = [a for a in scan_axes if a in available]
-                hold_positions = {k: v for k, v in hold_positions.items() if k in available}
+    def build_axes_control(self, graph: dict, params: dict) -> None:
+        """The per-axis range/resolution table, for an omniscan-family
+        workflow. Selected by `workflow_blocks.toml`'s `axes_control`
+        block; see components/workflow_controls.py."""
+        axis_ranges = params.get("AXIS_RANGES")
+        scan_axes = params.get("SCAN_AXES")
+        if not isinstance(axis_ranges, dict) or not isinstance(scan_axes, list):
+            self.status_bar.showMessage(
+                "This workflow declares AXIS_RANGES/SCAN_AXES in a shape the "
+                "axes table cannot read"
+            )
+            return
+        hold_positions = params.get("HOLD_POSITIONS", {})
+        if not isinstance(hold_positions, dict):
+            hold_positions = {}
 
-            if axis_ranges:
-                self._omniscan_axis_ranges = axis_ranges
-                self._omniscan_hold_positions = hold_positions
-                # The optimizer's axes come from the shared rule, not from
-                # this table's row order: `axis_ranges` is a dict keyed
-                # however the template happened to author it, while the
-                # server sweeps in SCAN_AXES order. Reading the panes'
-                # axis list off the dict meant the two could pair axes
-                # differently and a step's results could land in the wrong
-                # pane. See core/workflow/scan_params.py.
-                self._scan_axes = resolve_scan_axes(
-                    {"AXIS_RANGES": axis_ranges, "SCAN_AXES": scan_axes}, actuator_schema
-                )[0]
-                self._add_axes_control(actuator_id, axis_ranges, scan_axes, hold_positions, actuator_schema)
-        elif all(k in params for k in ("SWEEP_START", "SWEEP_STOP", "SWEEP_POINTS")):
-            self._add_odmr_sweep_control(graph, params)
+        # AXIS_RANGES is authored generically in the script (e.g. x/y/z)
+        # but the actuator actually bound to the "actuator" role may only
+        # have some of those axes (e.g. mock_xy_stage_3 has no z) — show
+        # only rows the bound instrument can actually move, not every
+        # axis the template happens to declare.
+        actuator_id = graph.get("metadata", {}).get("instrument_bindings", {}).get("actuator")
+        actuator_schema: dict = {}
+        if actuator_id:
+            actuator_schema = fetch_schema(self.client, actuator_id)
+            available = set(actuator_schema.get("settable", {}).keys())
+            axis_ranges = {k: v for k, v in axis_ranges.items() if k in available}
+            scan_axes = [a for a in scan_axes if a in available]
+            hold_positions = {k: v for k, v in hold_positions.items() if k in available}
+
+        if not axis_ranges:
+            return
+        self._omniscan_axis_ranges = axis_ranges
+        self._omniscan_hold_positions = hold_positions
+        # The optimizer's axes come from the shared rule, not from this
+        # table's row order: `axis_ranges` is a dict keyed however the
+        # template happened to author it, while the server sweeps in
+        # SCAN_AXES order. Reading the panes' axis list off the dict meant
+        # the two could pair axes differently and a step's results could
+        # land in the wrong pane. See core/workflow/scan_params.py.
+        self._scan_axes = resolve_scan_axes(
+            {"AXIS_RANGES": axis_ranges, "SCAN_AXES": scan_axes}, actuator_schema
+        )[0]
+        self._add_axes_control(
+            actuator_id, axis_ranges, scan_axes, hold_positions, actuator_schema
+        )
+
+    def build_sweep_control(self, graph: dict, params: dict) -> None:
+        """The Sweep Control and Fit docks, for an odmr_sweep-family
+        workflow. Selected by `workflow_blocks.toml`'s `sweep_control`
+        block; see components/workflow_controls.py."""
+        self._add_odmr_sweep_control(graph, params)
 
     def _add_odmr_sweep_control(self, graph: dict, params: dict) -> None:
         """odmr_sweep.py-family workflow: a Sweep Control dock (range/

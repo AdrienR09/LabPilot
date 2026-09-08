@@ -1,0 +1,38 @@
+# Which control dock a workflow window gets — `ui_blocks.toml`'s mechanism,
+# applied to workflow UI instead of instrument UI.
+#
+# `instrument_window.py` picks its blocks by (kind, dimensionality); a
+# workflow has neither, so a control declares instead which of the
+# workflow's own parameters it needs. `requires` is the list of top-level
+# constants the script must declare (see
+# core/workflow/instrument_roles.py's read_workflow_params) for that
+# control to apply. A workflow whose parameters satisfy several gets
+# several, in the order listed here.
+#
+# `type` must name a component registered in the "workflow" context (see
+# components/workflow_controls.py and components/base.py's REGISTRY);
+# `scripts/verify_ui_registry.py` checks that every type here resolves.
+#
+# This replaces a hand-written chain in workflow_window.py:
+#
+#     if isinstance(params.get("AXIS_RANGES"), dict) and ...:
+#         self._add_axes_control(...)
+#     elif all(k in params for k in ("SWEEP_START", "SWEEP_STOP", ...)):
+#         self._add_odmr_sweep_control(...)
+#
+# which is why exactly two named workflow families had usable controls and
+# every other template fell back to nothing: adding a third meant editing
+# that chain. Adding one here is a block, and giving an existing control to
+# a new template is a matter of that template declaring the parameters the
+# control names.
+#
+# Copied to ~/.labpilot/config/ on first run, like ui_blocks.toml, and
+# re-read every time a workflow window opens — edit freely.
+
+[[controls]]
+type = "axes_control"
+requires = ["AXIS_RANGES", "SCAN_AXES"]
+
+[[controls]]
+type = "sweep_control"
+requires = ["SWEEP_START", "SWEEP_STOP", "SWEEP_POINTS"]

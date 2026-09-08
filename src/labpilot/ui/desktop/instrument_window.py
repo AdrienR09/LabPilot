@@ -18,10 +18,7 @@ import labpilot.ui.qt_api  # noqa: F401 — imported for its side effect
 
 # isort: split
 
-import shutil
-import tomllib
 import warnings
-from pathlib import Path
 from typing import Optional
 
 from pymodaq_data.data import DataIndexWarning
@@ -35,26 +32,12 @@ from PyQt6.QtWidgets import QDockWidget, QMainWindow, QStatusBar, QWidget
 warnings.filterwarnings("ignore", category=DataIndexWarning)
 
 from backend_client import BackendClient
+from block_config import load_ui_blocks
 from components import component_for, components_in
 from components.base import InstrumentContext
 from components.schema_utils import fetch_schema, pick_1d_series, primary_key
 from instrument_blocks import resolve_blocks, should_auto_start_polling, title_suffix
 from main import DashboardInstrument, LabPilotStyle
-
-_PACKAGED_DEFAULT_CONFIG = Path(__file__).parent / "config" / "ui_blocks.toml"
-_USER_CONFIG = Path.home() / ".labpilot" / "config" / "ui_blocks.toml"
-
-
-def _load_block_config() -> dict:
-    """User-editable block config, consistent with how
-    core/config/instrument_sets.py already keeps per-lab config under
-    ~/.labpilot/config/ — a packaged default is copied there on first run
-    so it's immediately editable rather than hidden inside the package."""
-    if not _USER_CONFIG.exists():
-        _USER_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(_PACKAGED_DEFAULT_CONFIG, _USER_CONFIG)
-    with open(_USER_CONFIG, "rb") as f:
-        return tomllib.load(f)
 
 
 class InstrumentWindow(QMainWindow):
@@ -158,7 +141,7 @@ def create_instrument_window(instrument: DashboardInstrument, client: Optional[B
     if client is None:
         client = BackendClient()
 
-    config = _load_block_config()
+    config = load_ui_blocks()
     blocks = resolve_blocks(instrument.kind, instrument.dimensionality, config)
     auto_start_polling = should_auto_start_polling(instrument.kind, instrument.dimensionality)
 
