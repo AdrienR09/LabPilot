@@ -86,3 +86,27 @@ export interface WorkflowExecutionResponse {
   execution_id: string;
   status: string;
 }
+// ---- Transport ----
+//
+// These two describe what the backend actually puts on the wire, and were
+// missing: `api/index.ts` imported both, so the module — and with it the
+// WebSocketManager defined in it — did not typecheck. That is why the
+// manager was written and never wired to anything.
+
+/** Every REST route's envelope — see `core/server.py`'s `ApiResponse`. */
+export interface ApiResponse<T = unknown> {
+  success: boolean;
+  data?: T;
+  error?: string | null;
+  timestamp?: number;
+}
+
+/**
+ * One frame on `/ws`. The server sends `{type: "event", event}` for every
+ * event on the session bus (see `LabPilotServer._event_broadcaster`) and
+ * `{type: "pong"}` in reply to a ping.
+ */
+export interface WebSocketMessage {
+  type: 'event' | 'pong' | string;
+  event?: LabPilotEvent;
+}

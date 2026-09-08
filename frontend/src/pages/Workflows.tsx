@@ -16,7 +16,8 @@ import { useLabPilotStore } from '@/store';
 import type { Workflow } from '@/store/index';
 import { qtBridge, initQtBridge } from '@/utils/qtBridge';
 import { WorkflowScriptModal } from '@/components/WorkflowScriptModal';
-import { getWorkflowTemplates, loadWorkflowTemplate, WorkflowTemplate } from '@/api';
+import { getWorkflowTemplates, loadWorkflowTemplate, WorkflowTemplate, wsManager } from '@/api';
+import type { LabPilotEvent } from '@/types';
 
 // Ready-made, general-purpose workflow templates (core/workflow_templates/)
 // — each declares the instrument "roles" it needs (kind + dimensionality)
@@ -128,6 +129,34 @@ export default function Workflows() {
       console.log('✅ Qt Bridge ready in Workflows');
     });
   }, []);
+
+  // Follow runs as they start and finish, wherever they were started from.
+  //
+  // This page only refreshed when you clicked something, so a run started
+  // from a Qt window or the console never appeared here, and a run that
+  // finished on its own kept its Stop button until you navigated away and
+  // back. The backend has broadcast these events on /ws all along and
+  // `wsManager` was written to receive them; nothing had ever connected it.
+  useEffect(() => {
+    const lifecycle = new Set([
+      'WORKFLOW_STARTED',
+      'WORKFLOW_COMPLETED',
+      'WORKFLOW_ERROR',
+      'WORKFLOW_STOPPED',
+    ]);
+    const onEvent = (event: LabPilotEvent) => {
+      if (lifecycle.has(event.kind)) loadWorkflows();
+    };
+    wsManager.addEventListener('event', onEvent);
+    wsManager.connect().catch(() => {
+      // The page is still usable without it — it just goes back to
+      // refreshing when you act on it, which is what it did before.
+    });
+    return () => {
+      wsManager.removeEventListener('event', onEvent);
+      wsManager.disconnect();
+    };
+  }, [loadWorkflows]);
 
   // Arriving via `?workflow=id` (e.g. a double-click on a workflow's box in
   // the flowchart) highlights that card the same way clicking it would.
