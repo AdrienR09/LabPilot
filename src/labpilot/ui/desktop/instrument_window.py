@@ -130,8 +130,45 @@ class InstrumentWindow(QMainWindow):
         if auto_start_polling:
             self.ctx.start_polling()
 
+        self._restore_layout()
+
+    # ---- remembered layout ----
+    #
+    # `ui_blocks.toml` decides where a dock *starts*; this remembers where
+    # the user put it. Docks were movable and floatable all along, and
+    # every rearrangement was thrown away on close — the window came back
+    # in its config layout every time, which is the same as not being
+    # rearrangeable. `saveState`/`restoreState` is Qt's own mechanism for
+    # exactly this, and it is keyed by the object names Qt needs anyway.
+
+    def _layout_key(self) -> str:
+        """One remembered layout per instrument *kind*, not per instrument.
+
+        Two spectrometers of the same model should open the same way, and
+        an id carries a numeric suffix that changes when instruments are
+        added or removed — remembering per id would lose the layout on a
+        config edit that has nothing to do with it.
+        """
+        return f"layout/{self.instrument.kind}/{self.instrument.dimensionality}"
+
+    def _restore_layout(self) -> None:
+        from PyQt6.QtCore import QSettings
+
+        # restoreState matches docks by objectName, which nothing was
+        # setting; without this every dock is unrecognised and the saved
+        # state restores nothing.
+        for d in self.findChildren(QDockWidget):
+            if not d.objectName():
+                d.setObjectName(d.windowTitle())
+        state = QSettings("LabPilot", "LabPilot").value(self._layout_key())
+        if state is not None:
+            self.restoreState(state)
+
     def closeEvent(self, event) -> None:
+        from PyQt6.QtCore import QSettings
+
         self.ctx.stop_polling()
+        QSettings("LabPilot", "LabPilot").setValue(self._layout_key(), self.saveState())
         super().closeEvent(event)
 
 

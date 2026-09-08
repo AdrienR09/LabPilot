@@ -21,7 +21,6 @@ from pymodaq_gui.plotting.data_viewers.viewer0D import Viewer0D
 from pymodaq_gui.plotting.data_viewers.viewer1D import Viewer1D
 from pymodaq_gui.plotting.data_viewers.viewer2D import Viewer2D
 from pymodaq_gui.plotting.data_viewers.viewerND import ViewerND
-from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -70,7 +69,7 @@ class ViewerComponent(UIComponent):
 
         d = dock(self.params["dock_title"], window)
         d.setWidget(content)
-        window.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, d)
+        self.add_dock(d)
 
         ctx.viewer = self.viewer  # convenience back-reference (tests, other components)
 

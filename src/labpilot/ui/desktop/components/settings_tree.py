@@ -12,7 +12,6 @@ from __future__ import annotations
 from components.base import UIComponent
 from components.schema_utils import main_config_names
 from components.widgets import dock
-from PyQt6.QtCore import Qt
 from pyqtgraph.parametertree import Parameter, ParameterTree
 
 
@@ -114,5 +113,5 @@ class SettingsTreeComponent(UIComponent):
         # letting the surrounding QMainWindow stretch it to fill whatever
         # space is available.
         d.setMaximumHeight(min(360, 40 + 34 * row_count))
-        window.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, d)
+        self.add_dock(d, "right")
         self.dock_widget = d

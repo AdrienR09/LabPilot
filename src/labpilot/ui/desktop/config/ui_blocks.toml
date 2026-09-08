@@ -12,10 +12,30 @@
 # window is opened, no code change or restart needed.
 #
 # Each block is `{ type = "<component_type>", ...params }` — `type` must
-# match a key in components.base.COMPONENT_REGISTRY (populated by every
-# UIComponent subclass in src/ui/desktop/components/); everything else is
-# passed through as that component's params, merged over its own
-# default_params (this file's values win).
+# name a component registered in the "instrument" context (every
+# UIComponent subclass in src/ui/desktop/components/ registers itself; see
+# components/base.py, and scripts/verify_ui_registry.py, which checks every
+# type below resolves). Everything else is passed through as that
+# component's params, merged over its own default_params (this file's
+# values win).
+#
+# Two params every block understands, whatever its type:
+#
+#   area     = "left" | "right" | "top" | "bottom"
+#              Where this block's dock goes. Omit to keep the component's
+#              own default, which is what every block below does.
+#   tab_with = "<dock title>"
+#              Tab this block's dock behind an already-placed one instead
+#              of giving it its own space — how to fit two large views in
+#              the room for one. Names a dock title from an *earlier* block
+#              in the same list, e.g.
+#
+#                { type = "viewer", dimensionality = "1D", dock_title = "Spectrum" },
+#                { type = "time_series", dock_title = "Trend", tab_with = "Spectrum" },
+#
+# Where a dock ends up after you drag it is remembered separately, per
+# instrument kind and dimensionality (QSettings; see instrument_window.py's
+# _restore_layout). This file is the starting layout, not the last one.
 #
 # "move_control" (components/move_controls.py) is deliberately the
 # simplest control surface: current value, a set-value spinbox with an

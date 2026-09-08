@@ -15,7 +15,6 @@ from __future__ import annotations
 import httpx
 from components.base import UIComponent
 from components.widgets import IconButton, dock
-from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QVBoxLayout, QWidget
 
 
@@ -44,7 +43,7 @@ class ActionsComponent(UIComponent):
         d = dock(self.params["dock_title"], window)
         d.setWidget(content)
         d.setMaximumHeight(48 + 40 * len(actions))
-        window.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, d)
+        self.add_dock(d, "right")
 
     def _call(self, name: str) -> None:
         ctx = self.ctx

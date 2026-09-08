@@ -20,7 +20,6 @@ from components.base import UIComponent
 from components.widgets import ProfessionalSpinBox, ValueReadout, dock
 from pymodaq_data.data import Axis, DataRaw
 from pymodaq_gui.plotting.data_viewers.viewer1D import Viewer1D
-from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 
@@ -69,7 +68,7 @@ class TimeSeriesComponent(UIComponent):
 
         d = dock(self.params["dock_title"], window)
         d.setWidget(content)
-        window.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, d)
+        self.add_dock(d)
         ctx.viewer = self.viewer
 
     def _on_trace_length_changed(self, value) -> None:

@@ -86,7 +86,6 @@ class MoveControlComponent(UIComponent):
     }
 
     def build(self) -> None:
-        window = self.window
         ctx = self.ctx
         schema = ctx.schema
         settable = schema.get("settable", {})
@@ -120,7 +119,7 @@ class MoveControlComponent(UIComponent):
             # actuator) this is the only dock, so add it directly here.
             d = self._build_single_axis(axis0)
             if forced_axis is None:
-                window.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, d)
+                self.add_dock(d)
         else:
             self.mode = "tabs"
             self._build_axis_tabs(axes)
@@ -188,7 +187,7 @@ class MoveControlComponent(UIComponent):
 
         d = dock("Switch", window)
         d.setWidget(central)
-        window.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, d)
+        self.add_dock(d)
 
         if axis is not None:
             try:
@@ -387,7 +386,7 @@ class MoveControlComponent(UIComponent):
                 all_docks.append(sub._own_dock)
 
         for d in all_docks:
-            window.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, d)
+            self.add_dock(d)
         for other in all_docks[1:]:
             window.tabifyDockWidget(all_docks[0], other)
         if all_docks:

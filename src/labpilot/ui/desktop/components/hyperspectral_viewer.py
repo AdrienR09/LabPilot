@@ -20,7 +20,6 @@ import numpy as np
 import pyqtgraph as pg
 from components.base import UIComponent
 from components.widgets import dock
-from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QVBoxLayout, QWidget
 
 pg.setConfigOption("imageAxisOrder", "row-major")  # match numpy's (row, col) convention
@@ -47,7 +46,7 @@ class HyperspectralViewerComponent(UIComponent):
 
         d_img = dock(self.params["image_dock_title"], window)
         d_img.setWidget(image_content)
-        window.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, d_img)
+        self.add_dock(d_img)
 
         spectrum_content = QWidget()
         spectrum_layout = QVBoxLayout(spectrum_content)
@@ -61,7 +60,7 @@ class HyperspectralViewerComponent(UIComponent):
 
         d_spec = dock(self.params["spectrum_dock_title"], window)
         d_spec.setWidget(spectrum_content)
-        window.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, d_spec)
+        self.add_dock(d_spec)
 
     # ---- ROI-linked recompute ----
 

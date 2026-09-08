@@ -247,6 +247,53 @@ class UIComponent(metaclass=ComponentMeta):
         """Attach this component's widgets/actions to `self.window`."""
         raise NotImplementedError
 
+    def add_dock(self, dock: Any, default_area: str = "top") -> Any:
+        """Place one of this component's docks.
+
+        `ui_blocks.toml` could say *which* blocks a window has but not
+        *where* they go: each component called `addDockWidget` with an area
+        it had hardcoded, so rearranging a window meant editing Python.
+        A block may now say:
+
+            { type = "settings_tree", area = "left" }
+            { type = "viewer", tab_with = "Trend" }
+
+        `area` is left/right/top/bottom; `tab_with` names an earlier
+        block's dock title and tabs this one behind it, which is how a
+        window fits two large views in the space of one. A block that says
+        neither keeps the component's own default, so an unedited config
+        lays out exactly as before.
+
+        Docks are indexed by title as they are added, which is what lets a
+        later block name an earlier one.
+        """
+        from PyQt6.QtCore import Qt
+
+        areas = {
+            "left": Qt.DockWidgetArea.LeftDockWidgetArea,
+            "right": Qt.DockWidgetArea.RightDockWidgetArea,
+            "top": Qt.DockWidgetArea.TopDockWidgetArea,
+            "bottom": Qt.DockWidgetArea.BottomDockWidgetArea,
+        }
+        placed = getattr(self.window, "docks_by_title", None)
+        if placed is None:
+            placed = {}
+            self.window.docks_by_title = placed
+
+        tab_with = self.params.get("tab_with")
+        if tab_with and tab_with in placed:
+            self.window.tabifyDockWidget(placed[tab_with], dock)
+        else:
+            if tab_with:
+                print(
+                    f"⚠️  {self.component_type}: no dock titled {tab_with!r} to tab "
+                    f"with — is that block listed after it? Placing it normally."
+                )
+            requested = str(self.params.get("area") or default_area).lower()
+            self.window.addDockWidget(areas.get(requested, areas[default_area]), dock)
+        placed[dock.windowTitle()] = dock
+        return dock
+
     def on_data(self, data: dict) -> None:
         """Called with every poll's data dict. Default: no-op — components
         that don't care about live data (e.g. the settings tree) just

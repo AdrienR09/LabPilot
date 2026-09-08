@@ -25,7 +25,6 @@ import httpx
 import pyqtgraph as pg
 from components.base import UIComponent
 from components.widgets import IconButton, dock
-from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
@@ -42,7 +41,6 @@ class PulseSequenceEditorComponent(UIComponent):
     default_params = {"dock_title": "Pulse Sequence"}
 
     def build(self) -> None:
-        ctx = self.ctx
         window = self.window
         self.n_channels = self._fetch_n_channels()
 
@@ -90,7 +88,7 @@ class PulseSequenceEditorComponent(UIComponent):
 
         d = dock(self.params["dock_title"], window)
         d.setWidget(content)
-        window.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, d)
+        self.add_dock(d, "left")
 
         self._load_existing_sequence()
 
