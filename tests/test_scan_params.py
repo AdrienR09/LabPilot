@@ -53,7 +53,7 @@ def test_the_rest_api_s_schema_dict_works_as_well_as_the_object():
 
 
 def test_a_workflow_with_no_grid_falls_back_to_the_crosshair_pair():
-    """confocal_scanner.py declares neither SCAN_AXES nor AXIS_RANGES."""
+    """A template with a fixed position pair declares neither."""
     params = {"X_POSITIONS": [0.0, 1.0, 2.0], "Y_POSITIONS": [0.0, 0.5]}
     axes, ranges = resolve_scan_axes(params, None, x_axis="x", y_axis="y")
     assert axes == ["x", "y"]

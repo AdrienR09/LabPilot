@@ -468,8 +468,8 @@ class WorkflowWindow(QMainWindow):
         Resolved by `core/workflow/scan_params.py`'s `resolve_scan_axes` —
         the same call the server makes — when this workflow declares a
         grid (see `_add_params_dock`); a workflow that declares none
-        (confocal_scanner.py) falls back to the crosshair's fixed
-        x_axis/y_axis pair.
+        (a template declaring a fixed X_POSITIONS/Y_POSITIONS pair rather
+        than a grid) falls back to the crosshair's own x_axis/y_axis pair.
 
         This used to be a hand-kept copy of the server's rule, on the
         grounds that the two "need to agree" and could not share code
@@ -857,8 +857,8 @@ class WorkflowWindow(QMainWindow):
 
     def _add_params_dock(self, graph: dict) -> None:
         """This workflow's own tunable parameters — top-level UPPERCASE
-        constants its own script declares (e.g. confocal_scanner.py's
-        X_POSITIONS/Y_POSITIONS/SETTLE_TOLERANCE_MM), read via
+        constants its own script declares (e.g. omniscan.py's
+        AXIS_RANGES/SCAN_AXES/SETTLE_TOLERANCE), read via
         core/workflow/instrument_roles.py's read_workflow_params. A
         parallel surface to SettingsTreeComponent's per-instrument
         DeviceSchema-driven tree (InstrumentWindow), but this one edits

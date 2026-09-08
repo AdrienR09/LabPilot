@@ -30,6 +30,7 @@ import pytest
 
 from labpilot.core.session import Session
 from labpilot.core.workflow.instrument_roles import read_result_ui, read_workflow_params
+from labpilot.core.workflow.presets import load_presets
 from labpilot.instruments.mock.hardware_scan import MockNIScanner
 from labpilot.instruments.mock.microwave_sources import MockMicrowaveSource
 from labpilot.instruments.MockBasic.simple import (
@@ -65,15 +66,11 @@ _MOCKS = {
 _SHRINK: dict[str, dict] = {
     "actuator_optimization": {"N_COARSE_STEPS": 4, "N_REFINE_ROUNDS": 1},
     "autofocus": {"Z_POSITIONS": [-1.0, 0.0, 1.0]},
-    "confocal_scanner": {"X_POSITIONS": [-1.0, 1.0], "Y_POSITIONS": [-1.0, 1.0]},
-    "generic_1d_scan": {"POSITIONS": [-1.0, 0.0, 1.0]},
-    "generic_2d_scan": {"X_POSITIONS": [-1.0, 1.0], "Y_POSITIONS": [-1.0, 1.0]},
     "grating_spectrometer": {"GRATING_POSITIONS": [0.0, 1.0]},
     "hardware_timed_scan": {
         "SCAN_AXES": ["x", "y"],
         "SCAN_RANGES": {"x": (-2.0, 2.0, 8), "y": (-2.0, 2.0, 8)},
     },
-    "hyperspectral_imaging": {"X_POSITIONS": [-1.0, 1.0], "Y_POSITIONS": [-1.0, 1.0]},
     "odmr_sweep": {"SWEEP_POINTS": 5, "AVERAGES": 2},
     # MockBasicSource's output is a 0-10 generic drive level, so keep the PID
     # setpoint and actuation range inside what it will actually accept — it is
@@ -99,6 +96,10 @@ _ROLE_OVERRIDES: dict[str, set[str]] = {"omniscan": {"actuator", "detector"}}
 # against, and it also exercises the sweep-key/power-key detection in run().
 _MOCK_OVERRIDES: dict[tuple[str, str], type] = {
     ("odmr_sweep", "source"): MockMicrowaveSource,
+    # A hyperspectral scan is a spectrometer at every pixel, and this preset
+    # asks for an integration time — which a 0D counter has no parameter
+    # for, and omniscan rightly refuses to silently ignore.
+    ("hyperspectral_imaging", "detector"): MockBasicDetector1D,
 }
 
 
@@ -111,6 +112,13 @@ def _template_names() -> list[str]:
 
 
 TEMPLATES = _template_names()
+
+# A preset is loadable exactly like a template (see
+# core/workflow/presets.py), so it gets the same smoke coverage: its base
+# module, its declared parameters applied on top, run to completion. Four
+# templates became presets, and without this the suite would simply have
+# stopped covering them.
+PRESETS = sorted(load_presets())
 
 
 class _KeyRecordingSink(dict):
@@ -140,15 +148,26 @@ def _load_template(name: str):
     return module
 
 
-async def _build_session(module, name: str) -> Session:
+async def _build_session(module, name: str, mock_key: str | None = None) -> Session:
+    """Bind one mock per role the module declares.
+
+    `mock_key` names the entry to look up in `_MOCK_OVERRIDES` when it is
+    not the module's own — a preset picks its instruments under its own
+    name while taking its roles from the template it runs.
+    """
     session = Session()
+    mock_key = mock_key or name
     wanted = _ROLE_OVERRIDES.get(name)
     for role, spec in getattr(module, "REQUIRED_INSTRUMENTS", {}).items():
         if wanted is not None and role not in wanted:
             continue
         kind = spec.get("kind")
         dim = spec.get("dimensionality")
-        factory = _MOCK_OVERRIDES.get((name, role)) or _MOCKS.get((kind, dim)) or _MOCKS.get((kind, None))
+        factory = (
+            _MOCK_OVERRIDES.get((mock_key, role))
+            or _MOCKS.get((kind, dim))
+            or _MOCKS.get((kind, None))
+        )
         assert factory is not None, f"{name}: no mock for kind={kind!r} dim={dim!r}"
         adapter = factory()
         await adapter.connect()
@@ -182,6 +201,42 @@ async def test_template_runs_and_emits_its_declared_result_keys(name):
         f"{name}: RESULT_UI names {missing}, which the run never produced in a "
         f"progress frame or its result. Produced: {sorted(produced)}"
     )
+
+
+@pytest.mark.parametrize("name", PRESETS)
+async def test_preset_runs_its_base_template_and_emits_its_result_keys(name):
+    """The same check the templates get, for the presets that replaced four
+    of them — a preset that names a parameter its base template dropped
+    would otherwise fail silently at load time."""
+    preset = load_presets()[name]
+    module = _load_template(preset.template)
+    script = (TEMPLATE_DIR / f"{preset.template}.py").read_text()
+
+    declared = read_workflow_params(script)
+    for const, value in preset.params.items():
+        assert const in declared, (
+            f"preset {name!r} sets {const!r}, which {preset.template!r} does "
+            f"not declare — it would be dropped on load"
+        )
+        setattr(module, const, value)
+    # Small enough to run in a test; the preset's own grid is sized for a
+    # real acquisition.
+    for const, value in _SHRINK.get(preset.template, {}).items():
+        setattr(module, const, value)
+
+    session = await _build_session(module, preset.template, mock_key=name)
+    sink = _KeyRecordingSink()
+    session.set_progress_context(f"smoke_{name}", "exec_smoke", sink)
+    try:
+        result = await asyncio.wait_for(module.run(session), timeout=120)
+    finally:
+        session.clear_progress_context()
+
+    produced = set(result) | sink.seen_keys
+    missing = sorted(
+        {v for k, v in read_result_ui(script).items() if k.endswith("_key")} - produced
+    )
+    assert not missing, f"{name}: RESULT_UI names {missing}, never produced"
 
 
 @pytest.mark.parametrize("name", TEMPLATES)

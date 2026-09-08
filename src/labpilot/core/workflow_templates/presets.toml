@@ -1,0 +1,73 @@
+# Named presets of a template — a workflow that is a *configuration* of an
+# existing template rather than a different program.
+#
+# `generic_1d_scan`, `generic_2d_scan`, `confocal_scanner` and
+# `hyperspectral_imaging` used to be four separate .py files, each with its
+# own hand-written loop that pre-allocated a grid, counted its own
+# progress, and published its own frames. They differed from `omniscan` and
+# from each other mainly in their result-key names (`x_positions` vs
+# `x_positions_mm`), their role names (`actuator` vs `xy_actuator` vs
+# `scanner`), and their default ranges — not in what they measured.
+#
+# Once `Run` owned the loop and `Dataset` made a result self-describing,
+# what was left of each was a params dict. So that is what they are. Each
+# preset loads as an ordinary workflow instance: the base template's
+# script, this file's parameters, and bindable roles — the same store row
+# a template load already produced.
+#
+# Adding one is an entry here; there is no code to write. `template` must
+# name a real .py in this directory, and every key under `[<name>.params]`
+# must be a parameter that template declares — `tests/test_presets.py`
+# checks both.
+#
+# A preset's own saved parameters are kept per preset (see
+# core/config/template_params.py), so configuring "Confocal scan" does not
+# move "Hyperspectral imaging".
+
+[generic_1d_scan]
+template = "omniscan"
+description = """Sweep one actuator axis and read a detector at each point.
+
+The simplest scan there is: bind `actuator` and `detector`, set the range,
+run. Edit SCAN_AXES to sweep a different axis than x."""
+
+[generic_1d_scan.params]
+SCAN_AXES = ["x"]
+AXIS_RANGES = { x = [0.0, 10.0, 6] }
+
+[generic_2d_scan]
+template = "omniscan"
+description = """Raster two actuator axes and read a detector at each point.
+
+The ordinary 2-D map. Bind `actuator` and `detector`; the result view
+gives you a live image with a draggable crosshair that moves the stage."""
+
+[generic_2d_scan.params]
+SCAN_AXES = ["x", "y"]
+AXIS_RANGES = { x = [-4.0, 4.0, 5], y = [-4.0, 4.0, 5] }
+
+[confocal_scanner]
+template = "omniscan"
+description = """Confocal x-y map: raster the sample stage, count photons at each pixel.
+
+Bind `actuator` to the x-y stage and `detector` to the counter or APD. The
+optimizer re-centres the stage on the local maximum without leaving the
+window."""
+
+[confocal_scanner.params]
+SCAN_AXES = ["x", "y"]
+AXIS_RANGES = { x = [-4.0, 4.0, 5], y = [-4.0, 4.0, 5] }
+HOLD_POSITIONS = { z = 0.0 }
+
+[hyperspectral_imaging]
+template = "omniscan"
+description = """Acquire a full spectrum at every point of an x-y raster.
+
+Bind `actuator` to the stage and `detector` to the spectrometer. The
+spectrometer's own wavelength axis becomes a third dimension of the result,
+so each pixel holds a spectrum rather than a number."""
+
+[hyperspectral_imaging.params]
+SCAN_AXES = ["x", "y"]
+AXIS_RANGES = { x = [-4.0, 4.0, 5], y = [-4.0, 4.0, 5] }
+INTEGRATION_TIME_MS = 50.0

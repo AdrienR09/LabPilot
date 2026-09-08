@@ -50,6 +50,7 @@ from labpilot.core.workflow.instrument_roles import (
     read_template_description,
     read_workflow_params,
 )
+from labpilot.core.workflow.presets import load_presets
 from labpilot.core.workflow.scan_params import resolve_scan_axes
 
 __all__ = ["LabPilotServer", "create_app"]
@@ -668,16 +669,36 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         workflow with empty, bindable instrument slots rather than one
         already wired to a specific physical setup."""
         templates = []
+        sources: dict[str, str] = {}
         for path in sorted(_workflow_templates_dir().glob("*.py")):
             if path.stem.startswith("_"):
                 continue
             text = path.read_text()
+            sources[path.stem] = text
             templates.append({
                 "name": path.stem,
                 "description": read_template_description(text),
                 "required_instruments": read_required_instruments(text),
+                "preset_of": None,
             })
-        return ApiResponse(success=True, data=templates)
+
+        # Presets sit in the same list: from here a preset *is* a template
+        # you can load — it differs only in that its parameters come from a
+        # declaration rather than from its own module's defaults. Its roles
+        # are its base template's, since that is the script that will run.
+        for preset in load_presets().values():
+            text = sources.get(preset.template)
+            if text is None:
+                print(f"⚠️  Preset {preset.name!r} names unknown template "
+                      f"{preset.template!r} — not listed")
+                continue
+            templates.append({
+                "name": preset.name,
+                "description": preset.description,
+                "required_instruments": read_required_instruments(text),
+                "preset_of": preset.template,
+            })
+        return ApiResponse(success=True, data=sorted(templates, key=lambda t: t["name"]))
 
     @app.post("/api/workflows/templates/{template_name}/load", response_model=ApiResponse)
     async def load_workflow_template(template_name: str, server: LabPilotServer = Depends(get_server)):
@@ -700,14 +721,26 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         """
         if not server.workflow_store:
             raise HTTPException(status_code=503, detail="Workflow store not available")
-        template_path = _workflow_templates_dir() / f"{template_name}.py"
+
+        # A preset runs its base template's script with different starting
+        # parameters — see core/workflow/presets.py. Everything downstream
+        # is identical, because a workflow instance was already a row
+        # (script path + params + bindings) rather than a copy of a file.
+        preset = load_presets().get(template_name)
+        script_name = preset.template if preset else template_name
+        template_path = _workflow_templates_dir() / f"{script_name}.py"
         if not template_path.exists():
             raise HTTPException(status_code=404, detail=f"No template named {template_name!r}")
 
         text = template_path.read_text()
         required = read_required_instruments(text)
         declared = read_workflow_params(text)
+        # Saved values are keyed by the name that was loaded, so
+        # reconfiguring one preset does not move another built on the same
+        # template. A preset's own defaults fill in what has not been saved.
         saved_params = server.template_param_store.load(template_name) or {}
+        if preset:
+            saved_params = {**preset.params, **saved_params}
 
         graph = WorkflowGraph(name=template_name.replace("_", " ").title())
         graph.metadata["script_path"] = str(template_path)
@@ -798,7 +831,7 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
     @app.get("/api/workflows/{workflow_id}/params", response_model=ApiResponse)
     async def get_workflow_params(workflow_id: str, server: LabPilotServer = Depends(get_server)):
         """This workflow's own tunable parameters — top-level UPPERCASE
-        constants declared in its script (e.g. confocal_scanner.py's
+        constants declared in its script (e.g. omniscan.py's
         X_POSITIONS/Y_POSITIONS/SETTLE_TOLERANCE_MM), read by the native
         desktop window (workflow_window.py) as a settings panel specific
         to *this* workflow, distinct from any bound instrument's own

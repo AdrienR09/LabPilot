@@ -65,8 +65,8 @@ def resolve_scan_axes(
     Prefers an omniscan-style `AXIS_RANGES`/`SCAN_AXES` declaration — any
     number of axes, intersected with what the bound actuator actually has.
     Falls back to the crosshair's fixed `x_axis`/`y_axis` pair for a
-    workflow that declares neither (confocal_scanner.py), taking a span
-    from whatever `X_POSITIONS`/`Y_POSITIONS` list it has.
+    workflow that declares neither, taking a span from whatever
+    `X_POSITIONS`/`Y_POSITIONS` list it has.
 
     `requested_axes` narrows the result to a subset — "optimize along one
     dimension or several". A requested axis this workflow does not have is

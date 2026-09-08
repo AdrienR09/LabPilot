@@ -161,7 +161,7 @@ only how much gets checked before the workflow ever runs.
 
 ## Worked example
 
-`generic_2d_scan.py`'s per-pixel loop, before and after:
+A per-pixel scan loop, before and after:
 
 ```python
 # Before — generic dict read/write

@@ -200,8 +200,8 @@ def read_workflow_params(script_text: str) -> dict[str, object]:
     """{name: value} for every top-level UPPERCASE constant this script
     declares that isn't REQUIRED_INSTRUMENTS/RESULT_UI or a role-id
     constant (see `_RESERVED_WORKFLOW_PARAM_NAMES` above) — this
-    workflow's own tunable settings (e.g. confocal_scanner.py's
-    X_POSITIONS/Y_POSITIONS/SETTLE_TOLERANCE_MM), as distinct from an
+    workflow's own tunable settings (e.g. omniscan.py's
+    AXIS_RANGES/SCAN_AXES/SETTLE_TOLERANCE), as distinct from an
     *instrument's* settings (which come from that instrument's own
     DeviceSchema, a completely separate surface — see
     SettingsTreeComponent on the Qt desktop side). Only literal-eval-able

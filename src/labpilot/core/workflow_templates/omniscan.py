@@ -129,6 +129,13 @@ HOLD_POSITIONS: dict = {}
 SETTLE_TOLERANCE = 0.02
 MAX_SETTLE_POLLS = 5000
 
+# Integration time to set on the bound detector before the scan starts, in
+# whatever unit that detector declares. `None` leaves it alone. Written
+# through the detector's own integration-time parameter — whatever it calls
+# it (`exposure_time_ms`, `integration_time_ms`, ...) — so a preset can ask
+# for a longer dwell without knowing the device.
+INTEGRATION_TIME_MS = None
+
 
 async def run(session: Session) -> dict:
     has_scanner = session.has(SCANNER_ID)
@@ -139,6 +146,8 @@ async def run(session: Session) -> dict:
             "real NI DAQ card or mock_ni_scanner) or both 'actuator' and 'detector' "
             "(the ordinary per-point move-and-read path) before running this workflow."
         )
+    if INTEGRATION_TIME_MS is not None and session.has(DETECTOR_ID):
+        await session.get(DETECTOR_ID).set_integration_time(float(INTEGRATION_TIME_MS))
     plan = _scanner_plan(session) if has_scanner else _per_point_plan(session)
     result = await execute(session, plan)
     return {

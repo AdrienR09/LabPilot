@@ -12,13 +12,24 @@ registry and event bus the whole running server shares. Everything else
 (instrument roles, live result rendering, tunable parameters, the
 optimizer, safety limits) is layered on top of that one contract via a
 handful of well-known module-level constants and helper classes, covered
-below. LabPilot ships 14 ready-to-use templates
-(`src/labpilot/core/workflow_templates/`): `omniscan`, `generic_1d_scan`,
-`generic_2d_scan`, `confocal_scanner`, `hyperspectral_imaging`,
-`grating_spectrometer`, `odmr_sweep`, `autofocus`,
-`actuator_optimization`, `pid_stabilization`, `pump_probe_spectroscopy`,
-`peak_fit_series`, `time_series_acquisition` — each adapted from a
-standard Qudi/pyMoDAQ acquisition pattern.
+below. LabPilot ships 14 ready-to-use entries in its template library —
+each adapted from a standard Qudi/pyMoDAQ acquisition pattern — in two
+kinds.
+
+**Templates** are modules in `src/labpilot/core/workflow_templates/`:
+`omniscan`, `hardware_timed_scan`, `grating_spectrometer`, `odmr_sweep`,
+`autofocus`, `actuator_optimization`, `pid_stabilization`,
+`pump_probe_spectroscopy`, `peak_fit_series`, `time_series_acquisition`.
+
+**Presets** are named configurations of a template, declared in
+`workflow_templates/presets.toml` — `generic_1d_scan`, `generic_2d_scan`,
+`confocal_scanner` and `hyperspectral_imaging` are all `omniscan` with
+different default ranges. They load, bind and run exactly like a template
+(a workflow instance was always a row — a script path, a parameters dict
+and a bindings dict — so a preset just supplies a different parameters
+dict). They were four separate modules until each turned out to be
+`omniscan` plus a params dict once `Run` owned the scan loop and a
+`Dataset` could describe its own axes.
 
 ## Running a workflow
 
@@ -150,7 +161,8 @@ tunable-param mechanism `AXIS_RANGES` uses (see below) — plain literal
 numbers/strings, not a computed list, so they actually qualify.
 
 **`image2d`** (a 2D image, optionally with a draggable crosshair tracking
-a live actuator position) — `confocal_scanner.py`:
+a live actuator position) — as a template declaring a fixed position pair
+would use it:
 
 ```python
 RESULT_UI = {

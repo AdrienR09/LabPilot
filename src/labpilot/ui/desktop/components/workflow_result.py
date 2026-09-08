@@ -722,7 +722,7 @@ class Image2DResultView(QWidget):
     rather than at raw pixel indices, so the optional crosshair
     (`add_crosshair`) below operates in the scan's real coordinate units
     and can be dragged continuously, not snapped to the nearest scanned
-    pixel — opt-in per `RESULT_UI["crosshair"]` (see confocal_scanner.py),
+    pixel — opt-in per `RESULT_UI["crosshair"]` (see omniscan.py),
     since it only makes sense when the scan axes are also the workflow's
     real live 2D position (not true for e.g. grating_spectrometer's image).
     """
@@ -741,7 +741,7 @@ class Image2DResultView(QWidget):
         self._got_first_frame = False
         # Axis value arrays from the most recent update_data() call — the
         # array's row index maps to _x_values, column index to _y_values
-        # (matching how confocal_scanner.py builds `image[i][j]`, i over
+        # (matching how a raster builds `image[i][j]`, i over
         # x positions, j over y). Used only to compute the image's real
         # extent (ImageItem.setRect) on each update.
         self._x_values: Optional[list[float]] = None
