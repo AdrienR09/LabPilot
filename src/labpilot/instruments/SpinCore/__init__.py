@@ -1,0 +1,1 @@
+"""SpinCore adapters."""

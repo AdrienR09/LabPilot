@@ -39,7 +39,7 @@ _PEAK_WIDTH = 1.5
 class MockNIScanner(HardwareScanMixin, AdapterBase):
     """Mock combined position+detector scanning unit — kind="generic"
     (doesn't fit the plain motor/detector split, same call already made
-    for mock_pulse_sequencer): the real interaction here is
+    for the pulse rig): the real interaction here is
     configure_scan/start_scan/get_scan_data/stop_scan, not read()/write()
     point-by-point."""
 

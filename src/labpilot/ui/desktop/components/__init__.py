@@ -15,7 +15,6 @@ from components import (  # noqa: F401 — import for registration side effect
     hyperspectral_viewer,
     move_controls,
     poll_rate,
-    pulse_sequence,
     settings_tree,
     time_series,
     toolbar,

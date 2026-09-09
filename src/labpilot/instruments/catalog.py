@@ -52,6 +52,7 @@ class InstrumentBackend(str, Enum):
     PYMEASURE = "pymeasure"
     PYLABLIB = "pylablib"
     TEST_FIXTURE = "test_fixture"
+    VENDOR = "vendor"  # the manufacturer's own SDK, an optional extra
 
 
 @dataclass
@@ -121,13 +122,14 @@ INSTRUMENT_CATALOG: list[InstrumentMetadata] = [
     _mock("mock_hs_oscilloscope", "HighSpeed", "Mock High-Speed Oscilloscope", InstrumentType.DETECTOR_1D, ["oscilloscope", "high-speed"]),
 
     # ODMR/pulsed-sensing instruments (4) — src/instruments/mock/{lasers,
-    # microwave_sources,optical_modulators,pulse_sequencers}.py. Modeled on
+    # microwave_sources,optical_modulators,pulse_rig}.py. Modeled on
     # qudi's MicrowaveInterface/PulserInterface and the real-world PyMoDAQ
     # S2QT ODMR plugin — see docs/workflows.md's ODMR notes.
     _mock("mock_laser", "Pump", "Mock CW Pump Laser", InstrumentType.SOURCE, ["laser", "cw", "odmr"]),
     _mock("mock_microwave_source", "RF", "Mock Microwave Source", InstrumentType.SOURCE, ["microwave", "rf", "signal-generator", "odmr"]),
     _mock("mock_aom", "Gate", "Mock Acousto-Optic Modulator", InstrumentType.ACTUATOR_0D, ["aom", "modulator", "gate", "odmr"]),
-    _mock("mock_pulse_sequencer", "TTL", "Mock Pulse Sequencer", InstrumentType.GENERIC, ["pulser", "sequencer", "ttl", "odmr"]),
+    _mock("mock_pulser", "TTL", "Mock Pulser", InstrumentType.GENERIC, ["pulser", "sequencer", "ttl", "odmr", "pulsed"]),
+    _mock("mock_gated_counter", "TTL", "Mock Gated Counter", InstrumentType.DETECTOR_0D, ["counter", "gated", "photon", "odmr", "pulsed"]),
 
     # Hardware-timed scanning — src/instruments/mock/hardware_scan.py.
     # Modeled on Qudi's ScanningProbeInterface/NI hardware module: a single
@@ -407,6 +409,12 @@ INSTRUMENT_CATALOG.extend([
     InstrumentMetadata("attocube_anc350", "Attocube", "ANC350", "Attocube ANC350 Piezo Controller", InstrumentType.ACTUATOR_ND, InstrumentBackend.PYLABLIB, tags=['stage', 'piezo', 'multi-axis']),
     InstrumentMetadata("toptica_ibeam_smart", "Toptica", "iBeam Smart", "Toptica iBeam Smart Laser", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, tags=['laser', 'diode']),
     InstrumentMetadata("m2_solstis", "M Squared", "SolsTiS", "M Squared SolsTiS Tunable Laser", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, tags=['laser', 'tunable', 'ti:sapphire']),
+
+    # Pulsed sequencers — src/instruments/{Swabian,SpinCore}/. Both need
+    # the manufacturer's own package, and both `describe()` without it, so
+    # they are listed and searchable on a machine with no hardware.
+    InstrumentMetadata("swabian_pulse_streamer", "Swabian", "Pulse Streamer 8/2", "Swabian Pulse Streamer", InstrumentType.GENERIC, InstrumentBackend.VENDOR, connection_types=['ethernet'], tags=['pulser', 'sequencer', 'ttl', 'digital', 'odmr', 'pulsed']),
+    InstrumentMetadata("spincore_pulse_blaster", "SpinCore", "PulseBlaster ESR-PRO", "SpinCore PulseBlaster", InstrumentType.GENERIC, InstrumentBackend.VENDOR, connection_types=['pci'], tags=['pulser', 'sequencer', 'ttl', 'digital', 'odmr', 'pulsed']),
     InstrumentMetadata("laser_quantum_finesse", "Laser Quantum", "Finesse", "Laser Quantum Finesse Laser", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, tags=['laser', 'cw']),
     InstrumentMetadata("basler", "Basler", "ace", "Basler ace Camera", InstrumentType.DETECTOR_2D, InstrumentBackend.PYLABLIB, tags=['camera']),
     InstrumentMetadata("photometrics_pvcam", "Photometrics", "PVCAM", "Photometrics PVCAM Camera", InstrumentType.DETECTOR_2D, InstrumentBackend.PYLABLIB, tags=['camera', 'scientific']),

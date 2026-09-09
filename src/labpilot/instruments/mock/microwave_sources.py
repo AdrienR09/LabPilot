@@ -13,7 +13,7 @@ counter's gate). `trigger_next()`/`reset_scan()` below stand in for that
 external trigger — a future ODMR capability calls them once per
 detector-gated point, the same relationship real hardware has.
 
-No pulse/gating logic here — see optical_modulators.py/pulse_sequencers.py
+No pulse/gating logic here — see optical_modulators.py/pulse_rig.py
 for that. A real pulsed-ODMR sequence typically gates this source's RF
 output with a separate digital line rather than relying on this source's
 own scan-mode advance.

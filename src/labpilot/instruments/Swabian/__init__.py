@@ -1,0 +1,1 @@
+"""Swabian Instruments adapters."""

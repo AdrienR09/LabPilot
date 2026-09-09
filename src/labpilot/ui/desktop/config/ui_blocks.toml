@@ -116,20 +116,47 @@ blocks = [
   { type = "actions" },
 ]
 
-# A "generic"-kind instrument that isn't 0D/1D/2D/ND (currently just a
-# TTL pulse sequencer — see instruments/mock/pulse_sequencers.py) resolves
-# here (config_kind() collapses "generic" -> "detector",
+# A "generic"-kind instrument that isn't 0D/1D/2D/ND resolves here
+# (config_kind() collapses "generic" -> "detector",
 # config_dimensionality() passes its raw "GENERIC" dimensionality through
-# unchanged — see instrument_blocks.py). Its `sequence` field is a
-# structured value settings_tree can't render, so it gets a dedicated
-# editor instead of the plain detector-0D fallback this used to
-# accidentally resolve to.
+# unchanged — see instrument_blocks.py). A device whose interesting
+# contract is a capability gets a `[capability.<name>]` section below
+# instead, which wins over this bucket.
 [detector."GENERIC"]
 blocks = [
-  { type = "toolbar", title = "Sequencer", actions = [
-      { name = "snapshot", label = "Refresh status", icon = "trace-snapshot", tooltip = "Read current running/length/duration status." },
+  { type = "toolbar", title = "Instrument", actions = [
+      { name = "snapshot", label = "Refresh status", icon = "trace-snapshot", tooltip = "Read current status." },
   ] },
-  { type = "pulse_sequence_editor" },
+  { type = "actions" },
+  { type = "settings_tree" },
+]
+
+# --- Capability sections --------------------------------------------------
+#
+# These win over (kind, dimensionality): a pulser and a hardware-timed
+# scanner are both kind="generic", which says only that neither is a motor
+# or a detector, so selecting on that alone put every one of them in the
+# same bucket. A capability says what the device actually implements.
+#
+# There is deliberately no sequence editor here. Authoring a sequence needs
+# no hardware and belongs to the free-standing editor *workflow* (see
+# workflow_templates/pulse_sequence_editor.py); an instrument window shows
+# what this particular pulser is doing, which is a different question.
+
+[capability.pulser]
+blocks = [
+  { type = "toolbar", title = "Pulser", actions = [
+      { name = "snapshot", label = "Refresh status", icon = "trace-snapshot", tooltip = "Read what is loaded and whether it is playing." },
+  ] },
+  { type = "actions" },
+  { type = "settings_tree" },
+]
+
+[capability.gated_counter]
+blocks = [
+  { type = "toolbar", title = "Counter", actions = [
+      { name = "snapshot", label = "Refresh status", icon = "trace-snapshot", tooltip = "Read sweeps, gates and bins." },
+  ] },
   { type = "actions" },
   { type = "settings_tree" },
 ]

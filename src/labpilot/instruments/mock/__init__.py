@@ -13,7 +13,7 @@ from .motors import *
 from .optical_modulators import *
 from .oscilloscopes import *
 from .power_meters import *
-from .pulse_sequencers import *
+from .pulse_rig import *
 from .source_meters import *
 from .spectrometers import *
 from .temperature_controllers import *
@@ -64,11 +64,12 @@ __all__ = [
     'MockUSBOscilloscope',
     'MockHighSpeedOscilloscope',
     # ODMR/pulsed-sensing instruments (4) — src/instruments/mock/{lasers,
-    # microwave_sources,optical_modulators,pulse_sequencers}.py
+    # microwave_sources,optical_modulators,pulse_rig}.py
     'MockLaser',
     'MockMicrowaveSource',
     'MockAOM',
-    'MockPulseSequencer',
+    'MockPulser',
+    'MockGatedCounter',
     # Hardware-timed (NI-card-style) scanning — src/instruments/mock/hardware_scan.py
     'MockNIScanner',
 ]

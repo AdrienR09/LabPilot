@@ -51,7 +51,12 @@ import contextlib
 import weakref
 from typing import Any, Optional, Union
 
-from labpilot.core.device.capabilities import HARDWARE_SCAN, capabilities_of
+from labpilot.core.device.capabilities import (
+    GATED_COUNTER,
+    HARDWARE_SCAN,
+    PULSER,
+    capabilities_of,
+)
 from labpilot.core.device.motion import (
     DEFAULT_MAX_POLLS,
     DEFAULT_TOLERANCE,
@@ -60,7 +65,10 @@ from labpilot.core.device.motion import (
 )
 from labpilot.core.errors import UnsupportedOperationError
 
-__all__ = ["Motor", "Detector", "Source", "Scanner", "GenericInstrument", "wrap"]
+__all__ = [
+    "Detector", "GatedCounter", "GenericInstrument", "Motor", "Pulser",
+    "Scanner", "Source", "wrap",
+]
 
 
 def _numeric_axes(schema) -> list[str]:
@@ -305,10 +313,66 @@ class Scanner(_InstrumentWrapper):
         await self._adapter.stop_scan()
 
 
+class Pulser(_InstrumentWrapper):
+    """A device implementing `instruments.pulser_mixin.PulserMixin` — it
+    plays pulse sequences on named channels.
+
+    `upload_sequence` takes the *abstract* sequence, never samples: how it
+    becomes instructions or waveform memory is the driver's business. See
+    that mixin's docstring for why that is the one place this departs from
+    qudi's pulser interface.
+    """
+
+    def pulser_constraints(self) -> Any:
+        """Synchronous, and answerable with no hardware connected — the
+        sequence editor's channel list comes from here."""
+        return self._adapter.pulser_constraints()
+
+    async def upload_sequence(self, sequence: Any, channels: Any) -> Any:
+        return await self._adapter.upload_sequence(sequence, channels)
+
+    async def pulser_on(self) -> None:
+        await self._adapter.pulser_on()
+
+    async def pulser_off(self) -> None:
+        await self._adapter.pulser_off()
+
+
+class GatedCounter(_InstrumentWrapper):
+    """A device implementing
+    `instruments.gated_counter_mixin.GatedCounterMixin` — it counts events
+    into time bins, one window per gate.
+
+    `configure_gates` returns what was **actually** set; the caller uses
+    that rather than its own request.
+    """
+
+    def counter_constraints(self) -> Any:
+        return self._adapter.counter_constraints()
+
+    async def configure_gates(
+        self, bin_width_s: float, record_length_s: float, gates: int
+    ) -> Any:
+        return await self._adapter.configure_gates(
+            bin_width_s, record_length_s, gates
+        )
+
+    async def start_counting(self) -> None:
+        await self._adapter.start_counting()
+
+    async def stop_counting(self) -> None:
+        await self._adapter.stop_counting()
+
+    async def get_trace(self) -> Any:
+        return await self._adapter.get_trace()
+
+    async def counter_status(self) -> dict[str, Any]:
+        return await self._adapter.counter_status()
+
+
 class GenericInstrument(_InstrumentWrapper):
-    """Fallback for a `kind="generic"` device that isn't a hardware-timed
-    scanner (e.g. a pulse sequencer) — no kind-specific methods beyond
-    passthrough."""
+    """Fallback for a `kind="generic"` device that satisfies no declared
+    capability — no kind-specific methods beyond passthrough."""
 
 
 # One wrapper per adapter, so `session.get("stage")` is the same object
@@ -352,6 +416,8 @@ _BY_KIND: dict[str, type] = {
 #: composed class is deterministic.
 _BY_CAPABILITY: tuple[tuple[str, type], ...] = (
     (HARDWARE_SCAN, Scanner),
+    (PULSER, Pulser),
+    (GATED_COUNTER, GatedCounter),
 )
 
 #: Composed classes, keyed by what went into them — so a hundred pulsers
@@ -385,8 +451,10 @@ def _wrapper_class(kind: str, capabilities: frozenset[str]) -> type:
     if composed is None:
         # Capability wrappers first, so their typed methods win over the
         # kind's; every one is an `_InstrumentWrapper`, so the MRO is
-        # linear and `__init__` is shared.
-        composed = type("Instrument", bases, {})
+        # linear and `__init__` is shared. Named from its parts, because
+        # a `repr` reading `<Instrument 'tt'>` tells the person at the
+        # console nothing about what they are holding.
+        composed = type("".join(cls.__name__ for cls in bases), bases, {})
         _COMPOSED[key] = composed
     return composed
 
