@@ -21,7 +21,7 @@ below is that same unit, shared by both `Image2DResultView` (one pane) and
 from __future__ import annotations
 
 import itertools
-from typing import Any, Callable, Optional
+from typing import Any, Callable, ClassVar, Optional
 
 import numpy as np
 import pyqtgraph as pg
@@ -36,6 +36,7 @@ from PyQt6.QtCore import QObject, QRectF, Qt, QThread, QTimer, pyqtSignal, pyqtS
 from PyQt6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
+    QGraphicsRectItem,
     QHBoxLayout,
     QLabel,
     QSplitter,
@@ -49,8 +50,9 @@ pg.setConfigOption("imageAxisOrder", "row-major")  # match numpy's (row, col) co
 
 __all__ = [
     "Image2DResultView", "SpectrumResultView", "NDScanResultView", "OdmrResultView",
-    "ResultViewAdapter",
-    "Image2DResultViewAdapter", "SpectrumResultViewAdapter", "OdmrResultViewAdapter", "NDScanResultViewAdapter",
+    "PulseSequenceResultView", "ResultViewAdapter",
+    "Image2DResultViewAdapter", "SpectrumResultViewAdapter", "OdmrResultViewAdapter",
+    "NDScanResultViewAdapter", "PulseSequenceResultViewAdapter",
 ]
 
 
@@ -1881,4 +1883,150 @@ class NDScanResultViewAdapter(ResultViewAdapter):
             source.get(result_ui.get("value_key")), source.get(result_ui.get("shape_key")),
             source.get(result_ui.get("axis_names_key")), source.get(result_ui.get("axis_positions_key")),
             source.get(actuator_axis_count_key) if actuator_axis_count_key else None,
+        )
+
+
+class PulseSequenceResultView(QWidget):
+    """The timing diagram a sequence editor draws — one lane per channel.
+
+    Boxes, not samples, and that is a deliberate limit rather than a
+    shortcut. A 2.87 GHz drive inside a 100 ns pi pulse is 287 carrier
+    cycles: sampling it for a plot either aliases into a meaningless
+    smear or costs more points than the widget can carry, and neither
+    answers the question the author actually has, which is *when is each
+    channel doing something, and how hard*. So each element is a filled
+    box in its channel's lane, exact at any zoom, and the analog ones are
+    drawn to the shape's amplitude and labelled with the shape's name.
+    Qudi's own editor draws the same picture.
+
+    One point of the sweep at a time. A 50-point Rabi drawn end to end is
+    a solid bar with no information in it; the point being previewed is
+    the editor's own `PREVIEW_POINT` parameter.
+
+    Segments arrive over the wire as plain dicts (`Segment.to_dict()` in
+    core/pulse/sampling.py), so this view holds no pulse objects and needs
+    nothing from `core.pulse` imported into the Qt process.
+    """
+
+    #: Lane colours, cycled per channel. The laser gets green and the
+    #: microwave red wherever those channels are present, because that is
+    #: what every optics bench and every NV paper already uses.
+    _BY_NAME: ClassVar[dict[str, str]] = {
+        "laser": "#4caf50",
+        "green": "#4caf50",
+        "mw": "#e53935",
+        "microwave": "#e53935",
+        "gate": "#42a5f5",
+        "trigger": "#ffb300",
+    }
+    _CYCLE = ("#ab47bc", "#26a69a", "#ff7043", "#8d6e63", "#78909c")
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        self.summary = QLabel("No sequence yet")
+        self.summary.setStyleSheet("color: #888;")
+        layout.addWidget(self.summary)
+
+        self.plot_widget = pg.PlotWidget()
+        self.plot_widget.setLabel("bottom", "Time", units="s")
+        self.plot_widget.showGrid(x=True, y=False, alpha=0.2)
+        self.plot_widget.setMouseEnabled(x=True, y=False)
+        self.plot_widget.getPlotItem().hideButtons()
+        layout.addWidget(self.plot_widget, 1)
+
+        self._axis = self.plot_widget.getAxis("left")
+        self._channels: list[str] = []
+
+    def _colour(self, channel: str, index: int) -> str:
+        return self._BY_NAME.get(channel, self._CYCLE[index % len(self._CYCLE)])
+
+    def update_data(self, segments: Any, channels: Any = None, duration: Any = None) -> None:
+        """Redraw from one result frame.
+
+        Everything is rebuilt each time rather than diffed: a sequence is
+        a few dozen boxes and the editor produces one frame per edit, so
+        there is nothing here worth the incremental-update machinery the
+        live scan views need.
+        """
+        segments = list(segments or ())
+        self.plot_widget.clear()
+
+        if not segments:
+            self.summary.setText("No sequence yet")
+            self._axis.setTicks(None)
+            return
+
+        # Lane order: the channels the result names, so it stays stable
+        # across edits even when an element stops using one of them.
+        names = list(channels or ())
+        for segment in segments:
+            if segment.get("channel") not in names:
+                names.append(segment.get("channel"))
+
+        lanes = {name: len(names) - 1 - index for index, name in enumerate(names)}
+        for index, name in enumerate(names):
+            colour = self._colour(name, index)
+            base = lanes[name]
+            pen = pg.mkPen(colour, width=1)
+            brush = pg.mkBrush(pg.mkColor(colour).darker(180))
+            # A baseline per lane, so a channel that is low for this whole
+            # point still shows as a lane rather than as empty space.
+            self.plot_widget.plot(
+                [0.0, float(duration or 0.0)], [base, base],
+                pen=pg.mkPen(colour, width=1, style=Qt.PenStyle.DotLine),
+            )
+            for segment in segments:
+                if segment.get("channel") != name:
+                    continue
+                start = float(segment.get("start", 0.0))
+                stop = float(segment.get("stop", 0.0))
+                height = 0.72
+                box = QGraphicsRectItem(
+                    QRectF(start, base, max(stop - start, 0.0), height)
+                )
+                box.setPen(pen)
+                box.setBrush(brush)
+                self.plot_widget.addItem(box)
+
+        self._axis.setTicks([[(lanes[name], name) for name in names]])
+        self.plot_widget.setYRange(-0.4, len(names) - 0.1, padding=0)
+        if duration:
+            self.plot_widget.setXRange(0.0, float(duration), padding=0.02)
+
+        analog = sorted({s["shape"] for s in segments if s.get("shape")})
+        self.summary.setText(
+            f"{len(names)} channel(s), {len(segments)} pulse(s), "
+            f"{float(duration or 0.0) * 1e6:.3f} us per point"
+            + (f" — analog: {', '.join(analog)}" if analog else "")
+        )
+
+    # No crosshair on a timing diagram — no-ops so workflow_window.py can
+    # call these polymorphically across every result-view type.
+    def show_crosshair(self) -> None:
+        pass
+
+    def hide_crosshair(self) -> None:
+        pass
+
+    def set_auto_level(self, auto_level: bool) -> None:
+        pass
+
+
+class PulseSequenceResultViewAdapter(ResultViewAdapter):
+    component_type = "pulse_sequence"
+
+    @staticmethod
+    def build(window: Any, result_ui: dict) -> Any:
+        return PulseSequenceResultView()
+
+    @staticmethod
+    def update(view: Any, result_ui: dict, source: dict) -> None:
+        view.update_data(
+            source.get(result_ui.get("segments_key", "segments")),
+            source.get(result_ui.get("channels_key", "channels")),
+            source.get(result_ui.get("duration_key", "point_duration")),
         )

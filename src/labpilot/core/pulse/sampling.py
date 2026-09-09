@@ -67,9 +67,12 @@ __all__ = [
     "Interval",
     "Sampled",
     "SamplingError",
+    "Segment",
     "check_activation",
     "expand",
     "sample",
+    "shots",
+    "timing_diagram",
 ]
 
 #: The constraint names `sample()` consults. A driver that names its
@@ -126,6 +129,35 @@ class Interval:
         """For an error message — where in the sequence this interval is."""
         where = f"{self.block}[{self.repetition}]" if self.block else "sequence"
         return f"{self.name or '<unnamed>'} in {where}"
+
+
+@dataclass(frozen=True, slots=True)
+class Segment:
+    """One channel doing one thing over one interval — a box on a diagram."""
+
+    channel: str
+    start: float
+    stop: float
+    level: float
+    """1.0 for a digital high; the shape's amplitude in volts for analog."""
+    shape: str = ""
+    """The shape's class name, empty for a digital channel."""
+    name: str = ""
+    """The element's name — what the diagram labels the box with."""
+
+    @property
+    def duration(self) -> float:
+        return self.stop - self.start
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "channel": self.channel,
+            "start": self.start,
+            "stop": self.stop,
+            "level": self.level,
+            "shape": self.shape,
+            "name": self.name,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,6 +221,82 @@ def expand(sequence: PulseSequence) -> Iterator[Interval]:
                     repetition=repetition,
                 )
                 time += duration
+
+
+def shots(sequence: PulseSequence) -> Iterator[list[Interval]]:
+    """One pass through the sequence per swept point, times from zero.
+
+    A "shot" is what happens at one point of the sweep: for a Rabi, one
+    repetition of its single block; for a T1, one of its twenty blocks.
+    Both are the *n*-th thing the experiment does, which is the unit an
+    editor previews and a diagram draws — a whole 50-point Rabi as one
+    picture shows nothing.
+    """
+    for block in sequence.blocks:
+        for repetition in range(block.repetitions):
+            time = 0.0
+            shot: list[Interval] = []
+            for element in block.elements:
+                duration = element.duration_at(repetition)
+                shot.append(
+                    Interval(
+                        start=time,
+                        duration=duration,
+                        channels=element.channels,
+                        name=element.name,
+                        block=block.name,
+                        repetition=repetition,
+                    )
+                )
+                time += duration
+            yield shot
+
+
+def timing_diagram(sequence: PulseSequence, point: int = 0) -> list[Segment]:
+    """One point of the sweep as drawable segments, one list per channel.
+
+    Boxes, not samples. A 2.87 GHz carrier inside a 100 ns pulse is 287
+    cycles — sampling it for a diagram either aliases into nonsense or
+    costs more points than a plot can carry, and neither tells the author
+    anything they were looking for. What a sequence editor needs to show
+    is *when each channel is doing something and how hard*, which is
+    exactly a box per element. Qudi's editor draws the same picture.
+
+    So this stays exact at any zoom, costs two numbers per element, and
+    survives a JSON round trip to a browser.
+    """
+    every = list(shots(sequence))
+    if not every:
+        return []
+    if not 0 <= point < len(every):
+        raise SamplingError(
+            f"Sequence {sequence.name!r} has {len(every)} point(s); there is "
+            f"no point {point}"
+        )
+
+    segments: list[Segment] = []
+    for interval in every[point]:
+        for channel, value in sorted(interval.channels.items()):
+            if isinstance(value, Shape):
+                level = float(
+                    getattr(value, "amplitude", getattr(value, "voltage", 1.0))
+                )
+                shape = type(value).__name__
+            elif value:
+                level, shape = 1.0, ""
+            else:
+                continue  # A channel that is low draws nothing.
+            segments.append(
+                Segment(
+                    channel=channel,
+                    start=interval.start,
+                    stop=interval.end,
+                    level=level,
+                    shape=shape,
+                    name=interval.name,
+                )
+            )
+    return segments
 
 
 def sample(

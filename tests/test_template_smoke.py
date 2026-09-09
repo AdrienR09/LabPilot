@@ -1,10 +1,11 @@
 """End-to-end smoke test for every shipped workflow template.
 
 This is the regression net the data-model work depends on. Each template is
-imported the same way `RunManager._execute_script` imports it, bound to
-mock instruments matching its own `REQUIRED_INSTRUMENTS` declaration, shrunk
-to a handful of points, and run to completion. Then the invariant that
-nothing previously checked:
+run the same way `RunManager._execute_script` runs it — through
+`core/run/script.py`, so both accepted shapes are covered by the same
+harness — bound to mock instruments matching its own `REQUIRED_INSTRUMENTS`
+declaration, shrunk to a handful of points, and run to completion. Then the
+invariant that nothing previously checked:
 
     every `*_key` a template's RESULT_UI names must actually be produced by
     that template — in a progress frame, in the final result, or both.
@@ -23,13 +24,17 @@ keeps the fitting templates on their success path.
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 from pathlib import Path
 
 import pytest
 
+from labpilot.core.run.script import run_script
 from labpilot.core.session import Session
-from labpilot.core.workflow.instrument_roles import read_result_ui, read_workflow_params
+from labpilot.core.workflow.instrument_roles import (
+    read_required_instruments,
+    read_result_ui,
+    read_workflow_params,
+)
 from labpilot.core.workflow.presets import load_presets
 from labpilot.instruments.mock.hardware_scan import MockNIScanner
 from labpilot.instruments.mock.microwave_sources import MockMicrowaveSource
@@ -59,8 +64,9 @@ _MOCKS = {
     ("generic", None): MockNIScanner,
 }
 
-# Per-template constant overrides, applied to the imported module before
-# run(). Purely about runtime: every template ships defaults sized for a real
+# Per-template constant overrides, passed as the workflow instance's
+# parameters — exactly how a saved instance overrides a template's
+# defaults. Purely about runtime: every template ships defaults sized for a real
 # acquisition (a 5x5 grid, 5 averages, a 20 s PID settle), which would make
 # this suite minutes long for no extra coverage.
 _SHRINK: dict[str, dict] = {
@@ -140,15 +146,13 @@ class _KeyRecordingSink(dict):
         super().__setitem__(key, value)
 
 
-def _load_template(name: str):
-    path = TEMPLATE_DIR / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(f"smoke_template_{name}", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def _source(name: str) -> str:
+    """A template's text. Never imported to inspect it: a plain script's
+    body is its program, so importing would already have run it."""
+    return (TEMPLATE_DIR / f"{name}.py").read_text()
 
 
-async def _build_session(module, name: str, mock_key: str | None = None) -> Session:
+async def _build_session(script: str, name: str, mock_key: str | None = None) -> Session:
     """Bind one mock per role the module declares.
 
     `mock_key` names the entry to look up in `_MOCK_OVERRIDES` when it is
@@ -158,7 +162,7 @@ async def _build_session(module, name: str, mock_key: str | None = None) -> Sess
     session = Session()
     mock_key = mock_key or name
     wanted = _ROLE_OVERRIDES.get(name)
-    for role, spec in getattr(module, "REQUIRED_INSTRUMENTS", {}).items():
+    for role, spec in read_required_instruments(script).items():
         if wanted is not None and role not in wanted:
             continue
         kind = spec.get("kind")
@@ -177,22 +181,24 @@ async def _build_session(module, name: str, mock_key: str | None = None) -> Sess
 
 @pytest.mark.parametrize("name", TEMPLATES)
 async def test_template_runs_and_emits_its_declared_result_keys(name):
-    module = _load_template(name)
-    script = (TEMPLATE_DIR / f"{name}.py").read_text()
+    script = _source(name)
+    declared = read_workflow_params(script)
 
-    for const, value in _SHRINK.get(name, {}).items():
-        assert hasattr(module, const), f"{name}: shrink target {const} no longer exists"
-        setattr(module, const, value)
+    params = _SHRINK.get(name, {})
+    for const in params:
+        assert const in declared, f"{name}: shrink target {const} no longer exists"
 
-    session = await _build_session(module, name)
+    session = await _build_session(script, name)
     sink = _KeyRecordingSink()
     session.set_progress_context(f"smoke_{name}", "exec_smoke", sink)
     try:
-        result = await asyncio.wait_for(module.run(session), timeout=120)
+        result = await asyncio.wait_for(
+            run_script(session, TEMPLATE_DIR / f"{name}.py", params), timeout=120
+        )
     finally:
         session.clear_progress_context()
 
-    assert isinstance(result, dict) and result, f"{name}: run() returned {result!r}"
+    assert isinstance(result, dict) and result, f"{name}: produced {result!r}"
 
     produced = set(result) | sink.seen_keys
     declared = {v for k, v in read_result_ui(script).items() if k.endswith("_key")}
@@ -209,26 +215,26 @@ async def test_preset_runs_its_base_template_and_emits_its_result_keys(name):
     of them — a preset that names a parameter its base template dropped
     would otherwise fail silently at load time."""
     preset = load_presets()[name]
-    module = _load_template(preset.template)
-    script = (TEMPLATE_DIR / f"{preset.template}.py").read_text()
+    script = _source(preset.template)
 
     declared = read_workflow_params(script)
-    for const, value in preset.params.items():
+    for const in preset.params:
         assert const in declared, (
             f"preset {name!r} sets {const!r}, which {preset.template!r} does "
             f"not declare — it would be dropped on load"
         )
-        setattr(module, const, value)
     # Small enough to run in a test; the preset's own grid is sized for a
     # real acquisition.
-    for const, value in _SHRINK.get(preset.template, {}).items():
-        setattr(module, const, value)
+    params = {**preset.params, **_SHRINK.get(preset.template, {})}
 
-    session = await _build_session(module, preset.template, mock_key=name)
+    session = await _build_session(script, preset.template, mock_key=name)
     sink = _KeyRecordingSink()
     session.set_progress_context(f"smoke_{name}", "exec_smoke", sink)
     try:
-        result = await asyncio.wait_for(module.run(session), timeout=120)
+        result = await asyncio.wait_for(
+            run_script(session, TEMPLATE_DIR / f"{preset.template}.py", params),
+            timeout=120,
+        )
     finally:
         session.clear_progress_context()
 

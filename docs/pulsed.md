@@ -1,101 +1,164 @@
 # Pulsed measurements — status
 
-**Short answer: no. There is no pulse module yet, and nothing here can
-reproduce Qudi's pulsed GUI.** This page says exactly what exists, what
-does not, and what the gap is, so nobody plans around a capability that
-isn't there.
+**Where this stands: sequences can be authored, saved and drawn, with no
+hardware. They cannot yet be played.** The authoring half is built and
+tested; the execution half — pulser drivers, a gated counter, the
+measurement plan — is not. This page says exactly what exists so nobody
+plans around a capability that isn't there.
 
-## What exists today
+## What works today
+
+```python
+from labpilot.core.pulse import save_sequence, timing_diagram
+from labpilot.core.pulse.library import RigProfile, build
+
+rig = RigProfile(rabi_period=200e-9, mw_frequency=2.87e9)
+sequence = build("rabi", rig, tau_start=20e-9, tau_step=20e-9, points=50)
+
+sequence.points          # 50
+sequence.readouts()      # 50
+sequence.duration        # 0.261 ms
+save_sequence(sequence)  # ~/.labpilot/sequences/rabi.json
+```
+
+Or through the GUI: the **Pulse Sequence Editor** workflow binds no
+instruments, so it opens and runs with everything disconnected.
 
 | Piece | State |
 |---|---|
-| `instruments/mock/pulse_sequencers.py` — `MockPulseSequencer` | Registered and catalogued. Takes a flat list of `{duration_ns, channels}` steps through a `dtype="json"` setpoint. **No workflow, plan or template drives it** — it is reachable only by hand from an instrument window. |
-| `ui/desktop/components/pulse_sequence.py` — the editor | Wired into `ui_blocks.toml`, but hardcoded to that mock's exact dict shape. A second pulse device with a different structure gets a wrong editor. |
-| `instruments/mock/{lasers,optical_modulators,microwave_sources}.py` | Registered, catalogued, tagged `ODMR`. No template binds a laser or gate role. The microwave source's entire triggered-scan half (`scan_on`, `reset_scan`, `trigger_next`) is called by nothing. |
-| `core/workflow_templates/odmr_sweep.py` | Works, but is **CW ODMR**, not pulsed — and predates the plan layer, so it hand-rolls its loop and gets no descriptor, no pause and no patch streaming. |
-| `instruments/AWG/` | Five pylablib **function generators** — frequency, amplitude, offset, enable. Not an arbitrary waveform generator in the pulsed sense: no waveform upload, no sequence, no channels, no triggering. |
-| `core/device/` — `Action`, records, capabilities, `Constraints` | **Done.** The four framework gaps that blocked any of this are closed. |
+| `core/pulse/sequence.py` — the object model | **Done.** `PulseElement` → `PulseBlock` → `PulseSequence`, symbolic channels, JSON round trip. |
+| `core/pulse/shapes.py` — `Idle`, `DC`, `Sin`, `Gauss`, `Chirp` | **Done.** Parameters are `Parameter` objects, so the settings tree renders a shape editor with no new code. |
+| `core/pulse/library.py` — `rabi`, `ramsey`, `hahn_echo`, `t1` | **Done.** Plus `RigProfile`, the physics a sequence is written against. |
+| `core/pulse/sampling.py` — `expand`, `sample`, `timing_diagram` | **Done.** Two compilation paths; see below. |
+| `core/pulse/store.py` — saved sequence files | **Done.** `~/.labpilot/sequences/<name>.json`, listed with a reason when one will not play. |
+| `workflow_templates/pulse_sequence_editor.py` | **Done.** Binds nothing; writes a sequence file and returns its timing diagram. |
+| `ui/desktop/components/pulse_editor.py` + the `pulse_sequence` result view | **Done.** Generator and rig tabs, and a one-lane-per-channel diagram. |
+| `core/device/` — `Action`, records, capabilities, `Constraints` | **Done.** The four framework gaps that blocked any of this. |
+| **`PulserMixin` / `GatedCounterMixin`** | **Missing.** No device can be handed a sequence yet. |
+| **Drivers — mock rig, Swabian PulseStreamer, SpinCore PulseBlaster** | **Missing.** |
+| **`PulsedMeasurementPlan`, extraction, analysis** | **Missing.** |
+| `instruments/mock/pulse_sequencers.py` — `MockPulseSequencer` | Still the old `dtype="json"` step list, driven by nothing. Replaced, not extended, when `PulserMixin` lands. |
+| `instruments/AWG/` | Five pylablib **function generators** — frequency, amplitude, offset, enable. Not an arbitrary waveform generator: no upload, no sequence, no channels, no triggering. |
+| `workflow_templates/odmr_sweep.py` | Works, but is **CW ODMR**, not pulsed — and predates the plan layer, so it hand-rolls its loop. |
 
-So: the parts of an NV rig are present as individual mock instruments, and
-none of them are connected to anything.
+## Authoring is offline; execution is online
 
-## Why they were never connected
+The editor and the measurement are two separate workflows, and that split
+is the design rather than an accident of ordering.
 
-A pulse sequence could not be expressed. The only way to declare a
-non-scalar setpoint was `dtype="json"`, which validated nothing and which
-the settings tree deliberately rendered as nothing. That is why
-`MockPulseSequencer` needed a bespoke widget and why no plan could
-usefully drive it.
+The editor binds **no instruments**. A sequence can be designed away from
+the lab, and it becomes a *file* — named, versioned, diffable, shareable,
+reusable by every measurement that wants it. `tests/` runs the editor
+against a session with no devices at all, so if it ever grows a hardware
+dependency that is where it shows.
 
-That specific blocker is now gone — structured parameters, actions with
-arguments, composed capabilities and constraint negotiation all landed as
-the enabling work. What has not been built is everything that sits on top.
+What it writes is the **abstract sequence**, never a device's format. A
+free-standing editor cannot emit a device's format because it does not
+know the device: sample rate, memory granularity, minimum element length
+and channel activation sets are all properties of whichever pulser
+eventually plays it. So the pulser compiles, and the workflow never sees a
+waveform.
 
-## What is missing, against Qudi's pulsed subsystem
+Channels are symbolic — `"laser"`, `"mw"`, `"gate"` — never `d_ch1`. The
+mapping onto physical channels is the rig's, so it lives with the
+measurement workflow's bindings. Qudi bakes `d_ch1` into its generation
+parameters, which ties a saved sequence to one wiring.
 
-Qudi's is roughly 18,000 lines across interface, logic and GUI. The parts
-that matter here:
+## Sampling is a library, not a pipeline stage
 
-| Qudi | Here |
+Qudi's pulser interface is `write_waveform(analog_samples,
+digital_samples)`, so its logic layer samples every sequence to dense
+arrays and each driver just uploads them. For a true AWG that is right.
+For a digital sequencer it is badly wrong, and Qudi's own PulseStreamer
+driver documents the symptom: it notes that `waveform_length` is
+ill-defined for that device because the hardware run-length-encodes
+identical consecutive samples.
+
+The numbers make the point. A 20-point T1:
+
+| | Cost |
 |---|---|
-| `PulseBlockElement` → `PulseBlock` → `PulseBlockEnsemble` → `PulseSequence` | **Missing.** The object model is the whole foundation. |
-| `sampling_functions.py` — Idle, DC, Sin, Chirp, ... | **Missing.** No analog shapes. |
-| `PulserInterface` — constraints, `write_waveform`, activation configs | **Missing.** No pulser contract. |
-| `FastCounterInterface` — gated counting, `get_data_trace()` | **Missing.** No gated counter. |
-| `predefined_generate_methods/` — `generate_rabi`, `ramsey`, `hahnecho`, `t1`, XY8, ... | **Missing.** No sequence library. |
-| `pulse_extractor.py` / `pulse_analyzer.py` — pluggable extraction and analysis | **Missing.** No laser-pulse extraction, no signal/reference ratio. |
-| `PulsedMeasurementLogic` — the measurement loop | **Missing.** Would be a `Plan` here, not a second engine. |
-| Pulsed GUI — 5 tabs, dynamic block/ensemble/sequence table editors | **Missing.** The current editor is a fixed two-column table for one mock. |
+| `expand()` — what a PulseStreamer or PulseBlaster consumes | **120 instructions** |
+| `sample()` at 1 GS/s — what Qudi's interface would force | **17.5 million booleans**, five million of them a single idle |
 
-## What a Rabi measurement would need
+So `upload_sequence` takes the *abstract* sequence and each driver reaches
+for whichever it needs. Sampling is a library an adapter **may** use, not
+a step imposed on everything upstream.
 
-Concretely, to run the simplest pulsed experiment end to end:
+## The four experiments
 
-1. A sequence model that can express `[MW(τ), laser+gate, delay, wait]`
-   with τ swept by a per-repetition increment.
-2. A pulser contract with real constraints — sample rate, granularity,
-   minimum element length, and which channel sets may be on at once.
-3. A gated counter contract returning a 2-D `(laser_pulse, time_bin)`
-   `Dataset` with real axes.
-4. A `PulsedMeasurementPlan` whose `describe()` knows the sweep and the
-   laser-pulse count before the first point, so pause, abort, streaming
-   and HDF5 come for free.
+Built and validated headless, on both an analog rig and a digital one
+(`RigProfile(analog_mw=False)` gates an external source instead — the
+sequences are otherwise identical):
+
+| | Points | Readouts | Alternating | Duration | Blocks |
+|---|---|---|---|---|---|
+| Rabi | 50 | 50 | no | 0.26 ms | 1 |
+| Ramsey | 50 | 100 | yes | 0.73 ms | 1 |
+| Hahn echo | 40 | 80 | yes | 1.97 ms | 1 |
+| T1 | 20 | 20 | no | 14.0 ms | 20 |
+
+Two conventions are stated rather than assumed, because both are the kind
+of thing that produces a plausible but wrong result:
+
+- **A readout is where the counter gate opens**, not merely where the
+  laser is on. T1 polarises with the laser, waits, then reads out —
+  counting laser edges scores that initialisation as a second readout and
+  silently halves the sweep. An ungated rig falls back to laser pulses,
+  which for it is correct.
+- **`tau` is the idle time between pulse edges**, not centre-to-centre.
+  With a 200 ns Rabi period the two differ by 50 ns on *every* point.
+  `centre_to_centre()` converts on request rather than one convention
+  being applied silently.
+
+## What a Rabi still needs
+
+1. `PulserMixin` — constraints, `upload_sequence(sequence, channels)`,
+   on/off. The adapter owns its own format.
+2. `GatedCounterMixin` — `configure_gates` returning what it *actually*
+   set, and `get_trace()` as a 2-D `(gate, time_bin)` `Dataset`.
+3. A mock rig that synthesises NV physics, so the plan and the fits can be
+   verified with no hardware.
+4. `PulsedMeasurementPlan`, whose `describe()` already has everything it
+   needs — the sequence knows its sweep and its readout count before the
+   first point, so pause, abort, patch streaming and HDF5 come for free.
 5. Laser-pulse extraction and signal/reference analysis as pure functions.
-6. A sequence editor whose columns come from the connected pulser's
-   channel list, not from one mock's dict shape.
 
-None of those exist. Items 1–3 are the ones everything else waits on.
+Items 1–3 are what everything else waits on.
 
-## The plan
+## Deliberate differences from Qudi
 
-Phase 6 of the roadmap covers this, scoped as: a clean-room
-reimplementation of Qudi's design (its pulsed sources are LGPL-3.0, this
-project is MIT — see [ATTRIBUTION.md](../ATTRIBUTION.md)), validated on
-Rabi, Ramsey, Hahn echo and T1, with sequences authored both as Python
-generator functions and in a table editor, and drivers for a simulated
-rig, a Swabian PulseStreamer and a SpinCore PulseBlaster.
-
-The intended shape follows `hardware_scan_mixin.py`, which is the one
-existing example here of a non-read/write device contract that is fully
-wired: a mixin declaring a capability, recognised when the wrapper is
-composed, driven by a `Plan`, surfaced by a template.
-
-Deliberate differences from Qudi, decided during the design pass:
+A clean-room reimplementation of the design — Qudi's pulsed sources are
+LGPL-3.0 and this project is MIT, see [ATTRIBUTION.md](../ATTRIBUTION.md).
+The design is cited; the source is not copied.
 
 - A sequence **knows its own sweep**, so `Plan.describe()` can state the
-  run's axes up front. Qudi has no equivalent, which is why its templates
-  configure the counter through a side-channel dict.
-- `repetitions` means what it says. Qudi's means *extra* plays (`reps + 1`
-  total), a documented trip-hazard in its own generators.
-- Sequences serialise as data (JSON/TOML), never pickle. Qudi's pickle
-  persistence costs it ~300 lines of migration shims and a `# FIXME`
-  repairing an object its own pickle destroys.
-- Extraction and analysis parameters are namespaced **per method**. Qudi
-  merges them into one flat dict, which forces the documented rule that no
-  two methods may share a keyword of different type.
+  run's axes up front. Qudi passes the equivalent through a side-channel
+  dict after generation, which is why its templates configure the counter
+  by hand.
+- `repetitions` means what it says. Qudi's means *extra* plays
+  (`reps + 1` total), a documented trip-hazard in its own generators.
+- Sequences serialise as **data, never pickle**. Qudi's pickle persistence
+  costs it ~300 lines of loader — migration shims, a `ModuleNotFound`
+  guard, and a `# FIXME` repairing an object its own pickle destroyed.
+- A generator declares its parameters as `Parameter` objects. Qudi takes
+  them from `inspect.signature` defaults, so its GUI guesses each unit
+  from substrings of the name (`'amp' in name` means volts).
+- Sampling is a library, not an interface requirement — see above.
+- Extraction and analysis parameters will be namespaced **per method**.
+  Qudi merges them into one flat dict, which forces the documented rule
+  that no two methods may share a keyword of different type.
 
 ## Status
 
-Phase 6a — the enabling work — is complete and committed. Phases 6b
-(sequence model), 6c (device contracts and drivers), 6d (plan, extraction,
-analysis) and 6e (editor, result view, templates) are **not started**.
+- **6a** (actions with arguments, structured parameters, capabilities,
+  constraint negotiation) — complete.
+- **6a.5** (plain-Python workflow scripts) — complete.
+- **6b** (sequence model, generator library, sampling, storage) — complete.
+- **6d.5 / 6e, editor half** (the free-standing editor workflow, its
+  control dock, the timing-diagram result view) — complete.
+- **6c** (pulser and gated-counter contracts, mock rig, PulseStreamer,
+  PulseBlaster) — not started.
+- **6d** (measurement plan, extraction, analysis, fits) — not started.
+- **6e, measurement half** (the pulsed-measurement template and its four
+  presets) — not started.

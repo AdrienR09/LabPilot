@@ -933,6 +933,43 @@ class WorkflowWindow(QMainWindow):
             actuator_id, axis_ranges, scan_axes, hold_positions, actuator_schema
         )
 
+    def build_pulse_editor(self, graph: dict, params: dict) -> None:
+        """The generator + rig-profile dock for the free-standing pulse
+        sequence editor. Selected by `workflow_blocks.toml`'s
+        `pulse_editor` block; see components/pulse_editor.py.
+
+        The only control dock here that reads no instrument schema and
+        makes no device call: the workflow it belongs to binds nothing,
+        so every widget edits one of its parameters and running it writes
+        a sequence file. `core.pulse.library` is imported here rather than
+        in the widget so the widget stays a dumb view and the offscreen
+        harness can drive it with stubs.
+        """
+        from components.pulse_editor import PulseEditorControlWidget
+
+        from labpilot.core.pulse.library import GENERATORS, generator_parameters
+
+        def _set_param(name: str, value) -> None:
+            try:
+                self.client.set_workflow_param(self.workflow_id, name, value)
+                self.status_bar.showMessage(f"{name} set to {value}")
+            except Exception as e:
+                self.status_bar.showMessage(f"Failed to update {name}: {e}")
+
+        editor = PulseEditorControlWidget(
+            params,
+            parameters_for=generator_parameters,
+            generators=sorted(GENERATORS),
+        )
+        editor.sigParamChanged.connect(_set_param)
+        editor.sigGenerate.connect(self._on_execute)
+
+        self.pulse_editor_control = editor
+        d = dock("Sequence Editor", self)
+        d.setWidget(editor)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, d)
+        self._pulse_editor_dock = d
+
     def build_sweep_control(self, graph: dict, params: dict) -> None:
         """The Sweep Control and Fit docks, for an odmr_sweep-family
         workflow. Selected by `workflow_blocks.toml`'s `sweep_control`

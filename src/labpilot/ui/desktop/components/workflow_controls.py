@@ -34,7 +34,10 @@ from typing import Any
 
 from components.base import ComponentMeta
 
-__all__ = ["AxesControl", "SweepControl", "WorkflowControl", "controls_for"]
+__all__ = [
+    "AxesControl", "PulseEditorControl", "SweepControl", "WorkflowControl",
+    "controls_for",
+]
 
 
 class WorkflowControl(metaclass=ComponentMeta):
@@ -84,6 +87,22 @@ class SweepControl(WorkflowControl):
     @staticmethod
     def build(window: Any, graph: dict, params: dict[str, Any]) -> None:
         window.build_sweep_control(graph, params)
+
+
+class PulseEditorControl(WorkflowControl):
+    """The generator + rig-profile dock for the free-standing pulse
+    sequence editor (`workflow_templates/pulse_sequence_editor.py`).
+
+    The only control here that binds no instrument, because the workflow
+    it belongs to binds none: it edits parameters and nothing else, which
+    is what lets a sequence be designed with no hardware present.
+    """
+
+    component_type = "pulse_editor"
+
+    @staticmethod
+    def build(window: Any, graph: dict, params: dict[str, Any]) -> None:
+        window.build_pulse_editor(graph, params)
 
 
 def controls_for(params: dict[str, Any], blocks: list[dict]) -> list[type]:

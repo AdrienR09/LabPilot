@@ -120,3 +120,36 @@ def test_every_template_that_declares_a_scan_view_would_get_one_anyway():
     for name, declared in scanning.items():
         inferred = pick_view(SCAN_2D)
         assert inferred["type"] == declared["type"], name
+
+
+# --- A pulse sequence's timing diagram --------------------------------------
+
+
+def test_a_timing_diagram_is_inferred_from_its_segments():
+    """So the sequence editor's result renders whether or not the template
+    declares a RESULT_UI — the same inference every other view gets."""
+    spec = pick_view(
+        {
+            "segments": [
+                {"channel": "laser", "start": 0.0, "stop": 3e-6, "level": 1.0},
+                {"channel": "mw", "start": 0.0, "stop": 2e-8, "level": 0.25},
+            ],
+            "channels": ["gate", "laser", "mw"],
+            "point_duration": 4.7e-6,
+        }
+    )
+    assert spec["type"] == "pulse_sequence"
+    assert spec["segments_key"] == "segments"
+
+
+def test_something_merely_called_segments_is_not_a_timing_diagram():
+    """Decided by structure, not by a key name — otherwise a workflow
+    emitting line segments would render as a pulse sequence, which is the
+    name-guessing this inference work removed everywhere else."""
+    spec = pick_view({"segments": [[0.0, 1.0], [1.0, 2.0]]})
+    assert spec is None or spec["type"] != "pulse_sequence"
+
+
+def test_an_empty_segment_list_is_not_a_timing_diagram():
+    spec = pick_view({"segments": []})
+    assert spec is None or spec["type"] != "pulse_sequence"

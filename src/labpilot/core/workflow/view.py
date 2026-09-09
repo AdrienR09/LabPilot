@@ -68,6 +68,18 @@ def pick_view(
     correct the moment the data carries an axis. `result_ui`, when the
     template declares one, supplies that hint.
     """
+    # A timing diagram is not an array of measurements, so it is decided
+    # before the dataset inference runs — `segments` is a list of records,
+    # and asking `Dataset` to read it as a data array would either find
+    # nothing or find the wrong thing.
+    if _is_timing_diagram(result):
+        return {
+            "type": "pulse_sequence",
+            "segments_key": "segments",
+            "channels_key": "channels",
+            "duration_key": "point_duration",
+        }
+
     dataset = Dataset.from_result(result, result_ui=result_ui)
     if not dataset.arrays:
         return None
@@ -126,6 +138,22 @@ def pick_view(
         return spec
 
     return None
+
+
+def _is_timing_diagram(result: Mapping[str, Any]) -> bool:
+    """Whether this result is a pulse sequence's timing diagram.
+
+    Decided by structure, not by a key name: the first segment must
+    actually look like one. A workflow that happens to emit something
+    called `segments` meaning line segments would otherwise be rendered as
+    a pulse sequence, which is the kind of name-guessing the inference
+    work removed everywhere else.
+    """
+    segments = result.get("segments")
+    if not isinstance(segments, list) or not segments:
+        return False
+    first = segments[0]
+    return isinstance(first, dict) and {"channel", "start", "stop"} <= set(first)
 
 
 def _label(name: str, unit: str) -> str:

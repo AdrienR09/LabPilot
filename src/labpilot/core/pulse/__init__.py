@@ -17,9 +17,12 @@ from labpilot.core.pulse.sampling import (
     Interval,
     Sampled,
     SamplingError,
+    Segment,
     check_activation,
     expand,
     sample,
+    shots,
+    timing_diagram,
 )
 from labpilot.core.pulse.sequence import (
     ChannelMap,
@@ -65,6 +68,7 @@ __all__ = [
     "Sampled",
     "SamplingError",
     "SavedSequence",
+    "Segment",
     "SequenceError",
     "Shape",
     "Sin",
@@ -81,4 +85,6 @@ __all__ = [
     "save_sequence",
     "shape_from_dict",
     "shape_to_dict",
+    "shots",
+    "timing_diagram",
 ]
