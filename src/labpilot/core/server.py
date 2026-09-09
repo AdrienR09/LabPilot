@@ -165,6 +165,21 @@ class ScanRequest(BaseModel):
     hold_device: str | None = None
 
 
+class RunRequest(BaseModel):
+    """Start any plan that declares how it crosses the process boundary.
+
+    `POST /api/runs/scan` could rebuild a `ScanPlan` and nothing else,
+    so a console could start a scan and no other kind of run. Rather than
+    a third bespoke route for pulsed measurements, a plan type declares
+    its own transport (`core/run/requests.py`) and this route reads that
+    declaration. `/api/runs/scan` stays, as the same thing under its
+    original name.
+    """
+    plan: str
+    params: dict[str, Any] = {}
+    name: str = ""
+
+
 class QtLaunchRequest(BaseModel):
     """Request to launch Qt instrument window."""
     instrument_id: str
@@ -401,32 +416,62 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         accepting the run and failing on the worker loop after the caller
         has been told it started.
         """
-        from labpilot.core.run import ScanAxis, ScanPlan
-
         if not request.axes:
             raise HTTPException(status_code=422, detail="A scan needs at least one axis")
+        return await _start(
+            server, "scan",
+            {
+                "axes": [axis.model_dump() for axis in request.axes],
+                "detector": request.detector,
+                "name": request.name,
+                "hold": request.hold,
+                "hold_device": request.hold_device,
+            },
+            request.name,
+        )
 
-        needed = {axis.device for axis in request.axes} | {request.detector}
-        missing = sorted(name for name in needed if not server.session.has(name))
+    @app.post("/api/runs", response_model=ApiResponse)
+    async def start_run(request: RunRequest, server: LabPilotServer = Depends(get_server)):
+        """Start any plan a console can describe — see `RunRequest`."""
+        return await _start(server, request.plan, request.params, request.name)
+
+    async def _start(
+        server: LabPilotServer, plan_name: str, params: dict, name: str
+    ) -> ApiResponse:
+        """Build a plan from a request and hand it to the run manager.
+
+        The connection check happens here, before the run is accepted:
+        discovering a disconnected counter on the worker loop means the
+        caller was already told the run started.
+        """
+        from labpilot.core.run import build_plan, plan_devices
+
+        try:
+            missing = sorted(
+                role for role in plan_devices(plan_name, params)
+                if not server.session.has(role)
+            )
+        except (ValueError, KeyError) as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
         if missing:
             raise HTTPException(
                 status_code=409,
                 detail=f"Not connected: {', '.join(missing)}. "
-                       f"Connect them before scanning.",
+                       f"Connect them before starting the run.",
             )
 
-        plan = ScanPlan(
-            axes=[ScanAxis(**axis.model_dump()) for axis in request.axes],
-            detector=request.detector,
-            name=request.name,
-            hold=request.hold,
-            hold_device=request.hold_device,
-        )
+        try:
+            plan = build_plan(plan_name, params)
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
         try:
             run_id = await server.workflow_engine.start_plan(plan)
         except WorkflowExecutionError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
-        return ApiResponse(success=True, data={"run_id": run_id, "name": request.name})
+        return ApiResponse(
+            success=True,
+            data={"run_id": run_id, "name": name or getattr(plan, "name", plan_name)},
+        )
 
     @app.get("/api/runs/{run_id}/state", response_model=ApiResponse)
     async def get_run_state(run_id: str, server: LabPilotServer = Depends(get_server)):

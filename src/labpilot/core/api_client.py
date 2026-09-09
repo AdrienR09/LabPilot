@@ -298,6 +298,20 @@ class LabPilotClient:
         _check(resp)
         return resp.json()["data"]["run_id"]
 
+    def start_run(self, plan: str, params: dict[str, Any], name: str = "") -> str:
+        """Start any plan the server can rebuild, and return its run id.
+
+        The transport under `lp.execute(...)`. `plan` names a registered
+        transport (`core/run/requests.py`) and `params` are that plan's
+        own fields — which is why a second plan type needed no second
+        route. Raises NotConnectedError (409) if an instrument the plan
+        names is not connected."""
+        resp = self._client.post(
+            "/api/runs", json={"plan": plan, "params": params, "name": name}
+        )
+        _check(resp)
+        return resp.json()["data"]["run_id"]
+
     def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
         """Every saved run, newest first — see GET /api/runs."""
         resp = self._client.get("/api/runs", params={"limit": limit})

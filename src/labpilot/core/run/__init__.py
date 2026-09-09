@@ -16,11 +16,13 @@ from labpilot.core.run.plans import (
     HardwareTimedScanPlan,
     OptimizePlan,
     Plan,
+    PulsedMeasurementPlan,
     ScanAxis,
     ScanPlan,
     ScriptPlan,
     TimeSeriesPlan,
 )
+from labpilot.core.run.requests import build_plan, plan_devices, plan_request
 from labpilot.core.run.run import Run, RunAbortedError, active_run
 
 if TYPE_CHECKING:
@@ -30,6 +32,7 @@ __all__ = [
     "HardwareTimedScanPlan",
     "OptimizePlan",
     "Plan",
+    "PulsedMeasurementPlan",
     "Run",
     "RunAbortedError",
     "RunDescriptor",
@@ -38,7 +41,10 @@ __all__ = [
     "ScriptPlan",
     "TimeSeriesPlan",
     "active_run",
+    "build_plan",
     "execute",
+    "plan_devices",
+    "plan_request",
     "prepare",
 ]
 

@@ -54,6 +54,7 @@ REST API the desktop app and web UI use — see `core/api_client.py`.
 from __future__ import annotations
 
 import difflib
+import functools
 import os
 import time
 from typing import Any
@@ -525,7 +526,7 @@ class LabPilotSession:
 
         Returns immediately with a `RunHandle`; call `.wait()` to block.
         """
-        from labpilot.core.run import ScanAxis, ScanPlan
+        from labpilot.core.run.plans import ScanPlan, scan_axes
 
         detector = read[0] if isinstance(read, list) else read
         if isinstance(read, list) and len(read) != 1:
@@ -533,30 +534,10 @@ class LabPilotSession:
                 "A scan reads one detector — pass read='apd'. Reading several "
                 "at once needs a workflow (see lp.workflows)."
             )
-        if not over:
-            raise ValueError("A scan needs at least one axis in `over`")
-
-        axes = []
-        for key, span in over.items():
-            device, _, parameter = key.rpartition(".")
-            device = device or using
-            if not device:
-                raise ValueError(
-                    f"{key!r} does not say which instrument to move — write it "
-                    f"as 'instrument.{parameter}', or pass using='instrument'."
-                )
-            try:
-                start, stop, points = span
-            except (TypeError, ValueError):
-                raise ValueError(
-                    f"Axis {key!r} needs (start, stop, points), got {span!r}"
-                ) from None
-            axes.append(
-                ScanAxis(parameter, device, float(start), float(stop), int(points))
-            )
-
         return self.execute(
-            ScanPlan(axes, detector=detector, name=name, hold=hold or {})
+            ScanPlan(
+                scan_axes(over, using), detector=detector, name=name, hold=hold or {}
+            )
         )
 
     def execute(self, plan: Any) -> RunHandle:
@@ -574,29 +555,66 @@ class LabPilotSession:
         as an object; its fields are, and the server rebuilds it. That is
         the same boundary every other console call crosses — one API over
         two transports, not two APIs.
+
+        Which plans can cross it is declared by the plans themselves
+        (`core/run/requests.py`), so a new plan type becomes runnable from
+        here by declaring its transport rather than by growing this method
+        another branch.
         """
-        axes = getattr(plan, "axes", None)
-        if axes is None or not hasattr(plan, "detector"):
-            raise TypeError(
-                f"{type(plan).__name__} cannot be started from here yet — the "
-                f"console runs ScanPlan. Start the others from a workflow "
-                f"(see lp.workflows)."
+        from labpilot.core.run import plan_request
+
+        name, params = plan_request(plan)
+        run_id = self.client.start_run(name, params, getattr(plan, "name", name))
+        return RunHandle(self.client, run_id, getattr(plan, "name", name))
+
+    @property
+    def pulse(self) -> Any:
+        """The pulse-sequence generator library.
+
+            >>> seq = lp.pulse.rabi(tau=(20e-9, 2e-6, 50))
+            >>> seq.points, seq.readouts()
+
+        Pure functions of numbers, so they run in this process — there is
+        no hardware in a sequence. `lp.pulse.saved()` lists the ones
+        already written to `~/.labpilot/sequences/`.
+        """
+        return _PulseLibrary()
+
+    def pulsed(
+        self,
+        sequence: Any,
+        pulser: str,
+        counter: str,
+        sweeps: int = 1000,
+        channels: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> RunHandle:
+        """Play a pulse sequence and accumulate the curve it measures.
+
+            >>> seq = lp.pulse.rabi(tau=(20e-9, 2e-6, 50))
+            >>> run = lp.pulsed(seq, pulser="pulse_streamer", counter="tt",
+            ...                 sweeps=2000)
+            >>> run.wait().result().to_hdf5("rabi.h5")
+
+        `sequence` is a `PulseSequence` or the name of a saved one.
+        `channels` maps its symbolic channels onto this rig's physical
+        ones — the one genuinely rig-specific thing, which is why it lives
+        with the run and not in the saved file.
+
+        The same `PulsedMeasurementPlan` a workflow builds, run by the
+        same engine: it streams, pauses, aborts and saves to HDF5 with
+        real coordinates.
+        """
+        from labpilot.core.pulse import load_sequence
+        from labpilot.core.run import PulsedMeasurementPlan
+
+        return self.execute(
+            PulsedMeasurementPlan(
+                sequence=load_sequence(sequence) if isinstance(sequence, str) else sequence,
+                pulser=pulser, counter=counter, sweeps=int(sweeps),
+                channels=dict(channels or {}), **kwargs,
             )
-        run_id = self.client.start_scan(
-            [
-                {
-                    "name": axis.name, "device": axis.device,
-                    "start": float(axis.start), "stop": float(axis.stop),
-                    "points": int(axis.points), "unit": getattr(axis, "unit", "") or "",
-                }
-                for axis in axes
-            ],
-            detector=plan.detector,
-            name=getattr(plan, "name", "scan"),
-            hold=dict(getattr(plan, "hold", {}) or {}),
-            hold_device=getattr(plan, "hold_device", None),
         )
-        return RunHandle(self.client, run_id, getattr(plan, "name", "scan"))
 
     def run(self, run_id: str) -> RunHandle:
         """A handle on a run already in flight — including one started from
@@ -619,3 +637,86 @@ class LabPilotSession:
 
     def __repr__(self) -> str:
         return f"<LabPilotSession {self.base_url!r}>"
+
+
+class _PulseLibrary:
+    """`lp.pulse` — the sequence generators, called like ordinary functions.
+
+    A sequence is pure data: no hardware, no connection, no server. So
+    these run in *this* process, unlike everything else on `lp`, and the
+    result is an object you can inspect, edit and save before any pulser
+    exists to play it.
+
+        >>> seq = lp.pulse.rabi(tau=(20e-9, 2e-6, 50), rabi_period=180e-9)
+        >>> seq.duration, seq.readouts()
+
+    `tau=(start, stop, points)` is sugar over whichever pair of parameters
+    the generator actually declares — a linear sweep takes a step and a
+    log-spaced one takes an endpoint, and neither should be something a
+    caller has to remember at the console.
+
+    Anything the rig profile declares (`rabi_period`, `laser_length`,
+    `mw_channel`, ...) can be passed alongside; it is split out and used
+    to build the profile. Physics and generator settings read as one
+    argument list because at a console that is what they are.
+    """
+
+    def __dir__(self) -> list[str]:
+        from labpilot.core.pulse.library import GENERATORS
+
+        return [*sorted(GENERATORS), "load", "saved"]
+
+    def __repr__(self) -> str:
+        from labpilot.core.pulse.library import GENERATORS
+
+        return f"<lp.pulse: {', '.join(sorted(GENERATORS))}>"
+
+    def __getattr__(self, name: str) -> Any:
+        from labpilot.core.pulse.library import GENERATORS
+
+        if name not in GENERATORS:
+            raise AttributeError(
+                f"No pulse generator {name!r} — lp.pulse offers "
+                f"{', '.join(sorted(GENERATORS))}."
+            )
+        return functools.partial(self._build, name)
+
+    @staticmethod
+    def _build(generator: str, tau: tuple[float, float, int] | None = None, **kwargs: Any) -> Any:
+        import dataclasses
+
+        from labpilot.core.pulse.library import RigProfile, build, generator_parameters
+
+        rig_fields = {f.name for f in dataclasses.fields(RigProfile)}
+        profile = {k: kwargs.pop(k) for k in list(kwargs) if k in rig_fields}
+
+        if tau is not None:
+            try:
+                start, stop, points = tau
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"tau needs (start, stop, points), got {tau!r}"
+                ) from None
+            declared = {p.name for p in generator_parameters(generator)}
+            kwargs["points"] = int(points)
+            kwargs["tau_start"] = float(start)
+            if "tau_stop" in declared:
+                kwargs["tau_stop"] = float(stop)
+            else:
+                kwargs["tau_step"] = (float(stop) - float(start)) / max(int(points) - 1, 1)
+
+        return build(generator, RigProfile(**profile), **kwargs)
+
+    @staticmethod
+    def saved() -> list[str]:
+        """Every sequence written to `~/.labpilot/sequences/`."""
+        from labpilot.core.pulse import list_sequences
+
+        return [entry.name for entry in list_sequences()]
+
+    @staticmethod
+    def load(name: str) -> Any:
+        """One of them, by name."""
+        from labpilot.core.pulse import load_sequence
+
+        return load_sequence(name)

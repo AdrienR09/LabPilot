@@ -54,6 +54,7 @@ from labpilot.core.device.motion import (
     move_and_settle,
 )
 from labpilot.core.run.descriptor import RunDescriptor
+from labpilot.core.run.requests import _register_all as _register_transports
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
@@ -1099,3 +1100,10 @@ def _unit_of(session: Session, device: str, parameter: str) -> str:
         return session.get(device).schema.units.get(parameter, "")
     except KeyError:
         return ""
+
+
+# Declared at the bottom, where every plan type above exists: how each of
+# them crosses the process boundary when a console starts one. See
+# `core/run/requests.py` for why that is a registry rather than a route
+# per plan.
+_register_transports()

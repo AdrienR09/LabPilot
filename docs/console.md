@@ -168,6 +168,46 @@ object — its fields are, and the server rebuilds it. That is the same
 boundary every other console call crosses: one API over two transports,
 not two APIs.
 
+Which plans can cross it is declared by the plans themselves
+(`core/run/requests.py`), so `lp.execute` grows no branch per plan type.
+`lp.runs`-visible today: `ScanPlan`, `TimeSeriesPlan` and
+`PulsedMeasurementPlan`.
+
+### Pulsed measurements
+
+A sequence is pure data — no hardware, no connection, no server — so
+`lp.pulse` runs in the console's own process and hands back an object you
+can inspect and save before any pulser exists to play it:
+
+```python
+seq = lp.pulse.rabi(tau=(20e-9, 2e-6, 50), rabi_period=180e-9)
+seq.points, seq.readouts(), seq.duration
+lp.pulse.saved()                      # ~/.labpilot/sequences/
+```
+
+`tau=(start, stop, points)` is sugar over whichever pair of parameters the
+generator declares — a linear sweep takes a step, a log-spaced T1 takes an
+endpoint — and rig physics (`rabi_period`, `laser_length`, `mw_channel`)
+is passed in the same argument list, because at a console that is what it
+is.
+
+Playing one is a run like any other:
+
+```python
+run = lp.pulsed(seq, pulser='pulse_streamer', counter='tt', sweeps=2000,
+                channels={'laser': 'd_ch1', 'mw': 'a_ch1', 'gate': 'd_ch2'})
+run.wait().result().to_hdf5('rabi.h5')
+```
+
+`channels` maps the sequence's symbolic channels onto this rig's physical
+ones — the one genuinely rig-specific thing, which is why it lives with
+the run rather than in the saved sequence file.
+
+The result is 2-D, `(sweeps, tau)`: nothing moves between points, so the
+axis the run iterates is accumulation and each row is the curve after that
+many passes. The last row is the answer; the rest show whether it had
+converged. See [pulsed.md](pulsed.md).
+
 `result()` is the plain dict a template returns *and* a `Dataset`, so
 `result()['shape']` works and so does `result().primary().unit`. The
 HDF5 it writes carries units and axis coordinates as dimension scales,

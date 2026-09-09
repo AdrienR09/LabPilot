@@ -1,11 +1,12 @@
 # Pulsed measurements — status
 
-**Where this stands: a Rabi runs end to end.** A sequence is authored,
-saved, drawn, uploaded to a pulser and played; a gated counter counts
-against it; extraction finds the readout window, analysis reduces it to a
-curve and a fit recovers the injected π pulse. What is not built yet is
-the *workflow* around it — no template, no presets, no result view — so
-today this is reached from a script rather than from the GUI.
+**Where this stands: a Rabi runs end to end, from one line at the
+console.** A sequence is authored, saved, drawn, uploaded to a pulser and
+played; a gated counter counts against it; extraction finds the readout
+window, analysis reduces it to a curve and a fit recovers the injected π
+pulse. What is not built yet is the *workflow* around it — no template,
+no presets, no result view — so today this is driven from a script or the
+console rather than from the GUI.
 
 ## What works today
 
@@ -23,22 +24,29 @@ sequence.duration          # 0.261 ms
 save_sequence(sequence)    # ~/.labpilot/sequences/rabi.json
 ```
 
-and then, against a rig:
+and then, against a rig — at the console, with no workflow and no GUI:
 
 ```python
-from labpilot.core.run.plans import PulsedMeasurementPlan
-from labpilot.core.analysis.fits import fit_rabi
-
-plan = PulsedMeasurementPlan(
-    sequence, pulser="pulser", counter="counter",
-    channels={"laser": "d_ch1", "mw": "a_ch1", "gate": "d_ch2"},
-    sweeps=20_000,
-)
-run = Run(await plan.describe(session), session)
-result = await run.execute(plan.points(session, run.descriptor))
-
-fit_rabi(run.descriptor.axes[1].values, curve)["pi_pulse"]
+seq = lp.pulse.rabi(tau=(20e-9, 2e-6, 50))
+run = lp.pulsed(seq, pulser="pulse_streamer", counter="tt", sweeps=2000,
+                channels={"laser": "d_ch1", "mw": "a_ch1", "gate": "d_ch2"})
+run.wait().result().to_hdf5("rabi.h5")
 ```
+
+or as the plan object itself, inside a template:
+
+```python
+from labpilot.core.run import PulsedMeasurementPlan, execute
+
+result = await execute(session, PulsedMeasurementPlan(
+    sequence, pulser="pulser", counter="counter", channels=..., sweeps=2000,
+))
+```
+
+The same plan either way. Which plans can be started from outside the
+server is declared by the plans themselves (`core/run/requests.py`) —
+`POST /api/runs/scan` could rebuild a `ScanPlan` and nothing else, which
+is a wall `HardwareTimedScanPlan` hit first and this hit second.
 
 Or through the GUI: the **Pulse Sequence Editor** workflow binds no
 instruments, so it opens and runs with everything disconnected.
