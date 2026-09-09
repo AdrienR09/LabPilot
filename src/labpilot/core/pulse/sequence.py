@@ -286,6 +286,33 @@ class PulseSequence:
                     previous = high
         return count
 
+    def readout_window(self) -> float:
+        """How long a single readout window stays open, in seconds.
+
+        The longest contiguous run of `readout_channel` across the whole
+        sequence — longest rather than first because a T1's readouts are
+        all the same length but its *initialisation* laser pulse is not,
+        and a counter armed for the shorter of the two records half a
+        readout.
+
+        This is what a gated counter's record length is derived from, so
+        it lives on the sequence: the sequence already knows how many
+        readouts it produces, and how long each one is comes from exactly
+        the same walk.
+        """
+        channel = self.readout_channel
+        longest = 0.0
+        current = 0.0
+        for block in self.blocks:
+            for repetition in range(block.repetitions):
+                for element in block.elements:
+                    if element.is_high(channel):
+                        current += element.duration_at(repetition)
+                        longest = max(longest, current)
+                    else:
+                        current = 0.0
+        return longest
+
     @property
     def points(self) -> int:
         """How many swept points, from the sweep if declared, else from

@@ -13,6 +13,22 @@ while a true AWG calls `core/pulse/sampling.py` because it genuinely needs
 dense float arrays.
 """
 
+from labpilot.core.pulse.analyse import (
+    ANALYSES,
+    Analysis,
+    AnalysisError,
+    analyse,
+    analysis_parameters,
+    analysis_units,
+    default_analysis,
+)
+from labpilot.core.pulse.extract import (
+    EXTRACTORS,
+    Extraction,
+    ExtractionError,
+    extract,
+    extractor_parameters,
+)
 from labpilot.core.pulse.sampling import (
     Interval,
     Sampled,
@@ -55,10 +71,16 @@ from labpilot.core.pulse.store import (
 )
 
 __all__ = [
+    "ANALYSES",
     "DC",
+    "EXTRACTORS",
     "SHAPES",
+    "Analysis",
+    "AnalysisError",
     "ChannelMap",
     "Chirp",
+    "Extraction",
+    "ExtractionError",
     "Gauss",
     "Idle",
     "Interval",
@@ -73,9 +95,15 @@ __all__ = [
     "Shape",
     "Sin",
     "Sweep",
+    "analyse",
+    "analysis_parameters",
+    "analysis_units",
     "check_activation",
+    "default_analysis",
     "delete_sequence",
     "expand",
+    "extract",
+    "extractor_parameters",
     "linear_sweep",
     "list_sequences",
     "load_sequence",

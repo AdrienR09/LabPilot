@@ -274,6 +274,16 @@ class MockGatedCounter(GatedCounterMixin, AdapterBase):
         self.readout_decay = 300e-9
         """How fast the readout transient decays. What makes extraction a
         real problem rather than a rectangle."""
+        self.gate_delay = 300e-9
+        """Between the gate opening and the first photon arriving — cable
+        length, AOM rise time and the laser's own delay. It is why the
+        record has a leading edge to find at all: without it the pulse
+        starts at bin zero and an extraction method could pass by
+        returning a constant."""
+        self.background_rate = 2e4
+        """Dark counts and room light, per second. What the record holds
+        outside the laser pulse, and the reason a window that starts too
+        early costs contrast rather than merely counts."""
         self.seed = 0
 
     @property
@@ -449,20 +459,61 @@ class MockGatedCounter(GatedCounterMixin, AdapterBase):
         spin, so the signal lives in the *leading edge* of the window and
         the tail is a per-shot reference. A flat rectangle would let an
         extraction algorithm pass a test it should fail.
+
+        So is where the transient sits. The record starts when the gate
+        opens and the photons arrive `gate_delay` later, with dark counts
+        before and after — which is what gives extraction two real edges
+        to find instead of a pulse conveniently starting at bin zero.
+
+        And so is *which part of it* the spin state reaches. Only the
+        decaying component carries it: the same laser that reads the NV
+        out repolarises it, so by the tail of the window every readout is
+        equally bright whatever it started as. That is precisely what
+        makes the tail usable as a per-shot reference — a simulation that
+        scaled the whole window by the spin state would let `mean_norm`
+        divide the physics away and return a flat line, which is a bug
+        this file exists to not have.
         """
         bins = np.arange(config.bins) * config.bin_width_s
-        transient = self.dark_fraction + (1.0 - self.dark_fraction) * np.exp(
-            -bins / max(self.readout_decay, 1e-12)
+        start = self.gate_delay
+        stop = start + self._laser_window(config)
+        lit = (bins >= start) & (bins < stop)
+
+        # Time since the laser turned on, so the decay is measured from
+        # the pulse rather than from the gate.
+        decaying = np.where(
+            lit,
+            np.exp(
+                -np.clip(bins - start, 0.0, None) / max(self.readout_decay, 1e-12)
+            ),
+            0.0,
         )
+        repolarised = np.where(lit, self.dark_fraction, 0.0)
 
         brightness = np.array(
             [self._brightness(gate, config.gates) for gate in range(config.gates)]
         )
-        rate = self.bright_rate * np.outer(brightness, transient)
+        rate = self.background_rate + self.bright_rate * (
+            repolarised
+            + (1.0 - self.dark_fraction) * np.outer(brightness, decaying)
+        )
         expected = rate * config.bin_width_s * max(sweeps, 0)
 
         generator = np.random.default_rng(self.seed)
         return generator.poisson(expected).astype(np.int64)
+
+    def _laser_window(self, config: GateConfig) -> float:
+        """How long the readout laser is on inside one record.
+
+        From the loaded sequence, because that is where it is written —
+        the same `_BENCH` cable that tells this counter what was swept.
+        With no sequence loaded the laser fills whatever record is left
+        after the delay, which keeps a bare `configure_gates` + `get_trace`
+        from returning an empty record.
+        """
+        sequence = _BENCH.sequence
+        window = sequence.readout_window() if sequence is not None else 0.0
+        return window or max(config.record_length_s - self.gate_delay, 0.0)
 
     def _brightness(self, gate: int, gates: int) -> float:
         """Relative fluorescence of readout `gate`, in `[1 - contrast, 1]`.

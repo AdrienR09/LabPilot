@@ -64,6 +64,7 @@ __all__ = [
     "HardwareTimedScanPlan",
     "OptimizePlan",
     "Plan",
+    "PulsedMeasurementPlan",
     "ScanAxis",
     "ScanPlan",
     "ScriptPlan",
@@ -656,6 +657,353 @@ class TimeSeriesPlan:
                 )
         finally:
             await detector.unstage()
+
+
+@dataclass
+class PulsedMeasurementPlan:
+    """Play a pulse sequence over and over, and watch a curve emerge.
+
+    A pulsed measurement is not a scan and pretending otherwise is where
+    every framework that has tried this goes wrong. Nothing moves between
+    points: the pulser plays the *whole* sweep in a few hundred
+    microseconds, the counter accumulates one readout per point per pass,
+    and every point of the curve improves together. There is no
+    "measure point 7" to pause in the middle of.
+
+    So the axis this plan iterates is **accumulation**, not position. Row
+    `k` of the result is the analysed curve after `checkpoint_sweeps[k]`
+    complete passes over the sequence, which makes the result a genuine
+    2-D `(sweeps, tau)` array rather than a 1-D curve overwritten twenty
+    times. That costs one float per point per checkpoint and buys three
+    things: a run that streams and pauses and aborts through the ordinary
+    `Run` machinery with no special case, a live plot that is just the
+    last row, and a saved file that shows whether the measurement had
+    converged or was still drifting when it stopped.
+
+    ## Why describe() knows everything already
+
+    The sequence carries its own sweep (`core/pulse/sequence.py`), so the
+    tau axis, its unit and its length are known before the pulser is
+    touched; the analysis method declares its own label and unit
+    (`core/pulse/analyse.py`), so the value axis is known too. That is
+    the whole reason this is a plan and not a fifth hand-rolled loop:
+    pause, abort, `DatasetPatch` streaming, HDF5 with real coordinates
+    and a `Catalogue` row are all inherited rather than rewritten. Qudi's
+    `pulsed_measurement_logic` is its own engine with its own state and
+    its own signals precisely because its sequence cannot answer these
+    questions.
+
+    ## What it does not compile
+
+    Nothing. `upload_sequence` takes the abstract sequence and the
+    pulser decides what to do with it — instructions for a sequencer,
+    samples for an AWG. This plan never sees a waveform.
+    """
+
+    sequence: Any
+    """The `PulseSequence` to play. Typed loosely so `core/run/` does not
+    import `core/pulse/` at module scope for one annotation."""
+    pulser: str = "pulser"
+    counter: str = "counter"
+    microwave: str | None = None
+    microwave_on: str = "cw_on"
+    microwave_off: str = "off"
+    """Actions, named rather than guessed. `Source` deliberately has no
+    generic `enable()`/`disable()` — real sources vary between a settable
+    on/off key, a zero-argument `cw_on()` action and no on/off concept at
+    all — so which action to call is the rig's fact and belongs in its
+    workflow's parameters, not in a list of names to try."""
+    laser: str | None = None
+    """Recorded for provenance, not driven. On a pulsed rig the laser
+    runs continuously and the *pulser* gates it through an AOM, which is
+    the whole reason the sequence has a laser channel."""
+    channels: dict[str, str] = field(default_factory=dict)
+    """Symbolic channel -> this rig's physical channel. Empty means the
+    sequence's own names are the physical ones, which is what the mock
+    rig and most simple digital sequencers actually are."""
+
+    sweeps: int = 1000
+    """Complete passes over the sequence to accumulate. This is the
+    measurement's signal-to-noise knob: counts, and so the error bars,
+    improve as its square root."""
+    checkpoints: int = 20
+    """How many times the curve is recorded on the way. Rows of the
+    result, and the run's progress steps."""
+
+    bin_width: float = 1e-9
+    record_length: float = 0.0
+    """Length of each recorded readout window. 0 derives it from the
+    sequence — half again the readout window itself, so the record holds
+    the laser pulse plus dark bins either side for extraction to find its
+    edges in."""
+
+    extract: str = "conv_deriv"
+    extract_params: dict[str, Any] = field(default_factory=dict)
+    analyse: str = "auto"
+    """`"auto"` picks from the sequence: signal/reference when it
+    alternates, per-readout normalisation when it does not. A fixed
+    default would be wrong for half the experiments."""
+    analyse_params: dict[str, Any] = field(default_factory=dict)
+
+    poll_interval: float = 0.1
+    stall_timeout: float = 30.0
+    """Give up if the counter's sweep count has not moved for this long.
+    A pulser that failed to start otherwise leaves the run polling
+    forever, which looks exactly like a slow measurement."""
+    name: str = "pulsed"
+    params: dict[str, Any] = field(default_factory=dict)
+
+    #: Filled in as the run proceeds — the pulser's own account of what it
+    #: loaded, the counter's actual configuration, and the most recent
+    #: extraction and analysis. The same convention `OptimizePlan` uses to
+    #: report what it concluded.
+    report: Any = None
+    config: Any = None
+    extraction: Any = None
+    analysis: Any = None
+
+    # --- What the sequence and the methods already know -------------------
+
+    @property
+    def method(self) -> str:
+        """The analysis actually used, with `"auto"` resolved."""
+        from labpilot.core.pulse.analyse import default_analysis
+
+        if self.analyse and self.analyse != "auto":
+            return self.analyse
+        return default_analysis(bool(self.sequence.alternating))
+
+    @property
+    def checkpoint_sweeps(self) -> tuple[int, ...]:
+        """Accumulated sweep count at each recorded row.
+
+        Evenly spaced, ending exactly on `sweeps`. Deduplicated, so
+        asking for more checkpoints than sweeps records each sweep once
+        rather than recording the same trace twice under two labels.
+        """
+        total = max(int(self.sweeps), 1)
+        count = max(min(int(self.checkpoints), total), 1)
+        return tuple(sorted({
+            max(round((step + 1) * total / count), 1) for step in range(count)
+        }))
+
+    @property
+    def record_length_s(self) -> float:
+        window = float(self.sequence.readout_window() or 0.0)
+        return float(self.record_length) or (window * 1.5 or 3e-6)
+
+    async def describe(self, session: Session) -> RunDescriptor:
+        from labpilot.core.pulse.analyse import analysis_units
+
+        sequence = self.sequence
+        sequence.validate()
+        label, unit = analysis_units(self.method)
+
+        rows = self.checkpoint_sweeps
+        sweep = sequence.sweep
+        if sweep is not None:
+            swept = Axis(
+                name=sweep.name, values=sweep.array, unit=sweep.unit,
+                kind="time" if sweep.unit == "s" else "index",
+            )
+        else:
+            # A hand-written sequence need not declare a sweep. Then the
+            # x-axis is the readout index, which is honest rather than
+            # invented, and every experiment shipped in the library does
+            # declare one.
+            swept = Axis(
+                name="readout", values=np.arange(sequence.points, dtype=float),
+                kind="index",
+            )
+
+        descriptor = RunDescriptor(
+            run_uid=str(uuid.uuid4()),
+            plan_name=self.name,
+            axes=(
+                Axis("sweeps", np.asarray(rows, dtype=float), kind="index"),
+                swept,
+            ),
+            scan_axis_count=1,
+            value_name=label,
+            value_unit=unit,
+            devices={
+                role: session.get(role).schema.model_dump(mode="json")
+                for role in (self.pulser, self.counter, self.microwave, self.laser)
+                if role and session.has(role)
+            },
+            params={
+                "sequence": sequence.name,
+                "sequence_points": sequence.points,
+                "readouts": sequence.readouts(),
+                "sequence_duration": sequence.duration,
+                "alternating": sequence.alternating,
+                "sweeps": int(self.sweeps),
+                "extract": self.extract,
+                "analyse": self.method,
+                **dict(self.params),
+            },
+        )
+        if descriptor.size > MAX_ELEMENTS:
+            raise ValueError(
+                f"This measurement's result would need {descriptor.size:,} "
+                f"elements ({len(rows):,} checkpoints x {sequence.points:,} "
+                f"points) — over the {MAX_ELEMENTS:,}-element safety limit. "
+                f"Reduce `checkpoints`."
+            )
+        return descriptor
+
+    async def points(
+        self, session: Session, descriptor: RunDescriptor
+    ) -> AsyncIterator[DatasetPatch]:
+        from labpilot.core.pulse.sequence import ChannelMap
+
+        pulser = session.get(self.pulser)
+        counter = session.get(self.counter)
+        sequence = self.sequence
+
+        mapping = self.channels or {name: name for name in sequence.channels}
+        self.report = await pulser.upload_sequence(sequence, ChannelMap(mapping))
+        self.config = await counter.configure_gates(
+            self.bin_width, self.record_length_s, sequence.readouts()
+        )
+
+        await self._switch(session, on=True)
+        await counter.start_counting()
+        await pulser.pulser_on()
+        per_point = max(1, descriptor.per_point)
+        try:
+            for index, target in enumerate(self.checkpoint_sweeps):
+                await self._accumulate(counter, target)
+                values = await self._measure(counter)
+                yield DatasetPatch(
+                    array=descriptor.value_name,
+                    index=index * per_point,
+                    values=_fit_to(values, per_point),
+                    run_uid=descriptor.run_uid,
+                    seq=index + 1,
+                )
+        finally:
+            # Ordered deliberately: the pulser stops first, so the laser
+            # gate closes before anything else is touched. An aborted run
+            # must not leave a sample under continuous illumination.
+            await pulser.pulser_off()
+            await counter.stop_counting()
+            await self._switch(session, on=False)
+
+    # --- Internals --------------------------------------------------------
+
+    async def _accumulate(self, counter: Any, target: int) -> None:
+        """Wait until the counter has accumulated `target` full sweeps.
+
+        Polls rather than sleeping for a computed duration: how long a
+        sweep takes is the pulser's business, and a sequence whose
+        duration was quantised on upload no longer takes exactly what it
+        says on paper.
+        """
+        import asyncio
+        import time
+
+        last, changed = -1, time.monotonic()
+        while True:
+            status = await counter.counter_status()
+            sweeps = int(status.get("sweeps", 0))
+            if sweeps >= target:
+                return
+            if sweeps != last:
+                last, changed = sweeps, time.monotonic()
+            elif time.monotonic() - changed > self.stall_timeout:
+                raise RuntimeError(
+                    f"{self.counter} has counted {sweeps} sweeps and has not "
+                    f"advanced for {self.stall_timeout:.0f} s, waiting for "
+                    f"{target}. The pulser may not be playing, or its gate "
+                    f"channel may not be wired to the counter's trigger."
+                )
+            await asyncio.sleep(self.poll_interval)
+
+    async def _measure(self, counter: Any) -> np.ndarray:
+        """One accumulated trace, extracted and analysed into a curve."""
+        from labpilot.core.pulse.analyse import analyse as analyse_pulses
+        from labpilot.core.pulse.extract import extract as extract_pulses
+
+        trace = await counter.get_trace()
+        bin_width = self.config.bin_width_s
+        self.extraction = extract_pulses(
+            trace, bin_width, self.extract, **self.extract_params
+        )
+        self.analysis = analyse_pulses(
+            self.extraction, bin_width, self.method,
+            alternating=bool(self.sequence.alternating), **self.analyse_params,
+        )
+        return np.asarray(self.analysis.values, dtype=float)
+
+    async def _switch(self, session: Session, *, on: bool) -> None:
+        """Call the microwave source's on or off action around the run.
+
+        A pulsed experiment measures nothing at all if the source is not
+        emitting, so failing to turn it on is an error. Failing to turn
+        it off is reported and swallowed, for the same reason `Run` does
+        it when stopping actuators: a run that has already finished must
+        still be reported as finished.
+
+        Nothing happens for a rig whose source has no such action — set
+        `microwave_on`/`microwave_off` to `""` — or for one where the
+        role is not bound at all, which is the digital-rig case where the
+        pulser gates an always-on source.
+        """
+        action = self.microwave_on if on else self.microwave_off
+        if not self.microwave or not action or not session.has(self.microwave):
+            return
+
+        device = session.get(self.microwave)
+        declared = device.schema.action_names
+        if action not in declared:
+            if not on:
+                return
+            raise ValueError(
+                f"{self.microwave} declares no action {action!r} — it offers "
+                f"{', '.join(declared) or 'none'}. Set `microwave_on` and "
+                f"`microwave_off` to this source's own action names, or to "
+                f"'' if it has no on/off concept."
+            )
+        try:
+            await getattr(device, action)()
+        except Exception as e:
+            if on:
+                raise
+            print(f"⚠️  Could not switch {self.microwave} off after the run: {e}")
+
+    @property
+    def result(self) -> dict[str, Any]:
+        """What the measurement produced, beyond the numbers themselves.
+
+        The raw record profile and the windows found in it, so a result
+        view can draw where the extraction decided the laser pulse was —
+        the one thing a pulsed measurement gets wrong silently.
+        """
+        return {
+            "sequence": self.sequence.name,
+            "pulser": self.report.to_dict() if self.report is not None else None,
+            "counter": self.config.to_dict() if self.config is not None else None,
+            "extraction": (
+                self.extraction.to_dict() if self.extraction is not None else None
+            ),
+            "analysis": self.analysis.to_dict() if self.analysis is not None else None,
+        }
+
+
+def _fit_to(values: np.ndarray, width: int) -> np.ndarray:
+    """`values` as exactly `width` numbers — padded with NaN, never wrapped.
+
+    A trace polled mid-sweep can hold fewer readouts than the sequence
+    declares. Yielding a short patch would silently shift every later row
+    of the result by the shortfall, so the gap is made visible instead.
+    """
+    if values.size == width:
+        return values
+    padded = np.full(width, np.nan, dtype=float)
+    kept = min(values.size, width)
+    padded[:kept] = values[:kept]
+    return padded
 
 
 @dataclass

@@ -1,10 +1,11 @@
 # Pulsed measurements — status
 
-**Where this stands: sequences can be authored, saved, drawn and uploaded
-to a pulser, and a gated counter will count against them. What does not
-exist yet is the measurement that drives the two together** — no plan, no
-extraction, no analysis, so nothing produces a Rabi curve. This page says
-exactly what exists so nobody plans around a capability that isn't there.
+**Where this stands: a Rabi runs end to end.** A sequence is authored,
+saved, drawn, uploaded to a pulser and played; a gated counter counts
+against it; extraction finds the readout window, analysis reduces it to a
+curve and a fit recovers the injected π pulse. What is not built yet is
+the *workflow* around it — no template, no presets, no result view — so
+today this is reached from a script rather than from the GUI.
 
 ## What works today
 
@@ -15,10 +16,28 @@ from labpilot.core.pulse.library import RigProfile, build
 rig = RigProfile(rabi_period=200e-9, mw_frequency=2.87e9)
 sequence = build("rabi", rig, tau_start=20e-9, tau_step=20e-9, points=50)
 
-sequence.points          # 50
-sequence.readouts()      # 50
-sequence.duration        # 0.261 ms
-save_sequence(sequence)  # ~/.labpilot/sequences/rabi.json
+sequence.points            # 50
+sequence.readouts()        # 50
+sequence.readout_window()  # 3 us — what the counter records per gate
+sequence.duration          # 0.261 ms
+save_sequence(sequence)    # ~/.labpilot/sequences/rabi.json
+```
+
+and then, against a rig:
+
+```python
+from labpilot.core.run.plans import PulsedMeasurementPlan
+from labpilot.core.analysis.fits import fit_rabi
+
+plan = PulsedMeasurementPlan(
+    sequence, pulser="pulser", counter="counter",
+    channels={"laser": "d_ch1", "mw": "a_ch1", "gate": "d_ch2"},
+    sweeps=20_000,
+)
+run = Run(await plan.describe(session), session)
+result = await run.execute(plan.points(session, run.descriptor))
+
+fit_rabi(run.descriptor.axes[1].values, curve)["pi_pulse"]
 ```
 
 Or through the GUI: the **Pulse Sequence Editor** workflow binds no
@@ -40,7 +59,12 @@ instruments, so it opens and runs with everything disconnected.
 | `instruments/gated_counter_mixin.py` — `GatedCounterMixin` | **Done.** `configure_gates` returns what it actually set; `get_trace()` is a 2-D `Dataset` with real axes. |
 | `instruments/mock/pulse_rig.py` — `MockPulser` + `MockGatedCounter` | **Done.** Real granularity, minimum element and activation configs; NV physics with a decaying readout transient. |
 | `instruments/Swabian/pulse_streamer.py`, `instruments/SpinCore/pulse_blaster.py` | **Done.** Optional extras, both `describe()`-able with no SDK installed. |
-| **`PulsedMeasurementPlan`, extraction, analysis** | **Missing.** The rig is driveable; nothing drives it yet. |
+| `core/pulse/extract.py` — `conv_deriv`, `threshold` | **Done.** Finds the laser pulse in the raw record; parameters per method, never shared. |
+| `core/pulse/analyse.py` — `mean`, `mean_norm`, `mean_reference` | **Done.** One value per swept point, with Poisson errors. |
+| `core/run/plans.py` — `PulsedMeasurementPlan` | **Done.** Accumulation is the iterated axis; the result is a `(sweeps, tau)` history. |
+| `core/analysis/fits.py` — `fit_rabi`, `fit_decay` | **Done.** Extends the one fitting module rather than starting a second. |
+| **`pulsed_measurement.py` + its four presets** | **Missing.** The plan runs from a script; no workflow wraps it yet. |
+| **A `pulsed` result view** | **Missing.** No raw trace, extracted windows or fit overlay in the GUI. |
 | `instruments/AWG/` | Five pylablib **function generators** — frequency, amplitude, offset, enable. Not an arbitrary waveform generator: no upload, no sequence, no channels, no triggering. |
 | `workflow_templates/odmr_sweep.py` | Works, but is **CW ODMR**, not pulsed — and predates the plan layer, so it hand-rolls its loop. |
 
@@ -138,22 +162,81 @@ of thing that produces a plausible but wrong result:
   `centre_to_centre()` converts on request rather than one convention
   being applied silently.
 
+## A pulsed run is not a scan
+
+Nothing moves between points, and that single fact decides the shape of
+the plan. The pulser plays the *whole* sweep in a few hundred
+microseconds; the counter accumulates one readout per point per pass; and
+every point of the curve improves together. There is no "measure point 7"
+to pause in the middle of.
+
+So the axis `PulsedMeasurementPlan` iterates is **accumulation**. Row `k`
+of the result is the analysed curve after `checkpoint_sweeps[k]` complete
+passes, which makes the result a genuine 2-D `(sweeps, tau)` array rather
+than one curve overwritten twenty times. It costs one float per point per
+checkpoint and buys three things:
+
+- the run streams, pauses and aborts through the ordinary `Run` machinery
+  with no special case — Qudi needs its own `pulsed_measurement_logic`
+  with its own state and its own signals for exactly this;
+- the live plot is just the last row;
+- the saved file shows whether the measurement had converged or was still
+  drifting when it stopped.
+
+Abort is ordered: the pulser stops first, so the laser gate closes before
+anything else is touched. A sample left under continuous illumination
+bleaches.
+
+## Extraction and analysis
+
+Two steps, both registries of pure functions, both with **per-method**
+parameters.
+
+`extract` says *where* the laser pulse is. The window is found once, on
+the record summed over every readout, and applied to all of them — a
+physical statement rather than a shortcut, since every gate is raised by
+the same pulser edge. `conv_deriv` takes the extrema of a
+Gaussian-smoothed derivative, so it finds an edge rather than a level and
+survives a background that drifts during a run. `threshold` takes the
+longest run above a fraction of the record's range — simpler, more
+brittle, and informative when the two disagree.
+
+`analyse` says what to do with it, and always returns **one value per
+swept point**, not per readout: an alternating sequence's 80 readouts
+become 40 points here, where `alternating` is known, rather than
+downstream where the convention would have to be guessed. `mean` is raw
+counts; `mean_norm` divides each readout by its own repolarised tail, so
+laser drift cancels shot by shot; `mean_reference` divides the signal
+readout by the reference beside it and **refuses** non-alternating data
+rather than pairing unrelated readouts. Errors are Poisson and propagate
+through the ratios.
+
+The plan's `analyse="auto"` picks from the sequence — `mean_reference`
+when it alternates, `mean_norm` when it does not. A fixed default would
+be wrong for half the experiments.
+
+Two windows a real rig needs stating, both defaulting to NV values: the
+signal window is the first 300 ns of the laser pulse, measured from where
+extraction found the pulse rather than from the start of the record, so
+it survives someone re-cabling an AOM; the normalisation window is a
+microsecond of the tail, late enough that the laser has repolarised the
+spin and the count rate there measures the laser rather than the state.
+
 ## What a Rabi still needs
 
-1. `PulsedMeasurementPlan`, whose `describe()` already has everything it
-   needs — the sequence knows its sweep and its readout count before the
-   first point, so pause, abort, patch streaming and HDF5 come for free.
-2. Laser-pulse extraction: turning the raw `(gate, time_bin)` trace into
-   one number per readout. The mock counter's readout transient is a real
-   edge to find rather than a rectangle, so this can be verified.
-3. Signal/reference analysis, and the fits.
-4. `pulsed_measurement.py` plus four presets — Rabi, Ramsey, Hahn echo and
+Nothing, from a script. From the GUI:
+
+1. `pulsed_measurement.py` plus four presets — Rabi, Ramsey, Hahn echo and
    T1 — the same consolidation that turned four scanners into presets of
    `omniscan`.
+2. A `pulsed` result view: raw trace, the extracted window drawn over it,
+   the analysed curve and its fit.
+3. A `pulse_control` entry in `workflow_blocks.toml`.
 
-The device half is done: a sequence uploads to the mock, a PulseStreamer
-and a PulseBlaster, and the counter counts against it. Nothing yet asks
-them to do it point by point.
+Verified on the simulated rig, whose injected constants are recovered:
+a 200 ns Rabi period fits to 199 ns, a 1.5 µs T2\* to 1.46 µs, a 4 µs
+Hahn echo to 3.83 µs. The sequences upload unchanged to a PulseStreamer
+and a PulseBlaster, each reporting its own quantisation.
 
 ## Deliberate differences from Qudi
 
@@ -174,9 +257,13 @@ The design is cited; the source is not copied.
   them from `inspect.signature` defaults, so its GUI guesses each unit
   from substrings of the name (`'amp' in name` means volts).
 - Sampling is a library, not an interface requirement — see above.
-- Extraction and analysis parameters will be namespaced **per method**.
-  Qudi merges them into one flat dict, which forces the documented rule
-  that no two methods may share a keyword of different type.
+- Extraction and analysis parameters are namespaced **per method**. Qudi
+  merges them into one flat dict, which forces the documented rule that
+  no two methods may share a keyword of different type, and a
+  `type(a) == type(b)` check to enforce it.
+- A pulsed run is a `Plan`, so pause, abort, streaming and persistence
+  are inherited. Qudi's `pulsed_measurement_logic` is a second engine
+  beside its scanning one.
 
 ## Status
 
@@ -189,6 +276,6 @@ The design is cited; the source is not copied.
   result view) — complete.
 - **6c** (pulser and gated-counter contracts, mock rig, PulseStreamer,
   PulseBlaster) — complete.
-- **6d** (measurement plan, extraction, analysis, fits) — not started.
-- **6e, measurement half** (the pulsed-measurement template and its four
-  presets) — not started.
+- **6d** (measurement plan, extraction, analysis, fits) — complete.
+- **6e, measurement half** (the pulsed-measurement template, its four
+  presets and the `pulsed` result view) — not started.

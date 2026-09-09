@@ -272,16 +272,24 @@ async def test_the_trace_carries_its_own_axes(pulser, counter):
 async def test_the_readout_window_decays_the_way_a_real_one_does(pulser, counter):
     """The signal lives in the leading edge and the tail is a per-shot
     reference. A flat rectangle would let an extraction algorithm pass a
-    test it should fail."""
+    test it should fail.
+
+    So would a pulse that started at bin zero: the record opens with the
+    gate and the photons arrive `gate_delay` later, which is what gives
+    extraction a real rising edge to find.
+    """
     await pulser.upload_sequence(rabi(points=4), ANALOG)
     await counter.configure_gates(1e-9, 2e-6, 4)
     await counter.start_counting()
     await asyncio.sleep(0.05)
 
     counts = (await counter.get_trace()).primary().values
-    head = counts[:, :200].mean()
+    delay = round(counter.gate_delay / 1e-9)
+    dark = counts[:, : delay - 50].mean()
+    head = counts[:, delay : delay + 200].mean()
     tail = counts[:, -200:].mean()
     assert head > tail * 1.5
+    assert dark < tail / 5
 
 
 async def test_the_counter_shows_the_injected_rabi_oscillation(pulser, counter):
@@ -307,7 +315,14 @@ async def test_the_counter_shows_the_injected_rabi_oscillation(pulser, counter):
 
 async def test_t1_shows_a_decay_with_no_oscillation(pulser, counter):
     """Log-spaced, so a short tau_stop still spans the decay — and keeps
-    the sequence fast enough to accumulate real statistics in a test."""
+    the sequence fast enough to accumulate real statistics in a test.
+
+    Summed over the *leading edge* rather than the whole record, because
+    that is where the spin state is: the laser that reads the NV out also
+    repolarises it, so by the tail every readout is equally bright. That
+    is what makes the tail usable as a reference, and it means a whole-
+    record sum measures mostly the laser.
+    """
     await counter.set_experiment("t1")
     await counter.set_coherence_time(20e-6)
     sequence = build("t1", RigProfile(), tau_start=1e-6, tau_stop=100e-6, points=8)
@@ -316,7 +331,9 @@ async def test_t1_shows_a_decay_with_no_oscillation(pulser, counter):
     await counter.start_counting()
     await asyncio.sleep(0.2)
 
-    per_readout = (await counter.get_trace()).primary().values.sum(axis=1).astype(float)
+    delay = round(counter.gate_delay / 1e-9)
+    counts = (await counter.get_trace()).primary().values
+    per_readout = counts[:, delay : delay + 300].sum(axis=1).astype(float)
     assert per_readout[0] > per_readout[-1]  # relaxes toward a mixture
     # Monotone within Poisson noise, and no oscillation: a Rabi at these
     # taus would cross back up.
