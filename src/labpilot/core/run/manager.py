@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
-import importlib.util
 import re
 import threading
 import uuid
@@ -430,51 +429,36 @@ class RunManager:
     async def _execute_script(
         self, script_path: str, params: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        """Import a workflow script and await its `run(session)` — the one
-        contract every generated or hand/AI-written script follows. Raises
-        on import/attribute errors or whatever the script itself raises;
-        the caller's surrounding try/except in `_execute_workflow`
-        logs/emits failure the same way a failed node would.
+        """Run a workflow script and return its result.
 
-        `params` are this workflow instance's own settings, applied to the
-        freshly imported module before `run()` is called. They used to be
-        stored *in the source*: loading a template copied its `.py` into
-        the installed package directory under a timestamped name, and
+        Two accepted shapes, decided by parsing the file rather than by
+        importing it (`core/run/script.py`): plain top-level Python that
+        imports from `labpilot.script`, or the original
+        `async def run(session) -> dict`. Raises whatever the script
+        itself raises; the caller's surrounding try/except in
+        `_execute_workflow` logs and emits failure the same way a failed
+        node would.
+
+        `params` are this workflow instance's own settings. They used to
+        be stored *in the source*: loading a template copied its `.py`
+        into the installed package directory under a timestamped name, and
         changing one parameter rewrote that copy's assignment in place
         through an AST span edit. So every configuration change produced a
         new source file, a workflow could not be reconfigured on a
         non-editable install, and the parameters could not be read without
         parsing Python.
 
-        A module attribute is exactly the right granularity for this: the
-        template declares `AXIS_RANGES` at module level and reads it inside
-        `run()`, which is what made the source rewrite work in the first
-        place — the difference is only where the value is kept. Each run
-        imports the module afresh (`spec.loader.exec_module` below), so
-        two workflows built on the same template do not see each other's
-        parameters.
+        A module-level constant is exactly the right granularity, and that
+        convention is unchanged — only where the value is kept. Each run
+        loads the module afresh, so two workflows built on the same
+        template do not see each other's parameters.
         """
-        path = Path(script_path)
-        if not path.exists():
-            raise WorkflowExecutionError(f"Script file not found: {script_path}")
+        from labpilot.core.run.script import run_script
 
-        spec = importlib.util.spec_from_file_location(f"workflow_script_{path.stem}", path)
-        if spec is None or spec.loader is None:
-            raise WorkflowExecutionError(f"Could not load script: {script_path}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-
-        if not hasattr(module, "run"):
-            raise WorkflowExecutionError(
-                f"Script {script_path} has no `run(session)` function to execute"
-            )
-
-        for name, value in (params or {}).items():
-            if hasattr(module, name):
-                setattr(module, name, value)
-
-        result = await module.run(self.session)
-        return result if isinstance(result, dict) else {"result": result}
+        try:
+            return await run_script(self.session, script_path, params)
+        except FileNotFoundError as error:
+            raise WorkflowExecutionError(str(error)) from error
 
     async def _execute_workflow(
         self,

@@ -56,7 +56,7 @@ from labpilot.core.device.motion import (
 from labpilot.core.run.descriptor import RunDescriptor
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 
     from labpilot.core.session import Session
 
@@ -116,6 +116,39 @@ class ScanAxis:
         if self.points <= 1:
             return np.asarray([self.start], dtype=float)
         return np.linspace(self.start, self.stop, int(self.points))
+
+
+def scan_axes(
+    over: Mapping[str, tuple[float, float, int]], using: str | None = None
+) -> list[ScanAxis]:
+    """`{"stage.x": (0, 10, 51)}` as `ScanAxis` objects.
+
+    The sugar `lp.scan()` and `labpilot.script.scan()` both take, kept in
+    one place so the console and a script cannot disagree about what
+    `"stage.x"` means or which errors it gives.
+    """
+    if not over:
+        raise ValueError("A scan needs at least one axis in `over`")
+
+    axes: list[ScanAxis] = []
+    for key, span in over.items():
+        device, _, parameter = key.rpartition(".")
+        device = device or using
+        if not device:
+            raise ValueError(
+                f"{key!r} does not say which instrument to move — write it as "
+                f"'instrument.{parameter}', or pass using='instrument'."
+            )
+        try:
+            start, stop, points = span
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"Axis {key!r} needs (start, stop, points), got {span!r}"
+            ) from None
+        axes.append(
+            ScanAxis(parameter, device, float(start), float(stop), int(points))
+        )
+    return axes
 
 
 @dataclass
@@ -683,25 +716,15 @@ class ScriptPlan:
         yield  # pragma: no cover - makes this an async generator
 
     async def run(self, session: Session, descriptor: RunDescriptor) -> dict[str, Any]:
-        """Import the module and await its `run(session)`, with this
-        workflow's parameters applied as module attributes."""
-        import importlib.util
+        """Execute the file, with this workflow's parameters applied.
 
-        path = Path(self.path)
-        spec = importlib.util.spec_from_file_location(f"workflow_script_{path.stem}", path)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Could not load script: {self.path}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        if not hasattr(module, "run"):
-            raise AttributeError(
-                f"Script {self.path} has no `run(session)` function to execute"
-            )
-        for name, value in self.params.items():
-            if hasattr(module, name):
-                setattr(module, name, value)
-        result = await module.run(session)
-        return result if isinstance(result, dict) else {"result": result}
+        Either shape — plain top-level Python or `async def run(session)`.
+        See `core/run/script.py`, which is also what the run manager
+        calls, so the two entry points cannot diverge.
+        """
+        from labpilot.core.run.script import run_script
+
+        return await run_script(session, self.path, self.params)
 
 
 def _by_device(
