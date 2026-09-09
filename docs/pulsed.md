@@ -1,10 +1,10 @@
 # Pulsed measurements — status
 
-**Where this stands: sequences can be authored, saved and drawn, with no
-hardware. They cannot yet be played.** The authoring half is built and
-tested; the execution half — pulser drivers, a gated counter, the
-measurement plan — is not. This page says exactly what exists so nobody
-plans around a capability that isn't there.
+**Where this stands: sequences can be authored, saved, drawn and uploaded
+to a pulser, and a gated counter will count against them. What does not
+exist yet is the measurement that drives the two together** — no plan, no
+extraction, no analysis, so nothing produces a Rabi curve. This page says
+exactly what exists so nobody plans around a capability that isn't there.
 
 ## What works today
 
@@ -36,10 +36,11 @@ instruments, so it opens and runs with everything disconnected.
 | `core/pulse/table.py` — the column rule | **Done.** Qt-free, so the fiddly part is tested headless. |
 | `ui/desktop/components/pulse_editor.py` + the `pulse_sequence` result view | **Done.** Generator, Blocks and Rig tabs, and a one-lane-per-channel diagram. |
 | `core/device/` — `Action`, records, capabilities, `Constraints` | **Done.** The four framework gaps that blocked any of this. |
-| **`PulserMixin` / `GatedCounterMixin`** | **Missing.** No device can be handed a sequence yet. |
-| **Drivers — mock rig, Swabian PulseStreamer, SpinCore PulseBlaster** | **Missing.** |
-| **`PulsedMeasurementPlan`, extraction, analysis** | **Missing.** |
-| `instruments/mock/pulse_sequencers.py` — `MockPulseSequencer` | Still the old `dtype="json"` step list, driven by nothing. Replaced, not extended, when `PulserMixin` lands. |
+| `instruments/pulser_mixin.py` — `PulserMixin` | **Done.** `upload_sequence` takes the abstract sequence and returns what the device really loaded. |
+| `instruments/gated_counter_mixin.py` — `GatedCounterMixin` | **Done.** `configure_gates` returns what it actually set; `get_trace()` is a 2-D `Dataset` with real axes. |
+| `instruments/mock/pulse_rig.py` — `MockPulser` + `MockGatedCounter` | **Done.** Real granularity, minimum element and activation configs; NV physics with a decaying readout transient. |
+| `instruments/Swabian/pulse_streamer.py`, `instruments/SpinCore/pulse_blaster.py` | **Done.** Optional extras, both `describe()`-able with no SDK installed. |
+| **`PulsedMeasurementPlan`, extraction, analysis** | **Missing.** The rig is driveable; nothing drives it yet. |
 | `instruments/AWG/` | Five pylablib **function generators** — frequency, amplitude, offset, enable. Not an arbitrary waveform generator: no upload, no sequence, no channels, no triggering. |
 | `workflow_templates/odmr_sweep.py` | Works, but is **CW ODMR**, not pulsed — and predates the plan layer, so it hand-rolls its loop. |
 
@@ -139,18 +140,20 @@ of thing that produces a plausible but wrong result:
 
 ## What a Rabi still needs
 
-1. `PulserMixin` — constraints, `upload_sequence(sequence, channels)`,
-   on/off. The adapter owns its own format.
-2. `GatedCounterMixin` — `configure_gates` returning what it *actually*
-   set, and `get_trace()` as a 2-D `(gate, time_bin)` `Dataset`.
-3. A mock rig that synthesises NV physics, so the plan and the fits can be
-   verified with no hardware.
-4. `PulsedMeasurementPlan`, whose `describe()` already has everything it
+1. `PulsedMeasurementPlan`, whose `describe()` already has everything it
    needs — the sequence knows its sweep and its readout count before the
    first point, so pause, abort, patch streaming and HDF5 come for free.
-5. Laser-pulse extraction and signal/reference analysis as pure functions.
+2. Laser-pulse extraction: turning the raw `(gate, time_bin)` trace into
+   one number per readout. The mock counter's readout transient is a real
+   edge to find rather than a rectangle, so this can be verified.
+3. Signal/reference analysis, and the fits.
+4. `pulsed_measurement.py` plus four presets — Rabi, Ramsey, Hahn echo and
+   T1 — the same consolidation that turned four scanners into presets of
+   `omniscan`.
 
-Items 1–3 are what everything else waits on.
+The device half is done: a sequence uploads to the mock, a PulseStreamer
+and a PulseBlaster, and the counter counts against it. Nothing yet asks
+them to do it point by point.
 
 ## Deliberate differences from Qudi
 
@@ -185,7 +188,7 @@ The design is cited; the source is not copied.
   generator form, the dynamic-column block editor, the timing-diagram
   result view) — complete.
 - **6c** (pulser and gated-counter contracts, mock rig, PulseStreamer,
-  PulseBlaster) — not started.
+  PulseBlaster) — complete.
 - **6d** (measurement plan, extraction, analysis, fits) — not started.
 - **6e, measurement half** (the pulsed-measurement template and its four
   presets) — not started.
