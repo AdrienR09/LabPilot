@@ -50,6 +50,7 @@ the flag.
 
 from labpilot.core.pulse import save_sequence, timing_diagram
 from labpilot.core.pulse.library import RigProfile, build
+from labpilot.core.pulse.table import sequence_from_table, table_from_sequence
 
 # Binds nothing. That is the feature, not an omission.
 REQUIRED_INSTRUMENTS: dict = {}
@@ -61,7 +62,28 @@ RESULT_UI = {
     "duration_key": "point_duration",
 }
 
-# --- What to generate ------------------------------------------------------
+# --- Where the sequence comes from -----------------------------------------
+
+# "generator" builds one of the four standard experiments from the
+# parameters below. "table" plays back BLOCKS, which is what the block
+# editor writes — so the usual path is to generate a Rabi, press "Load into
+# editor", and hand-edit from there.
+SOURCE = "generator"
+
+# The edited block table: one entry per block, each with its own elements.
+# Exactly the form a sequence file stores, so nothing is lost round-tripping
+# between the generator, the table and the file.
+BLOCKS: list = []
+
+# A hand-edited sequence has to say what it swept, because nothing else
+# can know. Empty means "no declared sweep" — the run then plots against
+# readout index, which is right for a sequence that is not a sweep.
+SWEEP: dict = {}
+
+# Whether consecutive readouts alternate signal and reference. Set by the
+# generator for the experiments that need it; declare it yourself when
+# hand-authoring one that does.
+ALTERNATING = False
 
 # One of core/pulse/library.py's generators: rabi, ramsey, hahn_echo, t1.
 GENERATOR = "rabi"
@@ -107,18 +129,34 @@ profile = RigProfile(
     analog_mw=ANALOG_MW,
 )
 
-# `build` validates before returning, so an unplayable sequence is caught
-# here rather than by the hardware an hour later.
-sequence = build(GENERATOR, profile, **GENERATOR_PARAMS).evolve(name=SEQUENCE_NAME)
+# Either way the sequence is validated before it is returned, so an
+# unplayable one is caught here rather than by the hardware an hour later.
+if SOURCE == "table" and BLOCKS:
+    sequence = sequence_from_table(
+        BLOCKS,
+        SEQUENCE_NAME,
+        sweep=SWEEP or None,
+        laser_channel=LASER_CHANNEL,
+        gate_channel=GATE_CHANNEL,
+        alternating=ALTERNATING,
+        description="Hand-edited in the block editor.",
+    )
+else:
+    sequence = build(GENERATOR, profile, **GENERATOR_PARAMS).evolve(name=SEQUENCE_NAME)
 
 path = save_sequence(sequence)
 segments = timing_diagram(sequence, PREVIEW_POINT)
 
 RESULT = {
     "sequence": SEQUENCE_NAME,
+    "source": SOURCE,
     "generator": GENERATOR,
     "path": str(path),
     "description": sequence.description,
+    # What the block editor loads. Carrying it in the result is what makes
+    # "generate a Rabi, then hand-edit it" one gesture rather than two
+    # separate authoring paths that cannot meet.
+    "blocks": table_from_sequence(sequence),
     "points": sequence.points,
     "readouts": sequence.readouts(),
     "duration": sequence.duration,

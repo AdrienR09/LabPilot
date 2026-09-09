@@ -12,7 +12,11 @@ rests on:
    source of truth an offline editor has. Nothing here constructs a
    client, and nothing reads an instrument schema.
 
-2. **The timing diagram draws what the sequence actually contains** — one
+2. **The block table is a real editor**, not a read-only view: rows are
+   added, reordered and typed into, the columns follow the shapes in play,
+   and every edit produces a sequence that still builds.
+
+3. **The timing diagram draws what the sequence actually contains** — one
    lane per channel, one box per element, at one point of the sweep.
 
 Run it:
@@ -42,6 +46,7 @@ from PyQt6.QtWidgets import QApplication, QSpinBox  # noqa: E402
 
 import labpilot.ui.qt_api  # noqa: F401, E402  (pins QT_API before Qt loads)
 from labpilot.core.pulse import timing_diagram  # noqa: E402
+from labpilot.core.pulse.table import sequence_from_table, table_from_sequence  # noqa: E402
 from labpilot.core.pulse.library import (  # noqa: E402
     GENERATORS,
     RigProfile,
@@ -159,7 +164,85 @@ def main() -> int:
           "200.0 ns" in editor.rabi_hint.text() and "100.0 ns" in editor.rabi_hint.text(),
           editor.rabi_hint.text())
 
-    print("\n8. The timing diagram draws one lane per channel")
+    print("\n8. The block table is a real editor")
+    from components.pulse_blocks import PulseBlockEditorWidget
+
+    edits: list = []
+    blocks = table_from_sequence(build("ramsey", RigProfile(), points=6))
+    table = PulseBlockEditorWidget(blocks, ["laser", "mw", "gate"])
+    table.sigBlocksChanged.connect(edits.append)
+    app.processEvents()
+
+    headers = [
+        table.table.horizontalHeaderItem(i).text()
+        for i in range(table.table.columnCount())
+    ]
+    check("it loaded the generated block",
+          table.table.rowCount() == len(blocks[0]["elements"]),
+          f"{table.table.rowCount()} rows")
+    check("columns include length and increment",
+          any("Length" in h for h in headers) and any("Increment" in h for h in headers),
+          f"{headers}")
+    check("an analog channel grew its shape and parameter columns",
+          any("mw shape" in h for h in headers)
+          and any("mw frequency" in h for h in headers),
+          f"{headers}")
+    check("a digital channel is one column",
+          sum("laser" in h for h in headers) == 1, f"{headers}")
+
+    print("\n9. Editing the table reports a sequence that still builds")
+    before = table.table.rowCount()
+    table.table.selectRow(0)
+    table.add_element()
+    app.processEvents()
+    check("adding a row grew the table", table.table.rowCount() == before + 1)
+    check("the edit was reported", bool(edits), f"{len(edits)} report(s)")
+
+    table.duplicate_element()
+    table.move_element(+1)
+    table.remove_element()
+    app.processEvents()
+    reported = edits[-1]
+    check("every command reported a table",
+          isinstance(reported, list) and reported, f"{type(reported).__name__}")
+    rebuilt = sequence_from_table(
+        reported, "edited", alternating=True, validate=False
+    )
+    check("what the table reports still builds a sequence",
+          len(rebuilt.blocks[0].elements) == table.table.rowCount(),
+          f"{len(rebuilt.blocks[0].elements)} vs {table.table.rowCount()}")
+
+    print("\n10. Choosing a different shape rebuilds the columns")
+    shape_index = next(
+        i for i in range(table.table.columnCount())
+        if "mw shape" in table.table.horizontalHeaderItem(i).text()
+    )
+    combo = table.table.cellWidget(0, shape_index)
+    check("the shape cell is a combobox", combo is not None,
+          f"{type(combo).__name__}")
+    if combo is not None:
+        combo.setCurrentText("Chirp")
+        app.processEvents()
+        headers = [
+            table.table.horizontalHeaderItem(i).text()
+            for i in range(table.table.columnCount())
+        ]
+        check("a Chirp brought its own parameter columns",
+              any("start frequency" in h for h in headers), f"{headers}")
+
+    print("\n11. Blocks can be added and removed")
+    table.add_block()
+    app.processEvents()
+    check("a second block exists", table.block_combo.count() == 2,
+          f"{table.block_combo.count()}")
+    table.remove_block()
+    app.processEvents()
+    check("and can be removed", table.block_combo.count() == 1)
+    for _ in range(10):
+        table.remove_block()
+    check("the last block is never removed", table.block_combo.count() == 1)
+
+    print("\n12. The timing diagram draws one lane per channel")
     view = PulseSequenceResultView()
     for name in sorted(GENERATORS):
         sequence = build(name, RigProfile(), points=8)
@@ -175,13 +258,13 @@ def main() -> int:
         check(f"{name}: the summary states the pulse count",
               f"{len(segments)} pulse(s)" in view.summary.text(), view.summary.text())
 
-    print("\n9. A later point of the sweep draws a longer diagram")
+    print("\n13. A later point of the sweep draws a longer diagram")
     sequence = build("rabi", RigProfile(), points=30)
     first = max(s.stop for s in timing_diagram(sequence, 0))
     last = max(s.stop for s in timing_diagram(sequence, 29))
     check("the swept element has grown", last > first, f"{last} !> {first}")
 
-    print("\n10. An empty result leaves the view legible rather than blank")
+    print("\n14. An empty result leaves the view legible rather than blank")
     view.update_data([], [], 0.0)
     app.processEvents()
     check("it says there is nothing yet", "No sequence" in view.summary.text(),

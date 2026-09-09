@@ -961,8 +961,33 @@ class WorkflowWindow(QMainWindow):
             parameters_for=generator_parameters,
             generators=sorted(GENERATORS),
         )
+        def _load_into_editor() -> None:
+            """Put the last run's sequence into the block table.
+
+            The result already carries the table form (the editor template
+            returns `blocks`), so "generate a Rabi, then hand-edit it" is
+            one gesture and nothing is converted on the way.
+            """
+            try:
+                state = self.client.get_workflow_execution_state(self.workflow_id)
+            except Exception as error:
+                self.status_bar.showMessage(f"Could not read the last result: {error}")
+                return
+            source = state.get("last_results") or {}
+            blocks = source.get("blocks")
+            if not blocks:
+                self.status_bar.showMessage(
+                    "Generate a sequence first — there is nothing to load yet"
+                )
+                return
+            editor.load_blocks(blocks, source.get("channels"))
+            self.status_bar.showMessage(
+                f"Loaded {len(blocks)} block(s) into the editor"
+            )
+
         editor.sigParamChanged.connect(_set_param)
         editor.sigGenerate.connect(self._on_execute)
+        editor.sigLoadRequested.connect(_load_into_editor)
 
         self.pulse_editor_control = editor
         d = dock("Sequence Editor", self)

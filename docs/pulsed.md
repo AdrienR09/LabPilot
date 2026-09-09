@@ -32,7 +32,9 @@ instruments, so it opens and runs with everything disconnected.
 | `core/pulse/sampling.py` — `expand`, `sample`, `timing_diagram` | **Done.** Two compilation paths; see below. |
 | `core/pulse/store.py` — saved sequence files | **Done.** `~/.labpilot/sequences/<name>.json`, listed with a reason when one will not play. |
 | `workflow_templates/pulse_sequence_editor.py` | **Done.** Binds nothing; writes a sequence file and returns its timing diagram. |
-| `ui/desktop/components/pulse_editor.py` + the `pulse_sequence` result view | **Done.** Generator and rig tabs, and a one-lane-per-channel diagram. |
+| `ui/desktop/components/pulse_blocks.py` — the block editor | **Done.** Qudi's dynamic-column element table: one row per element, one column per channel, an analog channel expanding into a shape plus its parameters. |
+| `core/pulse/table.py` — the column rule | **Done.** Qt-free, so the fiddly part is tested headless. |
+| `ui/desktop/components/pulse_editor.py` + the `pulse_sequence` result view | **Done.** Generator, Blocks and Rig tabs, and a one-lane-per-channel diagram. |
 | `core/device/` — `Action`, records, capabilities, `Constraints` | **Done.** The four framework gaps that blocked any of this. |
 | **`PulserMixin` / `GatedCounterMixin`** | **Missing.** No device can be handed a sequence yet. |
 | **Drivers — mock rig, Swabian PulseStreamer, SpinCore PulseBlaster** | **Missing.** |
@@ -63,6 +65,30 @@ Channels are symbolic — `"laser"`, `"mw"`, `"gate"` — never `d_ch1`. The
 mapping onto physical channels is the rig's, so it lives with the
 measurement workflow's bindings. Qudi bakes `d_ch1` into its generation
 parameters, which ties a saved sequence to one wiring.
+
+## What the editor is, and what it was not
+
+The **Generator** tab is Qudi's *predefined-methods* panel: pick
+`generate_rabi`, fill in a parameter form. That is a starting point, not an
+editor, and for a while it was all there was here.
+
+The **Blocks** tab is Qudi's actual PulseEditor. One row per element; one
+column per channel, plus Length and Increment; rows added, duplicated,
+reordered and typed into. The columns are **not fixed** — a digital channel
+is a checkbox, and an analog channel contributes a shape combobox plus one
+column per that shape's parameters, so choosing `Sin` on the microwave
+channel grows Amplitude, Frequency and Phase columns and choosing `Chirp`
+replaces them with the chirp's own.
+
+The two paths meet rather than compete: **Load into editor** puts the last
+generated sequence into the table, because the generator's output is
+already in the table's own form. A row *is* an element's entry in the
+sequence file, so nothing is converted and nothing is lost.
+
+One deliberate difference from Qudi: the columns come from the **rig
+profile's symbolic channels**, never from a connected pulser's
+`activation_config`. An offline editor has no pulser to ask, and taking
+columns from one would tie a saved sequence to a single rig's wiring.
 
 ## Sampling is a library, not a pipeline stage
 
@@ -155,8 +181,9 @@ The design is cited; the source is not copied.
   constraint negotiation) — complete.
 - **6a.5** (plain-Python workflow scripts) — complete.
 - **6b** (sequence model, generator library, sampling, storage) — complete.
-- **6d.5 / 6e, editor half** (the free-standing editor workflow, its
-  control dock, the timing-diagram result view) — complete.
+- **6d.5 / 6e, editor half** (the free-standing editor workflow, the
+  generator form, the dynamic-column block editor, the timing-diagram
+  result view) — complete.
 - **6c** (pulser and gated-counter contracts, mock rig, PulseStreamer,
   PulseBlaster) — not started.
 - **6d** (measurement plan, extraction, analysis, fits) — not started.

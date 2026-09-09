@@ -8,15 +8,20 @@ writes `~/.labpilot/sequences/<name>.json`. The timing diagram it produces
 is the result view (`PulseSequenceResultView`), the same way a scan's
 image is.
 
-Two tabs, matching how a sequence actually gets authored:
+Three tabs, matching how a sequence actually gets authored:
 
 - **Generator** — pick one of `core/pulse/library.py`'s four experiments
-  and set its parameters. The controls are built from the generator's own
-  declared `Parameter` objects, so a unit, a limit and a dtype come from
-  the generator rather than from a name-substring guess. Qudi's editor
-  reads `inspect.signature` defaults instead and infers units from
+  and set its parameters. This is Qudi's *predefined-methods* panel, and
+  it is a starting point, not the editor. The controls are built from the
+  generator's own declared `Parameter` objects, so a unit, a limit and a
+  dtype come from the generator rather than from a name-substring guess;
+  Qudi reads `inspect.signature` defaults instead and infers units from
   substrings (`'amp' in name` means volts), which is the one part of that
   subsystem worth not copying.
+- **Blocks** — Qudi's actual PulseEditor: the dynamic-column element
+  table, in `pulse_blocks.py`. Generate a Rabi, press **Load into editor**,
+  and hand-edit from there — the generator's output is already in the
+  table's own form, so the two paths meet instead of competing.
 - **Rig** — the profile the sequence is written against: Rabi period,
   laser length and delay, wait time, the symbolic channel names, and
   whether the microwave channel carries an analog shape or gates an
@@ -41,6 +46,7 @@ from __future__ import annotations
 from typing import Any
 
 import pyqtgraph as pg
+from components.pulse_blocks import PulseBlockEditorWidget
 from components.widgets import IconButton
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
@@ -48,6 +54,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QSpinBox,
@@ -85,6 +92,7 @@ class PulseEditorControlWidget(QWidget):
     # axes_control.py — snake_case here would be the odd one out.
     sigParamChanged = pyqtSignal(str, object)  # noqa: N815
     sigGenerate = pyqtSignal()  # noqa: N815
+    sigLoadRequested = pyqtSignal()  # noqa: N815
 
     def __init__(
         self,
@@ -106,19 +114,69 @@ class PulseEditorControlWidget(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        tabs = QTabWidget()
-        tabs.addTab(self._build_generator_tab(), "Generator")
-        tabs.addTab(self._build_rig_tab(), "Rig")
-        layout.addWidget(tabs, 1)
+        self.blocks = PulseBlockEditorWidget(
+            self._params.get("BLOCKS") or [], self.channels_from(self._params)
+        )
+        self.blocks.sigBlocksChanged.connect(self._on_blocks_changed)
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._build_generator_tab(), "Generator")
+        self.tabs.addTab(self.blocks, "Blocks")
+        self.tabs.addTab(self._build_rig_tab(), "Rig")
+        layout.addWidget(self.tabs, 1)
+
+        buttons = QHBoxLayout()
+        self.load_button = IconButton("Load into editor", "document-import")
+        self.load_button.setToolTip(
+            "Put the last generated sequence into the block table, and "
+            "author from there. The generator's output is already in the "
+            "table's own form, so nothing is lost."
+        )
+        self.load_button.clicked.connect(lambda _checked=False: self.sigLoadRequested.emit())
+        buttons.addWidget(self.load_button)
 
         self.generate_button = IconButton("Generate and save", "document-save")
         self.generate_button.clicked.connect(lambda _checked=False: self.sigGenerate.emit())
-        layout.addWidget(self.generate_button)
+        buttons.addWidget(self.generate_button)
+        layout.addLayout(buttons)
 
         self.status = QLabel("")
         self.status.setWordWrap(True)
         self.status.setStyleSheet("color: #888;")
         layout.addWidget(self.status)
+
+    # --- The block editor -------------------------------------------------
+
+    @staticmethod
+    def channels_from(params: dict[str, Any]) -> list[str]:
+        """The rig's symbolic channels, in reading order.
+
+        A plain function of the parameters rather than of the Rig tab's
+        widgets, because the block table is built before that tab exists —
+        and because these are the one source of truth an offline editor
+        has for its columns.
+        """
+        names = [
+            params.get(key)
+            for key in ("LASER_CHANNEL", "MW_CHANNEL", "GATE_CHANNEL")
+        ]
+        return [str(name) for name in names if name]
+
+    def load_blocks(
+        self, blocks: list[dict[str, Any]], channels: list[str] | None = None
+    ) -> None:
+        """Put a generated (or saved) sequence into the table and show it.
+
+        This is the moment authoring switches from "generate" to "edit",
+        which is why it also sets SOURCE — leaving that to the user would
+        mean pressing Generate afterwards silently threw the edits away.
+        """
+        self.blocks.set_blocks(blocks, channels or self.channels())
+        self.tabs.setCurrentWidget(self.blocks)
+
+    def _on_blocks_changed(self, blocks: Any) -> None:
+        self.sigParamChanged.emit("BLOCKS", blocks)
+        self.sigParamChanged.emit("SOURCE", "table")
 
     # --- The Generator tab ------------------------------------------------
 
@@ -322,7 +380,7 @@ class PulseEditorControlWidget(QWidget):
         ):
             edit = QLineEdit(str(self._params.get(name, default) or ""))
             edit.editingFinished.connect(
-                lambda key=name, w=edit: self.sigParamChanged.emit(
+                lambda key=name, w=edit: self._on_channel_renamed(
                     key, w.text().strip() or None
                 )
             )
@@ -335,6 +393,16 @@ class PulseEditorControlWidget(QWidget):
 
         layout.addStretch()
         return page
+
+    def _on_channel_renamed(self, key: str, value: str | None) -> None:
+        """A renamed channel is a renamed column, so the table follows.
+
+        Otherwise the block editor would keep offering `mw` after the rig
+        was told the channel is called `microwave`, and the sequence would
+        validate against a channel no element uses.
+        """
+        self.sigParamChanged.emit(key, value)
+        self.blocks.set_blocks(self.blocks.blocks(), self.channels())
 
     def _on_analog_toggled(self, analog: bool) -> None:
         self.sigParamChanged.emit("ANALOG_MW", analog)

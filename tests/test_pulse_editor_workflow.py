@@ -221,3 +221,99 @@ async def test_the_sweep_is_reported_so_a_measurement_knows_its_axis(sequences):
     assert result["sweep"]["name"] == "tau"
     assert result["sweep"]["unit"] == "s"
     assert result["sweep"]["stop"] == pytest.approx(200e-9)
+
+
+# --- Hand-edited sequences -------------------------------------------------
+
+
+async def test_a_hand_edited_table_is_saved_as_a_sequence(sequences):
+    """The block editor's output path. `SOURCE = "table"` plays BLOCKS
+    back, so an edited sequence is saved by the same workflow that
+    generated its starting point."""
+    blocks = [
+        {
+            "name": "rabi",
+            "repetitions": 8,
+            "elements": [
+                {"name": "mw", "duration": 20e-9, "increment": 20e-9,
+                 "channels": {"mw": True, "laser": False}},
+                {"name": "readout", "duration": 3e-6, "increment": 0.0,
+                 "channels": {"laser": True, "gate": True}},
+                {"name": "wait", "duration": 1e-6, "increment": 0.0,
+                 "channels": {"laser": False}},
+            ],
+        }
+    ]
+    result = await edit(SOURCE="table", BLOCKS=blocks, SEQUENCE_NAME="hand_rabi")
+
+    assert result["source"] == "table"
+    assert result["readouts"] == 8
+    load_sequence("hand_rabi", sequences).validate()
+
+
+async def test_a_generated_sequence_comes_back_as_an_editable_table(sequences):
+    """What makes "generate a Rabi, then hand-edit it" one gesture rather
+    than two authoring paths that cannot meet: the result already carries
+    the table the editor loads."""
+    result = await edit(GENERATOR="ramsey", GENERATOR_PARAMS={"points": 6})
+
+    blocks = result["blocks"]
+    assert blocks and blocks[0]["elements"]
+    first = blocks[0]["elements"][0]
+    assert {"name", "duration", "increment", "channels"} <= set(first)
+    assert first["channels"]["mw"]["shape"] == "Sin"
+
+
+async def test_the_table_round_trips_through_the_workflow(sequences):
+    """Load the generated table straight back in as BLOCKS and the
+    sequence is unchanged — no lossy conversion between the two paths."""
+    generated = await edit(GENERATOR="hahn_echo", GENERATOR_PARAMS={"points": 6})
+    edited = await edit(
+        SOURCE="table",
+        BLOCKS=generated["blocks"],
+        ALTERNATING=True,
+        SEQUENCE_NAME="hahn_edited",
+    )
+    assert edited["readouts"] == generated["readouts"]
+    assert edited["duration"] == pytest.approx(generated["duration"])
+
+
+async def test_a_hand_edited_sequence_may_declare_its_own_sweep(sequences):
+    """Nothing else can know what a hand-authored sequence swept."""
+    blocks = [
+        {
+            "name": "b", "repetitions": 4,
+            "elements": [
+                {"name": "mw", "duration": 50e-9, "increment": 50e-9,
+                 "channels": {"mw": True, "laser": False}},
+                {"name": "readout", "duration": 2e-6, "increment": 0.0,
+                 "channels": {"laser": True, "gate": True}},
+            ],
+        }
+    ]
+    result = await edit(
+        SOURCE="table", BLOCKS=blocks, SEQUENCE_NAME="swept",
+        SWEEP={"name": "tau", "unit": "s",
+               "values": [50e-9, 100e-9, 150e-9, 200e-9]},
+    )
+    assert result["sweep"]["name"] == "tau"
+    assert result["points"] == 4
+
+
+async def test_an_unplayable_table_is_refused_like_any_other_sequence(sequences):
+    from labpilot.core.pulse import SequenceError
+
+    blocks = [{"name": "b", "repetitions": 1, "elements": [
+        {"name": "mw", "duration": 50e-9, "increment": 0.0,
+         "channels": {"mw": True, "laser": False}},
+    ]}]
+    with pytest.raises(SequenceError, match="no readout"):
+        await edit(SOURCE="table", BLOCKS=blocks)
+
+
+async def test_an_empty_table_falls_back_to_the_generator(sequences):
+    """So a workflow that has never been edited still works — SOURCE is
+    only consulted when there is a table to play."""
+    result = await edit(SOURCE="table", BLOCKS=[], GENERATOR_PARAMS={"points": 5})
+    assert result["points"] == 5
+    assert result["source"] == "table"  # what was asked for, honestly reported
