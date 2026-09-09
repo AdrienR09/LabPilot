@@ -46,3 +46,13 @@ def user_workflow_dir() -> Path:
     own state directory, next to their instrument sets and their data.
     """
     return labpilot_home() / "workflows"
+
+
+def sequence_dir() -> Path:
+    """Where saved pulse sequences live.
+
+    A sequence is authored with no hardware present and reused across every
+    measurement that wants it, so it is a file the user owns — named,
+    versioned and shareable — rather than a row in a measurement's config.
+    """
+    return labpilot_home() / "sequences"
