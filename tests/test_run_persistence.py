@@ -16,6 +16,8 @@ real coordinates, provenance — not merely that one was created.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import numpy as np
 import pytest
 
@@ -171,18 +173,22 @@ async def test_a_write_failure_is_reported_not_raised(tmp_path):
 # --- Through the engine ---------------------------------------------------
 
 
+class _Graph:
+    """The little a `_save_run` needs of a workflow: an id and where its
+    script and bindings came from."""
+
+    id = "wf-1"
+    metadata: ClassVar[dict] = {"script_path": "", "instrument_bindings": {}}
+
+
 async def test_running_a_workflow_leaves_a_file_behind(tmp_path, monkeypatch):
     """The end-to-end claim: no Save button, no manual export."""
-    from labpilot.core.session import Session
     from labpilot.core.run.manager import RunManager
+    from labpilot.core.session import Session
     from labpilot.core.workflow.store import WorkflowStore
 
     engine = RunManager(Session(), WorkflowStore(tmp_path / "workflows.db"))
     engine.runs = RunStore(root=tmp_path / "data")
-
-    class _Graph:
-        id = "wf-1"
-        metadata = {"script_path": "", "instrument_bindings": {}}
 
     await engine._save_run(_Graph(), "exec-1", SCAN_RESULT, "completed")
 
@@ -218,3 +224,63 @@ def test_a_process_that_saves_a_run_still_exits(tmp_path):
         asyncio.run(main())
     """)
     subprocess.run([sys.executable, "-c", script], check=True, timeout=60)
+
+
+async def test_a_pulsed_run_is_saved_with_its_accumulation_history(tmp_path):
+    """A pulsed measurement's result is 2-D `(sweeps, tau)`, and both axes
+    have to survive to disk: without the tau coordinates the file is a
+    picture of nothing, and without the sweep counts nobody can tell a
+    converged measurement from one that was stopped early.
+
+    The claim being checked is that this needed no pulsed-specific
+    persistence. It is a `Plan`, so it is a `Dataset`, so it is saved.
+    """
+    from labpilot.core.pulse.library import RigProfile, build
+    from labpilot.core.run.manager import RunManager
+    from labpilot.core.run.plans import PulsedMeasurementPlan
+    from labpilot.core.run.run import Run
+    from labpilot.core.session import Session
+    from labpilot.core.workflow.store import WorkflowStore
+    from labpilot.instruments import adapter_registry
+
+    session = Session()
+    for role, key in (("pulser", "mock_pulser"), ("counter", "mock_gated_counter")):
+        adapter = adapter_registry.get(key)()
+        await adapter.connect()
+        session.register(adapter, role)
+    await session.get("counter").write({"bright_rate": 4e8})
+
+    plan = PulsedMeasurementPlan(
+        build("rabi", RigProfile(), tau_start=10e-9, tau_step=10e-9, points=12),
+        channels={"laser": "d_ch1", "mw": "a_ch1", "gate": "d_ch2"},
+        sweeps=100, checkpoints=3, bin_width=8e-9,
+    )
+    descriptor = await plan.describe(session)
+    run = Run(descriptor, session)
+    result = await run.execute(plan.points(session, descriptor))
+
+    engine = RunManager(session, WorkflowStore(tmp_path / "workflows.db"))
+    engine.runs = RunStore(root=tmp_path / "data")
+
+    await engine._save_run(_Graph(), "exec-pulsed", result, "completed")
+
+    files = list((tmp_path / "data").rglob("*.h5"))
+    assert len(files) == 1
+    with h5py.File(files[0], "r") as f:
+        stored = f["run/data"]
+        assert stored.shape == (3, 12)
+        # Dimension scales, not a second copy of the numbers: the tau
+        # values are attached to the array itself, which is what h5py,
+        # xarray and MATLAB all read without being told the convention.
+        assert [d.label for d in stored.dims] == ["sweeps", "tau"]
+        assert f["run/axes/tau"][-1] == pytest.approx(120e-9)
+        assert f["run/axes/sweeps"][-1] == pytest.approx(100.0)
+        # Which reduction produced these numbers is not recoverable from
+        # the numbers, so it travels as metadata rather than being
+        # something to remember.
+        params = dict(f["run/params"].attrs)
+        assert params["sequence"] == "rabi"
+        assert params["analyse"] == "mean_norm"
+        assert params["extract"] == "conv_deriv"
+        assert int(params["readouts"]) == 12
+    engine._runner.shutdown()
