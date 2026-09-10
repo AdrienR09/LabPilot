@@ -344,7 +344,22 @@ async def test_an_action_the_source_does_not_have_says_which_it_does():
             pass
 
 
-async def test_a_source_with_no_on_off_concept_is_left_alone():
+async def test_a_source_that_declares_no_actions_at_all_is_left_alone():
+    """The ordinary digital rig: the source runs continuously and the
+    pulser gates it, so there is nothing to switch. Distinguished from a
+    wrong action name, which is refused above."""
+    session = await rig(bright_rate=4e8)
+    plain = adapter_registry.get("mock_basic_source")()
+    await plain.connect()
+    session.register(plain, "microwave")
+
+    measurement = plan(microwave="microwave", sweeps=60, checkpoints=1)
+    descriptor = await measurement.describe(session)
+    patches = [p async for p in measurement.points(session, descriptor)]
+    assert len(patches) == 1
+
+
+async def test_switching_can_be_turned_off_explicitly():
     session = await source(await rig(bright_rate=4e8))
     measurement = plan(
         microwave="microwave", microwave_on="", microwave_off="",

@@ -995,6 +995,78 @@ class WorkflowWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, d)
         self._pulse_editor_dock = d
 
+    def build_pulse_control(self, graph: dict, params: dict) -> None:
+        """The measurement dock for a pulsed workflow. Selected by
+        `workflow_blocks.toml`'s `pulse_control` block; see
+        components/pulse_control.py.
+
+        The sequence library is read here rather than in the widget, and
+        read *locally*: `~/.labpilot/sequences/` is on this machine and is
+        the same directory the editor writes to, so there is no route to
+        ask the backend for and none is invented. The extraction and
+        analysis method lists come from the registries themselves, so a
+        method added to `core/pulse/` appears in this dock with no change
+        here.
+        """
+        from components.pulse_control import PulseMeasurementControlWidget
+
+        from labpilot.core.pulse.analyse import ANALYSES
+        from labpilot.core.pulse.extract import EXTRACTORS
+
+        def _set_param(name: str, value) -> None:
+            try:
+                self.client.set_workflow_param(self.workflow_id, name, value)
+                self.status_bar.showMessage(f"{name} set to {value}")
+            except Exception as e:
+                self.status_bar.showMessage(f"Failed to update {name}: {e}")
+
+        control = PulseMeasurementControlWidget(
+            params,
+            sequences=self._saved_sequences(),
+            extractors=sorted(EXTRACTORS),
+            analyses=sorted(ANALYSES),
+        )
+
+        def _refresh() -> None:
+            entries = self._saved_sequences()
+            control.set_sequences(entries)
+            self.status_bar.showMessage(f"{len(entries)} sequence(s) in the library")
+
+        control.sigParamChanged.connect(_set_param)
+        control.sigRun.connect(self._on_execute)
+        control.sigRefresh.connect(_refresh)
+
+        self.pulse_control = control
+        d = dock("Pulsed Measurement", self)
+        d.setWidget(control)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, d)
+        self._pulse_control_dock = d
+
+    @staticmethod
+    def _saved_sequences() -> list[dict]:
+        """The sequence library, as plain dicts for the dock.
+
+        A file that will not parse comes back with `valid=False` and the
+        reason rather than being hidden, so a sequence that cannot play is
+        visibly refused at the point of choosing it instead of failing
+        after the run has started and the pulser is bound.
+        """
+        try:
+            from labpilot.core.pulse import ensure_default_sequences, list_sequences
+
+            ensure_default_sequences()
+            return [
+                {
+                    "name": entry.name, "valid": entry.valid,
+                    "problem": entry.problem, "points": entry.points,
+                    "readouts": entry.readouts, "duration": entry.duration,
+                }
+                for entry in list_sequences()
+            ]
+        except Exception as e:
+            print(f"⚠️  Could not read the sequence library: {e}")
+            return []
+
     def build_sweep_control(self, graph: dict, params: dict) -> None:
         """The Sweep Control and Fit docks, for an odmr_sweep-family
         workflow. Selected by `workflow_blocks.toml`'s `sweep_control`

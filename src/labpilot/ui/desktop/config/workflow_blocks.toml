@@ -43,3 +43,10 @@ requires = ["SWEEP_START", "SWEEP_STOP", "SWEEP_POINTS"]
 [[controls]]
 type = "pulse_editor"
 requires = ["GENERATOR", "SEQUENCE_NAME", "GENERATOR_PARAMS"]
+
+# The pulsed measurement: which saved sequence to play, how many sweeps to
+# accumulate, and how to reduce what comes back. Keyed on the parameters
+# that make a workflow a pulsed one, exactly as the two above are.
+[[controls]]
+type = "pulse_control"
+requires = ["SEQUENCE", "SWEEPS", "EXTRACT", "ANALYSE"]

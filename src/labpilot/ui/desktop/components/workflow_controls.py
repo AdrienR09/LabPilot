@@ -35,8 +35,8 @@ from typing import Any
 from components.base import ComponentMeta
 
 __all__ = [
-    "AxesControl", "PulseEditorControl", "SweepControl", "WorkflowControl",
-    "controls_for",
+    "AxesControl", "PulseControl", "PulseEditorControl", "SweepControl",
+    "WorkflowControl", "controls_for",
 ]
 
 
@@ -103,6 +103,23 @@ class PulseEditorControl(WorkflowControl):
     @staticmethod
     def build(window: Any, graph: dict, params: dict[str, Any]) -> None:
         window.build_pulse_editor(graph, params)
+
+
+class PulseControl(WorkflowControl):
+    """The measurement dock for `workflow_templates/pulsed_measurement.py`.
+
+    The other half of `PulseEditorControl`: that one authors a sequence
+    with no hardware bound, this one plays a saved one on the rig. Both
+    are workflow controls rather than instrument blocks, because what they
+    configure is the workflow's parameters — the pulser's own settings are
+    its instrument window's business.
+    """
+
+    component_type = "pulse_control"
+
+    @staticmethod
+    def build(window: Any, graph: dict, params: dict[str, Any]) -> None:
+        window.build_pulse_control(graph, params)
 
 
 def controls_for(params: dict[str, Any], blocks: list[dict]) -> list[type]:

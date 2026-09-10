@@ -1,7 +1,7 @@
 # Pulsed measurements — status
 
-**Where this stands: a Rabi runs end to end, from one line at the
-console.** A sequence is authored, saved, drawn, uploaded to a pulser and
+**Where this stands: Phase 6 is complete.** A Rabi runs end to end — from
+one line at the console, from a script, or from the GUI as a preset. A sequence is authored, saved, drawn, uploaded to a pulser and
 played; a gated counter counts against it; extraction finds the readout
 window, analysis reduces it to a curve and a fit recovers the injected π
 pulse. What is not built yet is the *workflow* around it — no template,
@@ -71,8 +71,9 @@ instruments, so it opens and runs with everything disconnected.
 | `core/pulse/analyse.py` — `mean`, `mean_norm`, `mean_reference` | **Done.** One value per swept point, with Poisson errors. |
 | `core/run/plans.py` — `PulsedMeasurementPlan` | **Done.** Accumulation is the iterated axis; the result is a `(sweeps, tau)` history. |
 | `core/analysis/fits.py` — `fit_rabi`, `fit_decay` | **Done.** Extends the one fitting module rather than starting a second. |
-| **`pulsed_measurement.py` + its four presets** | **Missing.** The plan runs from a script; no workflow wraps it yet. |
-| **A `pulsed` result view** | **Missing.** No raw trace, extracted windows or fit overlay in the GUI. |
+| `workflow_templates/pulsed_measurement.py` + four presets | **Done.** Rabi, Ramsey, Hahn echo and T1 are a sequence name and a fit name, not four files. |
+| `ui/desktop/components/pulse_control.py` | **Done.** Sequence library, sweeps, and the two method combos, filled from the registries. |
+| `PulsedResultView` + a `pick_view` branch | **Done.** The curve with Poisson error bars and its fit, over the raw record with the extracted window shaded on it. |
 | `instruments/AWG/` | Five pylablib **function generators** — frequency, amplitude, offset, enable. Not an arbitrary waveform generator: no upload, no sequence, no channels, no triggering. |
 | `workflow_templates/odmr_sweep.py` | Works, but is **CW ODMR**, not pulsed — and predates the plan layer, so it hand-rolls its loop. |
 
@@ -230,21 +231,48 @@ it survives someone re-cabling an AOM; the normalisation window is a
 microsecond of the tail, late enough that the laser has repolarised the
 spin and the count rate there measures the laser rather than the state.
 
-## What a Rabi still needs
+## Four experiments, one template
 
-Nothing, from a script. From the GUI:
+Rabi, Ramsey, Hahn echo and T1 are **presets of `pulsed_measurement`**,
+not four templates. They differ in which saved sequence they play and
+which curve they fit; uploading, gating, counting, extraction, analysis,
+streaming and the HDF5 save are the same code. Adding a fifth is an entry
+in `presets.toml` and a sequence file — the same consolidation that turned
+four scanners into presets of `omniscan`.
 
-1. `pulsed_measurement.py` plus four presets — Rabi, Ramsey, Hahn echo and
-   T1 — the same consolidation that turned four scanners into presets of
-   `omniscan`.
-2. A `pulsed` result view: raw trace, the extracted window drawn over it,
-   the analysed curve and its fit.
-3. A `pulse_control` entry in `workflow_blocks.toml`.
+The fit is **named, not inferred**. A sequence's name says nothing about
+the physics it measures, and a hand-edited one may measure something else
+entirely, so `FIT` is `"rabi"`, `"decay"` or `"none"` rather than a guess
+from the file it was loaded from.
 
-Verified on the simulated rig, whose injected constants are recovered:
-a 200 ns Rabi period fits to 199 ns, a 1.5 µs T2\* to 1.46 µs, a 4 µs
-Hahn echo to 3.83 µs. The sequences upload unchanged to a PulseStreamer
-and a PulseBlaster, each reporting its own quantisation.
+A fresh install has an empty sequence library, so the template writes the
+four standard experiments out on its first run. It never overwrites: an
+edited `rabi.json` is yours, and silently restoring the shipped one would
+undo an afternoon of calibration.
+
+## Seeing the extraction, not just the curve
+
+The result view draws two things. The curve — one point per swept tau,
+with Poisson error bars and the fit over it — is the measurement. Below
+it is the **raw record summed over every readout, with the extracted
+window shaded on it**, because that is the step that goes wrong quietly:
+a window fifty nanoseconds early mixes in dark counts, one fifty
+nanoseconds late throws away the photons that carry the spin state, and
+neither raises anything. The curve simply comes out flatter and the T2
+comes out short. Being able to look at it is the only defence.
+
+## Verified
+
+On the simulated rig, whose injected constants are recovered: a 200 ns
+Rabi period fits to 199.7 ns, a 1.5 µs T2\* to 1.46 µs, a 4 µs Hahn echo
+to 3.83 µs. The sequences upload unchanged to a PulseStreamer and a
+PulseBlaster, each reporting its own quantisation.
+
+Headless: `test_pulse_extract.py`, `test_pulse_analyse.py`,
+`test_pulsed_plan.py`, `test_plan_transport.py`, plus the template and
+all four presets in `test_template_smoke.py`. Offscreen:
+`scripts/verify_pulse_editor.py` (47 checks) and
+`scripts/verify_pulse_measurement.py` (34).
 
 ## Deliberate differences from Qudi
 
@@ -286,4 +314,4 @@ The design is cited; the source is not copied.
   PulseBlaster) — complete.
 - **6d** (measurement plan, extraction, analysis, fits) — complete.
 - **6e, measurement half** (the pulsed-measurement template, its four
-  presets and the `pulsed` result view) — not started.
+  presets, the control dock and the `pulsed` result view) — complete.

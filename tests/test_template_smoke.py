@@ -38,6 +38,7 @@ from labpilot.core.workflow.instrument_roles import (
 from labpilot.core.workflow.presets import load_presets
 from labpilot.instruments.mock.hardware_scan import MockNIScanner
 from labpilot.instruments.mock.microwave_sources import MockMicrowaveSource
+from labpilot.instruments.mock.pulse_rig import MockGatedCounter, MockPulser
 from labpilot.instruments.MockBasic.simple import (
     MockBasicActuator1D,
     MockBasicActuatorND,
@@ -62,6 +63,7 @@ _MOCKS = {
     ("source", "SOURCE"): MockBasicSource,
     ("source", None): MockBasicSource,
     ("generic", None): MockNIScanner,
+    ("counter", None): MockGatedCounter,
 }
 
 # Per-template constant overrides, passed as the workflow instance's
@@ -89,6 +91,14 @@ _SHRINK: dict[str, dict] = {
     "peak_fit_series": {"N_REPEATS": 3},
     "pump_probe_spectroscopy": {"DELAY_POSITIONS_MM": [0.0, 1.0]},
     "time_series_acquisition": {"DURATION_S": 0.6, "SAMPLE_INTERVAL_S": 0.2},
+    # A real pulsed run accumulates thousands of sweeps over minutes.
+    # Two checkpoints of a short sequence is the same code path in a
+    # second, and the physics is checked properly in test_pulsed_plan.py.
+    "pulsed_measurement": {"SWEEPS": 20, "CHECKPOINTS": 2, "BIN_WIDTH": 8e-9},
+    "rabi": {"SWEEPS": 20, "CHECKPOINTS": 2, "BIN_WIDTH": 8e-9},
+    "ramsey": {"SWEEPS": 20, "CHECKPOINTS": 2, "BIN_WIDTH": 8e-9},
+    "hahn_echo": {"SWEEPS": 20, "CHECKPOINTS": 2, "BIN_WIDTH": 8e-9},
+    "t1": {"SWEEPS": 20, "CHECKPOINTS": 2, "BIN_WIDTH": 8e-9},
 }
 
 # omniscan declares three optional roles and picks a strategy from whichever
@@ -106,6 +116,13 @@ _MOCK_OVERRIDES: dict[tuple[str, str], type] = {
     # asks for an integration time — which a 0D counter has no parameter
     # for, and omniscan rightly refuses to silently ignore.
     ("hyperspectral_imaging", "detector"): MockBasicDetector1D,
+    # A pulser is `kind="generic"` like a hardware scanner, so the
+    # per-kind mock is the wrong device entirely — capability, not kind,
+    # is what actually distinguishes them.
+    **{
+        (name, "pulser"): MockPulser
+        for name in ("pulsed_measurement", "rabi", "ramsey", "hahn_echo", "t1")
+    },
 }
 
 

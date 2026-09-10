@@ -2030,3 +2030,148 @@ class PulseSequenceResultViewAdapter(ResultViewAdapter):
             source.get(result_ui.get("channels_key", "channels")),
             source.get(result_ui.get("duration_key", "point_duration")),
         )
+
+
+class PulsedResultView(QWidget):
+    """What a pulsed measurement produced: the curve, and where it came from.
+
+    Two plots, because a pulsed result is two things and showing only the
+    first is how a wrong answer survives:
+
+    - **the curve** — one point per swept tau, with Poisson error bars and
+      the fit drawn over it. This is the measurement;
+    - **the raw record**, summed over every readout, with the extracted
+      window shaded on it. This is the step that goes wrong quietly. A
+      window that starts fifty nanoseconds early mixes in dark counts and
+      costs contrast; one that starts fifty late throws away the photons
+      that carry the spin state. Neither raises anything — the curve just
+      comes out flatter and the T2 comes out short — so the only defence
+      is being able to see it.
+
+    Everything arrives as plain lists (`Extraction.to_dict()` and
+    `Analysis.to_dict()`), so this holds no pulse objects and needs
+    nothing from `core.pulse` in the Qt process.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        self.summary = QLabel("No measurement yet")
+        self.summary.setStyleSheet("color: #888;")
+        layout.addWidget(self.summary)
+
+        self.curve_plot = pg.PlotWidget()
+        self.curve_plot.showGrid(x=True, y=True, alpha=0.2)
+        self.curve_plot.addLegend(offset=(-10, 10))
+        layout.addWidget(self.curve_plot, 3)
+
+        self.record_plot = pg.PlotWidget()
+        self.record_plot.setLabel("bottom", "Time in readout", units="s")
+        self.record_plot.setLabel("left", "Counts")
+        self.record_plot.showGrid(x=True, y=True, alpha=0.2)
+        layout.addWidget(self.record_plot, 2)
+
+        self._points = self.curve_plot.plot(
+            [], [], pen=pg.mkPen("#42a5f5", width=2),
+            symbol="o", symbolSize=5, symbolBrush="#42a5f5", name="measured",
+        )
+        self._fit_curve = self.curve_plot.plot(
+            [], [], pen=pg.mkPen("#e53935", width=2, style=Qt.PenStyle.DashLine),
+            name="fit",
+        )
+        self._errors = pg.ErrorBarItem(x=np.array([]), y=np.array([]), pen="#42a5f5")
+        self.curve_plot.addItem(self._errors)
+
+        self._record = self.record_plot.plot([], [], pen=pg.mkPen("#9e9e9e", width=1))
+        # Shaded rather than two lines: the window is a region, and a
+        # region is what someone has to judge by eye against the pulse.
+        self._window = pg.LinearRegionItem(brush=(76, 175, 80, 40), movable=False)
+        self._window.setZValue(-10)
+        self.record_plot.addItem(self._window)
+        self._window.hide()
+
+    def update_data(self, source: dict) -> None:
+        tau = _as_list(source.get("tau"))
+        curve = _as_list(source.get("curve"))
+        analysis = source.get("analysis") or {}
+        extraction = source.get("extraction") or {}
+
+        self.curve_plot.setLabel("left", analysis.get("label") or "signal",
+                                 units=analysis.get("unit") or None)
+        self.curve_plot.setLabel("bottom", source.get("sweep_name") or "tau", units="s")
+
+        pairs = [(x, y) for x, y in zip(tau, curve) if y is not None and np.isfinite(y)]
+        xs = np.asarray([p[0] for p in pairs], dtype=float)
+        ys = np.asarray([p[1] for p in pairs], dtype=float)
+        self._points.setData(xs, ys)
+
+        errors = _as_list(source.get("errors"))[: len(pairs)]
+        if len(errors) == len(xs) and len(xs):
+            self._errors.setData(
+                x=xs, y=ys, height=2 * np.nan_to_num(np.asarray(errors, dtype=float))
+            )
+            self._errors.show()
+        else:
+            self._errors.hide()
+
+        fit = source.get("fit")
+        if isinstance(fit, dict) and fit.get("curve"):
+            self._fit_curve.setData(np.asarray(tau, dtype=float),
+                                    np.asarray(fit["curve"], dtype=float))
+        else:
+            self._fit_curve.setData([], [])
+
+        profile = _as_list(extraction.get("profile"))
+        width = float(extraction.get("bin_width_s") or 0.0)
+        if profile and width > 0:
+            self._record.setData(np.arange(len(profile)) * width,
+                                 np.asarray(profile, dtype=float))
+            start, stop = extraction.get("window_s") or (0.0, 0.0)
+            self._window.setRegion((float(start), float(stop)))
+            self._window.setVisible(bool(extraction.get("found")))
+        self.summary.setText(self._summary(source, analysis, extraction, fit))
+
+    @staticmethod
+    def _summary(source: dict, analysis: dict, extraction: dict, fit: Any) -> str:
+        parts = [
+            f"{source.get('sequence', '?')}",
+            f"{source.get('completed', 0)}/{source.get('total', 0)} checkpoints",
+        ]
+        if analysis.get("method"):
+            parts.append(f"analysed by {analysis['method']}")
+        if extraction.get("method"):
+            found = "" if extraction.get("found", True) else " (nothing found yet)"
+            parts.append(f"extracted by {extraction['method']}{found}")
+        if isinstance(fit, dict):
+            if "pi_pulse" in fit:
+                parts.append(
+                    f"pi = {fit['pi_pulse'] * 1e9:.1f} ns, "
+                    f"period = {fit['period'] * 1e9:.1f} ns"
+                )
+            elif "decay" in fit:
+                parts.append(f"decay = {fit['decay'] * 1e6:.2f} us")
+        elif source.get("fit_model") not in (None, "", "none"):
+            parts.append("fit did not converge")
+        return " · ".join(parts)
+
+
+def _as_list(value: Any) -> list:
+    """A wire value as a plain list — `None` and scalars become empty."""
+    if value is None:
+        return []
+    return list(value) if isinstance(value, (list, tuple)) else []
+
+
+class PulsedResultViewAdapter(ResultViewAdapter):
+    component_type = "pulsed"
+
+    @staticmethod
+    def build(window: Any, result_ui: dict) -> Any:
+        return PulsedResultView()
+
+    @staticmethod
+    def update(view: Any, result_ui: dict, source: dict) -> None:
+        view.update_data(source)

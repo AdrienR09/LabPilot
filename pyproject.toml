@@ -121,6 +121,12 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]  # allow unused imports in __init__.py
+# Qt signals are class-scope attributes and are mixedCase by Qt's own
+# convention — `sigParamChanged`, not `sig_param_changed`. Renaming them
+# would make this codebase the only Qt code that spells them differently,
+# so N815 is off where the Qt widgets live rather than silenced one
+# `# noqa` at a time.
+"src/labpilot/ui/desktop/**" = ["N815"]
 
 [tool.ruff.format]
 quote-style = "double"

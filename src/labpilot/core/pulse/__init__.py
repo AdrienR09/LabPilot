@@ -65,6 +65,7 @@ from labpilot.core.pulse.shapes import (
 from labpilot.core.pulse.store import (
     SavedSequence,
     delete_sequence,
+    ensure_default_sequences,
     list_sequences,
     load_sequence,
     save_sequence,
@@ -101,6 +102,7 @@ __all__ = [
     "check_activation",
     "default_analysis",
     "delete_sequence",
+    "ensure_default_sequences",
     "expand",
     "extract",
     "extractor_parameters",

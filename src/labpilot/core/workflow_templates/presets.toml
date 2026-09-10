@@ -71,3 +71,68 @@ so each pixel holds a spectrum rather than a number."""
 SCAN_AXES = ["x", "y"]
 AXIS_RANGES = { x = [-4.0, 4.0, 5], y = [-4.0, 4.0, 5] }
 INTEGRATION_TIME_MS = 50.0
+
+# --- Pulsed measurements ----------------------------------------------------
+#
+# The four NV experiments. They differ in which saved sequence they play
+# and which curve they fit; everything else — uploading, gating, counting,
+# extraction, analysis, streaming, the HDF5 save — is the same template.
+# Each names a sequence the editor ships as a default, so a fresh install
+# has something to run; edit or replace it in the Pulse Sequence Editor.
+
+[rabi]
+template = "pulsed_measurement"
+description = """Drive for a varying time, then read out — the calibration
+everything else depends on.
+
+The first minimum is the pi pulse and twice that is the Rabi period, which
+is what Ramsey, Hahn echo and T1 all set their pulse lengths from. Bind
+`pulser` and `counter`, check CHANNELS matches your wiring, run."""
+
+[rabi.params]
+SEQUENCE = "rabi"
+FIT = "rabi"
+SWEEPS = 2000
+
+[ramsey]
+template = "pulsed_measurement"
+description = """pi/2 — free evolution — pi/2: measures T2*, the
+inhomogeneous dephasing time.
+
+Alternating, so each point is measured twice with opposite final phases
+and the analysis divides one by the other. Everything common to the pair
+— laser power, collection efficiency, the NV's own drift over the minutes
+between the first point and the last — cancels point by point."""
+
+[ramsey.params]
+SEQUENCE = "ramsey"
+FIT = "decay"
+SWEEPS = 4000
+
+[hahn_echo]
+template = "pulsed_measurement"
+description = """pi/2 — tau — pi — tau — pi/2: measures T2.
+
+The refocusing pi pulse undoes static dephasing, so what is left is the
+noise the spin cannot be protected from. Expect a T2 well longer than the
+Ramsey T2*; if it is not, look at the pi pulse before the physics."""
+
+[hahn_echo.params]
+SEQUENCE = "hahn_echo"
+FIT = "decay"
+SWEEPS = 6000
+
+[t1]
+template = "pulsed_measurement"
+description = """Polarise, wait, read out — measures T1, the spin-lattice
+relaxation time.
+
+Log-spaced, because the decay spans decades and linear spacing wastes
+almost every point. The wait dominates the sequence duration, so this
+accumulates sweeps far more slowly than the others: expect minutes."""
+
+[t1.params]
+SEQUENCE = "t1"
+FIT = "decay"
+SWEEPS = 500
+CHECKPOINTS = 10

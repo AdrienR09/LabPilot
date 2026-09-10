@@ -946,10 +946,12 @@ class PulsedMeasurementPlan:
         it when stopping actuators: a run that has already finished must
         still be reported as finished.
 
-        Nothing happens for a rig whose source has no such action — set
-        `microwave_on`/`microwave_off` to `""` — or for one where the
-        role is not bound at all, which is the digital-rig case where the
-        pulser gates an always-on source.
+        Nothing happens for a source that declares **no** actions: it has
+        no on/off concept, which is the ordinary digital-rig case where
+        the pulser gates a source left running. A source that declares
+        actions but not *this* one is a different thing — a name that is
+        wrong — and saying so beats a run that measures nothing and
+        reports success.
         """
         action = self.microwave_on if on else self.microwave_off
         if not self.microwave or not action or not session.has(self.microwave):
@@ -957,6 +959,8 @@ class PulsedMeasurementPlan:
 
         device = session.get(self.microwave)
         declared = device.schema.action_names
+        if not declared:
+            return
         if action not in declared:
             if not on:
                 return

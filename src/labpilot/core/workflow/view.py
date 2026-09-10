@@ -80,6 +80,13 @@ def pick_view(
             "duration_key": "point_duration",
         }
 
+    # Likewise a pulsed measurement: its `data` is the 2-D accumulation
+    # history, which `NDScanResultView` would render as an image of
+    # nothing much. What a person wants is the curve and the readout
+    # window the curve was extracted from, and both are in the result.
+    if _is_pulsed(result):
+        return {"type": "pulsed"}
+
     dataset = Dataset.from_result(result, result_ui=result_ui)
     if not dataset.arrays:
         return None
@@ -154,6 +161,21 @@ def _is_timing_diagram(result: Mapping[str, Any]) -> bool:
         return False
     first = segments[0]
     return isinstance(first, dict) and {"channel", "start", "stop"} <= set(first)
+
+
+def _is_pulsed(result: Mapping[str, Any]) -> bool:
+    """Whether this result is a pulsed measurement.
+
+    Structural, like `_is_timing_diagram`: it must carry the analysed
+    curve *and* the extraction that produced it. A run with only one of
+    the two is something else that happens to share a key name, and the
+    view would show half a picture.
+    """
+    curve = result.get("curve")
+    extraction = result.get("extraction")
+    if not isinstance(curve, list) or not isinstance(extraction, dict):
+        return False
+    return {"window", "bin_width_s"} <= set(extraction)
 
 
 def _label(name: str, unit: str) -> str:

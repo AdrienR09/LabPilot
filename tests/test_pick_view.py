@@ -153,3 +153,53 @@ def test_something_merely_called_segments_is_not_a_timing_diagram():
 def test_an_empty_segment_list_is_not_a_timing_diagram():
     spec = pick_view({"segments": []})
     assert spec is None or spec["type"] != "pulse_sequence"
+
+
+# --- A pulsed measurement ---------------------------------------------------
+
+
+PULSED = {
+    "data": [1.0, 0.9, 0.8, 1.0, 0.9, 0.8],
+    "shape": [2, 3],
+    "axis_names": ["sweeps", "tau"],
+    "axis_positions": [[100.0, 200.0], [1e-8, 2e-8, 3e-8]],
+    "curve": [1.0, 0.9, 0.8],
+    "extraction": {"window": [37, 412], "bin_width_s": 8e-9, "profile": [1, 2, 3]},
+}
+
+
+def test_a_pulsed_measurement_is_inferred_from_its_curve_and_extraction():
+    """Its `data` is the accumulation history, which the N-D scan view
+    would render as an image of nothing much. What a person wants is the
+    curve and the readout window it came from."""
+    assert pick_view(PULSED)["type"] == "pulsed"
+
+
+def test_a_pulsed_result_wins_over_the_n_d_scan_convention():
+    """It carries `data`/`shape`/`axis_names` too, so the order of the
+    two checks is what decides — and this one is more specific."""
+    assert {"shape", "axis_names", "axis_positions"} <= set(PULSED)
+    assert pick_view(PULSED)["type"] != "ndscan"
+
+
+def test_a_curve_with_no_extraction_is_not_a_pulsed_measurement():
+    """Half the picture is not the picture. A run with only one of the
+    two is something else that shares a key name."""
+    spec = pick_view({**PULSED, "extraction": None})
+    assert spec is None or spec["type"] != "pulsed"
+
+
+def test_an_extraction_with_no_curve_is_not_one_either():
+    spec = pick_view({**PULSED, "curve": None})
+    assert spec is None or spec["type"] != "pulsed"
+
+
+def test_the_pulsed_template_declares_what_would_be_inferred_anyway():
+    from pathlib import Path
+
+    from labpilot.core.workflow.instrument_roles import read_result_ui_from_file
+
+    declared = read_result_ui_from_file(
+        Path("src/labpilot/core/workflow_templates/pulsed_measurement.py")
+    )
+    assert declared["type"] == pick_view(PULSED)["type"] == "pulsed"

@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 __all__ = [
     "SavedSequence",
     "delete_sequence",
+    "ensure_default_sequences",
     "list_sequences",
     "load_sequence",
     "save_sequence",
@@ -96,6 +97,36 @@ def save_sequence(sequence: PulseSequence, directory: Path | None = None) -> Pat
     path = target / f"{slug(sequence.name)}.json"
     path.write_text(json.dumps(sequence.to_dict(), indent=2) + "\n")
     return path
+
+
+#: The experiments a fresh install can run without authoring anything.
+#: Names match the four presets of `pulsed_measurement`.
+DEFAULTS = ("rabi", "ramsey", "hahn_echo", "t1")
+
+
+def ensure_default_sequences(directory: Path | None = None) -> list[Path]:
+    """Write the four standard experiments, if they are not there already.
+
+    A fresh install has an empty sequence library, so the Rabi preset
+    would fail on a missing file before it ever reached hardware. These
+    are generated from `library.py` against the default rig profile —
+    which is the same thing the editor's Generate button does, written to
+    the same place, so they are ordinary files to open and edit rather
+    than anything special.
+
+    Never overwrites: an edited `rabi.json` is the user's, and silently
+    restoring the shipped one would undo an afternoon of calibration.
+    """
+    from labpilot.core.pulse.library import RigProfile, build
+
+    target = directory or sequence_dir()
+    written: list[Path] = []
+    profile = RigProfile()
+    for name in DEFAULTS:
+        if (target / f"{slug(name)}.json").exists():
+            continue
+        written.append(save_sequence(build(name, profile), target))
+    return written
 
 
 def load_sequence(name: str, directory: Path | None = None) -> PulseSequence:
