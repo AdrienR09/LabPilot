@@ -49,12 +49,12 @@ in front of you not existing.
 from __future__ import annotations
 
 import re
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from labpilot.core.device.constraints import Constraints, ScalarConstraint
+from labpilot.instruments._model_table import load_table
 
 __all__ = [
     "AI",
@@ -267,16 +267,9 @@ def load_models(
     """Every known card model, keyed by number.
 
     The packaged file is the base and `~/.labpilot/config/ni_models.toml`
-    is merged over it, entry by entry and field by field — the same rule
-    `ui/desktop/block_config.py` uses, and for the same reason: a user
-    file that *replaced* the packaged one would silently lose every model
-    added by a later release, and the failure would look like "my card
-    isn't supported" rather than like a stale file.
-
-    Unlike the block config, nothing is ever written to the user's path:
-    the packaged table is complete on its own, and a file that only exists
-    to be overridden should not appear until someone means to override
-    something.
+    is merged over it — see `instruments/_model_table.py`, which holds
+    that rule for every device family that has a model table, and the bug
+    it exists to prevent.
     """
     key = (packaged or _PACKAGED, user or _USER)
     if refresh:
@@ -284,38 +277,14 @@ def load_models(
     if key in _cache:
         return _cache[key]
 
-    base = _read(key[0])
-    over = _read(key[1]) if key[1].exists() else {}
-
-    merged: dict[str, dict[str, Any]] = {}
-    for entry in base.get("card", ()):
-        merged[normalise_number(entry["number"])] = dict(entry)
-    for entry in over.get("card", ()):
-        number = normalise_number(entry.get("number", ""))
-        merged[number] = {**merged.get(number, {}), **entry}
-
-    families = {**_families(base), **_families(over)}
     models = {
-        number: NICardModel(**{**families.get(entry.get("family", ""), {}), **entry})
-        for number, entry in merged.items()
+        number: NICardModel(**entry)
+        for number, entry in load_table(
+            key[0], key[1], section="card", key="number", normalise=normalise_number
+        ).items()
     }
     _cache[key] = models
     return models
-
-
-def _families(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Per-family defaults an entry inherits — timebase, counter width and
-    input ranges are properties of a *series*, so stating them once per
-    family is both shorter and much harder to get inconsistently wrong."""
-    return {
-        name: {k: v for k, v in body.items() if k != "number"}
-        for name, body in (config.get("family") or {}).items()
-    }
-
-
-def _read(path: Path) -> dict[str, Any]:
-    with open(path, "rb") as f:
-        return tomllib.load(f)
 
 
 def find_model(name: str, models: dict[str, NICardModel] | None = None) -> NICardModel:

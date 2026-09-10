@@ -281,9 +281,52 @@ on a sample clock it must be given, and nothing on the card produces a
 implement a fast counter on NI hardware either. Use a TimeTagger or a
 FastComTec for that; see [pulsed.md](pulsed.md).
 
+## Ocean Optics spectrometers
+
+The same shape, for the same reason. Every Ocean Optics / Ocean Insight
+spectrometer is `ocean_optics` (and `mock_ocean_optics`), with the model
+as a setting:
+
+```python
+spectrometer = create_adapter("ocean_optics", {
+    "serial_number": "QEP01583",   # blank takes the first one found
+    "model": "QE Pro",             # blank asks the device
+})
+```
+
+Naming the model is what makes the instrument configurable before it is
+plugged in: a QE Pro has 1044 pixels, an 18-bit ADC and cannot expose for
+less than 8 ms, so `integration_time_ms=1` is refused by name — on a
+laptop, at the point the acquisition is being written, rather than by a
+driver error at the bench. `quantise_exposure()` answers the other
+question ("what *would* I get?") and returns 8 ms with the reason.
+
+`src/labpilot/instruments/OceanOptics/models.toml` covers 31 models —
+Flame, Ocean HDX/FX/ST/SR/HR, QE Pro, QE65000, NIRQuest, Maya, USB2000+,
+HR4000, Torus, Jaz, STS, Spark and the rest. The pixel counts, ADC full
+scales, exposure limits and dark-pixel ranges are transcribed from
+`python-seabreeze`'s own per-model classes (MIT), which carries them
+because the USB protocol differs per model. Override or extend the table
+in `~/.labpilot/config/ocean_models.toml`; the connected device wins over
+both, and `reconcile()` reports any disagreement.
+
+A model answers to every name it is known by — seabreeze reports `QEPRO`,
+the box says `QE Pro`, and lookup ignores case, spaces and hyphens. A `+`
+is not punctuation: `USB2000` and `USB2000+` are different instruments
+with different ADCs.
+
+Beyond what qudi's and pyMoDAQ's Ocean modules do (a serial number, an
+exposure, `wavelengths()`/`intensities()`), the adapter adds saturation
+reporting (a pixel at full scale carries no information, and a fit through
+a flat-topped peak is confidently wrong), scan averaging, OceanView-style
+boxcar smoothing, the electric-dark and nonlinearity corrections, trigger
+mode, and a cooler setpoint on the cooled models. The spectrum comes back
+as a `Dataset` whose `intensities` names `wavelengths` as its axis, so
+plots and HDF5 files get the x-scale without being told.
+
 ## The instrument catalog
 
-304 instruments are catalogued across 95 manufacturers: mock/test-fixture
+306 instruments are catalogued across 95 manufacturers: mock/test-fixture
 devices (for development without real hardware), PyMeasure-backed
 adapters (hand-written and auto-generated from every class in the
 installed `pymeasure` library), and pylablib-backed adapters. `catalog.py`

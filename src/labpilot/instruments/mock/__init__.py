@@ -11,6 +11,7 @@ from .lock_in_amplifiers import *
 from .microwave_sources import *
 from .motors import *
 from .ni_card import *
+from .ocean_optics import *
 from .optical_modulators import *
 from .oscilloscopes import *
 from .power_meters import *
@@ -75,4 +76,6 @@ __all__ = [
     'MockNIScanner',
     # A whole simulated NI card, chosen by model number — mock/ni_card.py
     'MockNICard',
+    # A simulated Ocean Optics spectrometer, chosen by model — mock/ocean_optics.py
+    'MockOceanOptics',
 ]

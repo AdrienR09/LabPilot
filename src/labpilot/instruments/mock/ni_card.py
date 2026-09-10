@@ -74,7 +74,8 @@ class MockNICard(_CardConfig, AdapterBase):
         self._running = False
 
     @property
-    def schema(self):  # noqa: D102 - the shared one, plus a Mock tag
+    def schema(self):
+        """The shared schema, plus a Mock tag."""
         from labpilot.instruments.NI.card import card_schema
 
         return card_schema(

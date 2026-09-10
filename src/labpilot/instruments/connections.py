@@ -72,6 +72,18 @@ CONNECTION_METHODS: dict[str, ConnectionMethod] = {
             ),
         ),
     ),
+    # seabreeze finds Ocean Optics spectrometers over USB itself, so the
+    # only address is which one — and naming the model makes its exposure
+    # limits and pixel count known before it is plugged in.
+    "ocean_optics": ConnectionMethod(
+        "ocean_optics", "Ocean Optics (USB)",
+        (
+            ConnectionField(
+                "serial_number", "str", "Serial number (blank = first found)", ""
+            ),
+            ConnectionField("model", "str", "Model (blank = ask the device)", ""),
+        ),
+    ),
     "none": ConnectionMethod("none", "No connection (mock/simulated)", ()),
 }
 

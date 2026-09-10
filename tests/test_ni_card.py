@@ -16,6 +16,7 @@ internal consistency (a model that says it has four counters must generate
 from __future__ import annotations
 
 import asyncio
+import re
 import tomllib
 from pathlib import Path
 
@@ -84,7 +85,7 @@ def test_a_bus_the_table_does_not_list_is_still_accepted():
 
 
 def test_an_unknown_model_says_where_to_add_it():
-    with pytest.raises(KeyError, match="ni_models.toml"):
+    with pytest.raises(KeyError, match=re.escape("ni_models.toml")):
         find_model("PCIe-9999")
 
 
@@ -250,7 +251,7 @@ def test_two_channels_cannot_share_a_name_or_a_terminal():
 
 def test_a_range_wider_than_the_card_is_refused():
     channel = Channel("x", "ao", "ao0", minimum=-50.0, maximum=50.0)
-    with pytest.raises(ValueError, match=r"±10"):
+    with pytest.raises(ValueError, match=re.escape("±10")):
         validate_channels([channel], find_model("6363"))
 
 
@@ -311,13 +312,18 @@ def test_the_real_adapter_describes_itself_with_no_driver_installed():
 
 
 def test_connecting_without_the_driver_says_what_to_install():
-    card = NICardAdapter(model="PCIe-6363", channels="x=ao0")
-    pytest.importorskip  # noqa: B018 - documented below
+    """The message has to name the packages *and* say that configuring a
+    card needs none of them — otherwise it reads as "this feature is
+    unavailable here", which is exactly wrong."""
     try:
         import pylablib.devices.NI  # noqa: F401
     except ImportError:
-        with pytest.raises(ImportError, match="NI-DAQmx"):
-            card._open()
+        pass
+    else:
+        pytest.skip("pylablib's NI backend is installed on this machine")
+
+    with pytest.raises(ImportError, match="NI-DAQmx"):
+        NICardAdapter(model="PCIe-6363", channels="x=ao0")._open()
 
 
 def test_the_model_and_the_device_name_are_readable():

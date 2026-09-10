@@ -48,6 +48,7 @@ channel and schema layers are exercised headlessly in
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 import numpy as np
@@ -332,10 +333,8 @@ class NICardAdapter(_CardConfig, AdapterBase):
 
     def _disconnect_sync(self) -> None:
         if self._daq is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._daq.close()
-            except Exception:
-                pass
             self._daq = None
 
     def _self_test_sync(self) -> None:

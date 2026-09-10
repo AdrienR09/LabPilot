@@ -85,6 +85,7 @@ def _pymeasure(key: str, mfg: str, model: str, name: str, itype: InstrumentType,
 INSTRUMENT_CATALOG: list[InstrumentMetadata] = [
     # Mock adapters (41) — src/instruments/mock/
     _mock("mock_ni_card", "NI-DAQmx", "Mock NI DAQ Card (any model)", InstrumentType.GENERIC, ["daq", "ni-daqmx", "counter", "scanner", "hardware-scan"]),
+    _mock("mock_ocean_optics", "Ocean Optics", "Mock Ocean Optics Spectrometer (any model)", InstrumentType.DETECTOR_1D, ["spectrometer", "spectroscopy", "ocean-optics"]),
     _mock("mock_spectrometer", "Basic", "Mock Spectrometer", InstrumentType.DETECTOR_1D, ["spectrometer", "visible"]),
     _mock("mock_hi_res_spectrometer", "HighRes", "Mock High-Resolution Spectrometer", InstrumentType.DETECTOR_1D, ["spectrometer", "high-res"]),
     _mock("mock_uv_vis_spectrometer", "UV-VIS", "Mock UV-VIS Spectrometer", InstrumentType.DETECTOR_1D, ["spectrometer", "uv-vis"]),
@@ -416,6 +417,12 @@ INSTRUMENT_CATALOG.extend([
     # they are listed and searchable on a machine with no hardware.
     InstrumentMetadata("swabian_pulse_streamer", "Swabian", "Pulse Streamer 8/2", "Swabian Pulse Streamer", InstrumentType.GENERIC, InstrumentBackend.VENDOR, connection_types=['ethernet'], tags=['pulser', 'sequencer', 'ttl', 'digital', 'odmr', 'pulsed']),
     InstrumentMetadata("spincore_pulse_blaster", "SpinCore", "PulseBlaster ESR-PRO", "SpinCore PulseBlaster", InstrumentType.GENERIC, InstrumentBackend.VENDOR, connection_types=['pci'], tags=['pulser', 'sequencer', 'ttl', 'digital', 'odmr', 'pulsed']),
+    # Every Ocean Optics / Ocean Insight spectrometer as one entry: the
+    # model is a setting, and OceanOptics/models.toml (transcribed from
+    # python-seabreeze's own per-model table) supplies its pixel count and
+    # exposure limits. Built against seabreeze's documented API but not
+    # run against hardware — see OceanOpticsAdapter's docstring.
+    InstrumentMetadata("ocean_optics", "Ocean Optics", "Ocean Insight", "Ocean Optics Spectrometer (any model)", InstrumentType.DETECTOR_1D, InstrumentBackend.VENDOR, connection_types=['ocean_optics'], tags=['spectrometer', 'spectroscopy', 'ocean-optics', 'seabreeze', 'usb']),
     InstrumentMetadata("laser_quantum_finesse", "Laser Quantum", "Finesse", "Laser Quantum Finesse Laser", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, tags=['laser', 'cw']),
     InstrumentMetadata("basler", "Basler", "ace", "Basler ace Camera", InstrumentType.DETECTOR_2D, InstrumentBackend.PYLABLIB, tags=['camera']),
     InstrumentMetadata("photometrics_pvcam", "Photometrics", "PVCAM", "Photometrics PVCAM Camera", InstrumentType.DETECTOR_2D, InstrumentBackend.PYLABLIB, tags=['camera', 'scientific']),

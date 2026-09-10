@@ -1,0 +1,353 @@
+# Ocean Optics / Ocean Insight spectrometers — detector and exposure limits.
+#
+# Transcribed from python-seabreeze's own per-model classes
+# (`seabreeze/pyseabreeze/devices.py`, MIT), which carries these because
+# the USB protocol differs per model and the library has no choice but to
+# know. `pixels`, `max_counts`, the integration limits and the dark-pixel
+# ranges are that file's `spectrum_num_pixel`, `spectrum_max_value`,
+# `integration_time_min`/`_max` (microseconds) and `dark_pixel_indices`.
+#
+# `model` is the name a connected device reports through seabreeze;
+# `label` is what it is called on the box, and `aliases` are the other
+# spellings people type. Lookup ignores case, spaces and hyphens.
+#
+# Editing it: override or add entries in
+# ~/.labpilot/config/ocean_models.toml, which is merged over this file
+# entry by entry. The connected device always wins over both — see
+# models.py.
+
+# --- Current line -----------------------------------------------------------
+
+[[spectrometer]]
+model = "FLAMES"
+label = "Flame-S"
+aliases = ["Flame", "FlameS", "Flame S"]
+family = "Flame"
+pixels = 2048
+max_counts = 65535
+integration_min_us = 1000
+integration_max_us = 655350000
+dark_pixels = [[6, 21]]
+
+[[spectrometer]]
+model = "HDX"
+label = "Ocean HDX"
+aliases = ["OceanHDX", "USB2000+ HDX"]
+family = "Ocean"
+pixels = 2068
+max_counts = 65535
+integration_min_us = 6000
+integration_max_us = 10000000
+
+[[spectrometer]]
+model = "FX"
+label = "Ocean FX"
+aliases = ["OceanFX"]
+family = "Ocean"
+pixels = 2136
+max_counts = 65535
+integration_min_us = 6000
+integration_max_us = 10000000
+notes = "Fast: designed for kHz-rate acquisition with onboard buffering."
+
+[[spectrometer]]
+model = "ST"
+label = "Ocean ST"
+aliases = ["OceanST", "ST-VIS", "ST-UV", "ST-NIR"]
+family = "Ocean"
+pixels = 1516
+max_counts = 16383
+integration_min_us = 1560
+integration_max_us = 6000000
+dark_pixels = [[0, 13]]
+
+[[spectrometer]]
+model = "SR2"
+label = "Ocean SR2"
+aliases = ["OceanSR2"]
+family = "Ocean"
+pixels = 2110
+max_counts = 65535
+integration_min_us = 1
+integration_max_us = 2000000
+dark_pixels = [[0, 24]]
+
+[[spectrometer]]
+model = "SR4"
+label = "Ocean SR4"
+aliases = ["OceanSR4"]
+family = "Ocean"
+pixels = 3648
+max_counts = 65535
+integration_min_us = 3800
+integration_max_us = 10000000
+
+[[spectrometer]]
+model = "SR6"
+label = "Ocean SR6"
+aliases = ["OceanSR6"]
+family = "Ocean"
+pixels = 2048
+max_counts = 65535
+integration_min_us = 7200
+integration_max_us = 5000000
+
+[[spectrometer]]
+model = "HR2"
+label = "Ocean HR2"
+aliases = ["OceanHR2"]
+family = "Ocean"
+pixels = 2110
+max_counts = 65535
+integration_min_us = 1
+integration_max_us = 2000000
+
+[[spectrometer]]
+model = "HR4"
+label = "Ocean HR4"
+aliases = ["OceanHR4"]
+family = "Ocean"
+pixels = 3648
+max_counts = 65535
+integration_min_us = 3800
+integration_max_us = 10000000
+
+[[spectrometer]]
+model = "HR6"
+label = "Ocean HR6"
+aliases = ["OceanHR6"]
+family = "Ocean"
+pixels = 2048
+max_counts = 65535
+integration_min_us = 7200
+integration_max_us = 5000000
+
+[[spectrometer]]
+model = "SPARK"
+label = "Spark"
+aliases = ["Spark-VIS"]
+family = "Ocean"
+pixels = 1024
+max_counts = 16383
+integration_min_us = 10
+integration_max_us = 85000000
+
+# --- Cooled, high-sensitivity -----------------------------------------------
+
+[[spectrometer]]
+model = "QEPRO"
+label = "QE Pro"
+aliases = ["QE-Pro", "QEPro"]
+family = "QE"
+pixels = 1044
+max_counts = 262143
+integration_min_us = 8000
+integration_max_us = 1600000000
+dark_pixels = [[0, 4], [1040, 1044]]
+cooled = true
+notes = "18-bit ADC and a cooled back-thinned detector; 8 ms minimum exposure."
+
+[[spectrometer]]
+model = "QE65000"
+label = "QE65000"
+aliases = ["QE65pro", "QE65 Pro"]
+family = "QE"
+pixels = 1280
+max_counts = 65535
+integration_min_us = 8000
+integration_max_us = 1600000000
+dark_pixels = [[0, 4], [1040, 1044]]
+cooled = true
+
+[[spectrometer]]
+model = "NIRQUEST512"
+label = "NIRQuest512"
+aliases = ["NIRQuest 512"]
+family = "NIRQuest"
+pixels = 512
+max_counts = 65535
+integration_min_us = 1000
+integration_max_us = 1600000000
+cooled = true
+notes = "InGaAs; near-infrared."
+
+[[spectrometer]]
+model = "NIRQUEST256"
+label = "NIRQuest256"
+aliases = ["NIRQuest 256"]
+family = "NIRQuest"
+pixels = 256
+max_counts = 65535
+integration_min_us = 1000
+integration_max_us = 1600000000
+cooled = true
+notes = "InGaAs; near-infrared."
+
+# --- Maya / Apex ------------------------------------------------------------
+
+[[spectrometer]]
+model = "MAYA2000PRO"
+label = "Maya2000 Pro"
+aliases = ["Maya2000Pro", "MayaPro"]
+family = "Maya"
+pixels = 2304
+max_counts = 64000
+integration_min_us = 7200
+integration_max_us = 65000000
+dark_pixels = [[0, 4], [2064, 2068]]
+
+[[spectrometer]]
+model = "MAYA2000"
+label = "Maya2000"
+family = "Maya"
+pixels = 2304
+max_counts = 65535
+integration_min_us = 15000
+integration_max_us = 1600000000
+dark_pixels = [[0, 16]]
+
+[[spectrometer]]
+model = "MAYALSL"
+label = "Maya LSL"
+aliases = ["MayaLSL"]
+family = "Maya"
+pixels = 2304
+max_counts = 64000
+integration_min_us = 7200
+integration_max_us = 65000000
+dark_pixels = [[0, 4], [2064, 2068]]
+
+[[spectrometer]]
+model = "APEX"
+label = "Apex"
+family = "Maya"
+pixels = 2304
+max_counts = 64000
+integration_min_us = 15000
+integration_max_us = 1600000000
+dark_pixels = [[0, 4], [2064, 2068]]
+
+# --- USB / HR line ----------------------------------------------------------
+
+[[spectrometer]]
+model = "USB2000PLUS"
+label = "USB2000+"
+aliases = ["USB2000 Plus", "USB2000P"]
+family = "USB"
+pixels = 2048
+max_counts = 65535
+integration_min_us = 1000
+integration_max_us = 655350000
+dark_pixels = [[6, 21]]
+
+[[spectrometer]]
+model = "USB2000"
+label = "USB2000"
+family = "USB"
+pixels = 2048
+max_counts = 4095
+integration_min_us = 3000
+integration_max_us = 655350000
+dark_pixels = [[2, 24]]
+notes = "12-bit; superseded by the USB2000+."
+
+[[spectrometer]]
+model = "USB4000"
+label = "USB4000"
+family = "USB"
+pixels = 3840
+max_counts = 65535
+integration_min_us = 10
+integration_max_us = 65535000
+dark_pixels = [[5, 16]]
+
+[[spectrometer]]
+model = "USB650"
+label = "USB650 Red Tide"
+aliases = ["Red Tide", "USB-650"]
+family = "USB"
+pixels = 2048
+max_counts = 4095
+integration_min_us = 3000
+integration_max_us = 655350000
+
+[[spectrometer]]
+model = "HR2000"
+label = "HR2000"
+family = "HR"
+pixels = 2048
+max_counts = 4095
+integration_min_us = 3000
+integration_max_us = 655350000
+dark_pixels = [[2, 24]]
+
+[[spectrometer]]
+model = "HR2000PLUS"
+label = "HR2000+"
+aliases = ["HR2000 Plus"]
+family = "HR"
+pixels = 2048
+max_counts = 16383
+integration_min_us = 1000
+integration_max_us = 655350000
+dark_pixels = [[2, 24]]
+
+[[spectrometer]]
+model = "HR4000"
+label = "HR4000"
+family = "HR"
+pixels = 3840
+max_counts = 16383
+integration_min_us = 10
+integration_max_us = 655350000
+dark_pixels = [[2, 13]]
+
+[[spectrometer]]
+model = "TORUS"
+label = "Torus"
+family = "USB"
+pixels = 2048
+max_counts = 65535
+integration_min_us = 1000
+integration_max_us = 655350000
+
+[[spectrometer]]
+model = "JAZ"
+label = "Jaz"
+family = "USB"
+pixels = 2048
+max_counts = 65535
+integration_min_us = 1000
+integration_max_us = 655350000
+dark_pixels = [[2, 24]]
+notes = "Modular, battery-powered."
+
+[[spectrometer]]
+model = "STS"
+label = "STS"
+aliases = ["STS-VIS", "STS-UV", "STS-NIR"]
+family = "USB"
+pixels = 1024
+max_counts = 16383
+integration_min_us = 10
+integration_max_us = 85000000
+
+[[spectrometer]]
+model = "VENTANA"
+label = "Ventana"
+family = "USB"
+pixels = 1024
+max_counts = 65535
+integration_min_us = 22000
+integration_max_us = 60000000
+
+[[spectrometer]]
+model = "ADC1000-USB"
+label = "ADC1000-USB"
+aliases = ["ADC1000USB", "ADC1000"]
+family = "USB"
+pixels = 2048
+max_counts = 65535
+integration_min_us = 5000
+integration_max_us = 65535000
+dark_pixels = [[2, 24]]

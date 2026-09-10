@@ -110,11 +110,22 @@ practical structure for NV pulsed ODMR informed this project's plan.
 
 ## 4. Other upstream projects
 
-- **PyMeasure** (MIT) — 188 of the 301 catalogued adapters are generated
+- **PyMeasure** (MIT) — 188 of the 306 catalogued adapters are generated
   from PyMeasure's own instrument classes; PyMeasure is an optional
   runtime dependency and the instruments remain its work.
-- **pylablib** (BSD) — backs 55 catalogued adapters, likewise as an
-  optional dependency.
+- **pylablib** (**GPL-3.0**, per its own package metadata — this file
+  previously said BSD, which was wrong) — backs 55 catalogued adapters
+  and the NI DAQ card adapter. It is an optional dependency that a user
+  installs themselves and no pylablib code is vendored here, so this
+  repository stays distributable under MIT; a deployment that ships
+  pylablib alongside it inherits the GPL's terms for that combination.
+- **python-seabreeze** (MIT, © Andreas Poehlmann) — backs the Ocean
+  Optics adapter, and its per-model device table
+  (`seabreeze/pyseabreeze/devices.py`) is transcribed into
+  `instruments/OceanOptics/models.toml`: pixel counts, ADC full scales,
+  integration-time limits and dark-pixel ranges. Facts about hardware,
+  reused under a licence that permits it, with the source named in the
+  file itself.
 - **QDarkStyleSheet** (MIT, © Colin Duquesnoy) — the default theme.
 - **Oxygen Icon Theme** (LGPL) — the icon set.
 

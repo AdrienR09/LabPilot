@@ -5,7 +5,7 @@ by importing the live registry, not estimated.
 
 ## The instrument layer
 
-**304 adapters, 95 manufacturers, all describable without hardware.**
+**306 adapters, 95 manufacturers, all describable without hardware.**
 
 | Backend | Count |
 |---|---|
