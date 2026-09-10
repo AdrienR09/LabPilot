@@ -136,6 +136,9 @@ class MockNICard(_CardConfig, AdapterBase):
             "model": self._product_name,
             "channels": self.channel_records(),
             "device": self._device,
+            # A mock agrees with the table by construction — it *is* the
+            # table — so there is never anything to warn about.
+            "warning": "",
         }
         brightness = self._brightness()
         for channel in self.of_kind("ai"):

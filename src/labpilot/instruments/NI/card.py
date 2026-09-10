@@ -23,9 +23,11 @@ Everything up to `connect()` therefore works with no driver present:
   browser, the settings tree and `describe()` all work uninstalled.
 
 `connect()` is where the driver becomes necessary, and it is also where
-the table stops being trusted: `reconcile()` asks DAQmx what the card
-really is and reports every disagreement, because a stale table entry that
-silently overrode a real device would be worse than having no table.
+the table stops being trusted: it asks DAQmx what the card really is and
+records every disagreement in `warning`, which rides along in each
+reading. A stale table entry that silently overrode a real device would be
+worse than having no table — and a check nobody calls is not a check, so
+this one is not left to a caller to remember.
 
 ## What it deliberately is not
 
@@ -131,6 +133,12 @@ def card_schema(
         Parameter(
             "device", dtype="str", readable=True, settable=False,
             role=ParamRole.STATUS, description="NI-MAX device name",
+        ),
+        Parameter(
+            "warning", dtype="str", readable=True, settable=False,
+            role=ParamRole.STATUS,
+            description="How the connected card disagrees with the model "
+                        "table, if it does. Empty is the normal case.",
         ),
     ]
     for channel in channels:
@@ -350,6 +358,8 @@ class NICardAdapter(_CardConfig, AdapterBase):
         self._accumulated: list[float | None] = []
         self._filled = 0
         self._detector = ""
+        self._live: dict[str, Any] = {}
+        self._differences: dict[str, Any] = {}
 
     # --- Connection --------------------------------------------------------
 
@@ -412,6 +422,15 @@ class NICardAdapter(_CardConfig, AdapterBase):
         # plain 2-D array, so the names have to be kept alongside it.
         self._columns = tuple(self._daq.get_input_channels(include=("ai", "ci", "di")))
 
+        # Ask the card what it is, now that one is actually open. Doing it
+        # here rather than leaving `reconcile()` for someone to call is the
+        # difference between a claim and a check: a table entry that
+        # disagrees with the hardware is exactly the failure this whole
+        # file is arranged to make visible, and a method nobody calls
+        # cannot make anything visible.
+        self._live = _inventory(self._daq, self._device)
+        self._differences = _differences(self._model, self._product_name, self._live)
+
     def _span(self, channel: Channel) -> tuple[float, float]:
         low, high = channel.limits or (None, None)
         return (
@@ -455,6 +474,7 @@ class NICardAdapter(_CardConfig, AdapterBase):
             "model": self._product_name,
             "channels": self.channel_records(),
             "device": self._device,
+            "warning": self.warning,
         }
         inputs = self.of_kind("ai", "ci", "di")
         if not inputs or self._daq is None:
@@ -625,25 +645,70 @@ class NICardAdapter(_CardConfig, AdapterBase):
     async def reconcile(self) -> dict[str, Any]:
         """What the card says about itself, against what the table claims.
 
-        Called after connecting. Every difference is reported rather than
-        resolved: the device is right by definition, and the point is to
-        say so out loud so a wrong entry in `models.toml` gets fixed
-        instead of quietly mis-describing every card of that model.
+        `_connect_sync` already did this and kept the answer — see
+        `warning`, which puts it in every reading. This re-asks, for a
+        caller that wants the detail rather than the one-line summary.
+
+        Differences are reported, never resolved: the device is right by
+        definition, and the point is to say so out loud so a wrong entry in
+        `models.toml` gets fixed rather than quietly mis-describing every
+        card of that model.
         """
         daq = self._require()
-        live = await self._to_thread(_inventory, daq, self._device)
-        expected = {
-            "product": self._product_name,
-            "ai": self._model.ai,
-            "ao": self._model.ao,
-            "counters": self._model.counters,
+        self._live = await self._to_thread(_inventory, daq, self._device)
+        self._differences = _differences(
+            self._model, self._product_name, self._live
+        )
+        return {
+            "model": self._model.number,
+            "device": self._live,
+            "differences": self._differences,
+            "warning": self.warning,
         }
-        differences = {
-            key: {"table": expected[key], "device": live[key]}
-            for key in expected
-            if live.get(key) is not None and live[key] != expected[key]
-        }
-        return {"model": self._model.number, "device": live, "differences": differences}
+
+    @property
+    def warning(self) -> str:
+        """One line naming every way the card disagrees with the table, or
+        empty. Carried in each reading so it reaches the instrument window
+        and the run's saved metadata instead of only a caller who thought
+        to ask."""
+        if not self._differences:
+            return ""
+        parts = ", ".join(
+            f"{key}: table says {value['table']}, card says {value['device']}"
+            for key, value in sorted(self._differences.items())
+        )
+        return (
+            f"{self._product_name} does not match this table entry ({parts}). "
+            f"The card is right — run `python scripts/ni_probe.py --check "
+            f"{self._device}` and put the block it prints in "
+            f"~/.labpilot/config/ni_models.toml."
+        )
+
+
+def _differences(
+    model: NICardModel, product_name: str, live: dict[str, Any]
+) -> dict[str, Any]:
+    """Where a live card and its table entry disagree.
+
+    Only over what the card actually answered: a property it does not
+    implement leaves that fact unknown rather than counting as a
+    difference. A model that states nothing — the `generic` escape hatch —
+    has nothing to disagree with.
+    """
+    if not model.stated:
+        return {}
+    expected = {
+        "product": product_name,
+        "ai": model.ai,
+        "ao": model.ao,
+        "counters": model.counters,
+    }
+    return {
+        key: {"table": expected[key], "device": live[key]}
+        for key in expected
+        if live.get(key) is not None and live[key] != expected[key]
+    }
 
 
 def _inventory(daq: Any, device: str) -> dict[str, Any]:

@@ -18,11 +18,10 @@ all, so on this development machine there is no card that could answer.
 
 So this is the piece the references leave out: a static, editable
 inventory of card models, used to lay out and validate a configuration
-offline. It is deliberately *not* authoritative. When a real card is
-opened, `NICardAdapter` asks DAQmx and the device wins — see
-`reconcile()`, which reports every disagreement rather than hiding it,
-because a wrong table entry that silently overrides a real device is worse
-than no table at all.
+offline. It is deliberately *not* authoritative. Opening a real card asks
+DAQmx what it is and reports every disagreement in that instrument's
+`warning` — the device is right by definition, and a wrong table entry
+that silently overrode it would be worse than no table at all.
 
 ## Where the numbers come from, and how wrong ones get fixed
 
@@ -31,7 +30,8 @@ things keep that honest:
 
 - a field nobody was sure of is **left out**, and an absent field means
   "unknown, do not validate" rather than a plausible-looking guess;
-- `reconcile()` compares the table with the live device on connect;
+- connecting compares the table with the live device, and reports the
+  difference in every reading (`NICardAdapter.warning`);
 - `scripts/ni_probe.py` prints a connected card's real inventory as a TOML
   block, so correcting an entry — or adding a model that was never in the
   file — is a copy and paste rather than a code change.

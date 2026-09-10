@@ -261,8 +261,9 @@ validated against it, and errors name what the card actually has:
     'apd' counts edges on 'pfi99', which the 6363 does not have —
     it offers pfi0..pfi15 (16 of them)
 
-The table is **not** authoritative. On connect, `reconcile()` asks DAQmx
-what the card really is and reports every disagreement; `python
+The table is **not** authoritative. Connecting asks DAQmx what the card
+really is and puts any disagreement in the reading's `warning` field —
+visible in the instrument window and saved with every run; `python
 scripts/ni_probe.py` prints a connected card's real inventory as a TOML
 block, and `--check` compares it with the shipped table. Add or correct a
 model in `~/.labpilot/config/ni_models.toml`, which is merged over the

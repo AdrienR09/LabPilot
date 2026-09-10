@@ -20,6 +20,7 @@ import re
 import tomllib
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from labpilot.core.device.capabilities import HARDWARE_SCAN
@@ -568,3 +569,208 @@ def test_a_stated_card_is_still_checked():
     """The escape hatch must not accidentally apply to a real entry."""
     assert find_model("6363").stated is True
     assert find_model("6602").stated is True  # counters and DIO, no analog
+
+
+# --- What connect() actually does --------------------------------------------
+#
+# Everything above runs with no driver, which is the point of the design.
+# These cover the other half — the DAQmx calls themselves — against a
+# stand-in for pylablib's `NIDAQ`. It proves the wiring reaches the driver
+# in the right shape, not that the driver behaves as documented; the
+# module docstring is explicit that no card was attached here.
+
+
+class FakeNIDAQ:
+    """pylablib's `NIDAQ`, as far as this adapter uses it."""
+
+    def __init__(self, dev_name="Dev1", rate=1000.0, product="PCIe-6363"):
+        self.dev_name = dev_name
+        self.rate = rate
+        self.product = product
+        self.ai: list[tuple] = []
+        self.ci: list[tuple] = []
+        self.di: list[tuple] = []
+        self.do: list[tuple] = []
+        self.ao: list[tuple] = []
+        self.written: list[tuple] = []
+        self.closed = False
+        # pylablib hands back a plain 2-D array in `get_input_channels`
+        # order — the detail the adapter this replaces got wrong.
+        self.samples = None
+
+    # Channel setup
+    def add_voltage_input(self, name, channel, rng=None, **kw):
+        self.ai.append((name, channel, rng))
+
+    def add_counter_input(self, name, counter, terminal, clk_src=None, output_format=None):
+        self.ci.append((name, counter, terminal, clk_src, output_format))
+
+    def add_digital_input(self, name, channel):
+        self.di.append((name, channel))
+
+    def add_digital_output(self, name, channel):
+        self.do.append((name, channel))
+
+    def add_voltage_output(self, name, channel, rng=None, **kw):
+        self.ao.append((name, channel, rng))
+
+    def get_input_channels(self, include=()):
+        names = []
+        if "ai" in include:
+            names += [entry[0] for entry in self.ai]
+        if "ci" in include:
+            names += [entry[0] for entry in self.ci]
+        if "di" in include:
+            names += [entry[0] for entry in self.di]
+        return names
+
+    # Reading and writing
+    def read(self, n=1, flush_read=0, **kw):
+        columns = len(self.get_input_channels(include=("ai", "ci", "di")))
+        if self.samples is not None:
+            return self.samples
+        return np.arange(columns, dtype=float).reshape(1, columns)
+
+    def set_voltage_outputs(self, names, values, **kw):
+        self.written.append(("ao", list(names), list(values)))
+
+    def set_digital_outputs(self, names, values):
+        self.written.append(("do", list(names), list(values)))
+
+    def get_device_info(self):
+        return type("Info", (), {"model": self.product, "name": self.dev_name})()
+
+    def close(self):
+        self.closed = True
+
+
+def connected(monkeypatch, product="PCIe-6363", **kwargs) -> NICardAdapter:
+    """A card whose driver is a `FakeNIDAQ`."""
+    kwargs.setdefault("model", "PCIe-6363")
+    kwargs.setdefault("channels", "x=ao0, y=ao1, apd=ctr0/pfi8, pd=ai0")
+    card = NICardAdapter(**kwargs)
+    monkeypatch.setattr(
+        card, "_open",
+        lambda: FakeNIDAQ(card._device, card._rate, product=product),
+    )
+    card._connect_sync()
+    return card
+
+
+def test_every_configured_channel_reaches_the_driver(monkeypatch):
+    card = connected(monkeypatch)
+    daq = card._daq
+
+    assert [entry[:2] for entry in daq.ai] == [("pd", "ai0")]
+    assert [entry[:2] for entry in daq.ao] == [("x", "ao0"), ("y", "ao1")]
+    assert daq.ci[0][:3] == ("apd", "ctr0", "pfi8")
+
+
+def test_a_counter_is_clocked_from_the_analog_input_task(monkeypatch):
+    """pylablib's own requirement, and qudi synchronises to the same
+    timebase: `ai/SampleClock` is what makes the counter and the outputs
+    share one clock."""
+    card = connected(monkeypatch)
+    assert card._daq.ci[0][3] == "ai/SampleClock"
+
+
+def test_a_counter_with_no_analog_input_gets_a_dummy_one(monkeypatch):
+    """That clock needs at least one AI channel to exist, even if nothing
+    reads it — otherwise the counter has nothing to count against."""
+    card = connected(monkeypatch, channels="apd=ctr0/pfi8")
+    assert [entry[1] for entry in card._daq.ai] == ["ai0"]
+    assert card._daq.ci[0][3] == "ai/SampleClock"
+    # And it is not a channel anyone can read.
+    assert "_clock" not in card.schema.readable
+
+
+def test_a_counter_card_with_no_analog_input_at_all_says_so(monkeypatch):
+    """A 6602 has no `ai/SampleClock` to borrow, so it must be told what
+    clocks its counters rather than failing inside DAQmx."""
+    card = NICardAdapter(model="PCI-6602", channels="apd=ctr0/pfi8")
+    monkeypatch.setattr(card, "_open", lambda: FakeNIDAQ(product="PCI-6602"))
+    with pytest.raises(ValueError, match="clock_source"):
+        card._connect_sync()
+
+
+def test_an_explicit_clock_source_is_used_instead(monkeypatch):
+    card = connected(
+        monkeypatch, model="PCI-6602", channels="apd=ctr0/pfi8",
+        clock_source="pfi12", product="PCI-6602",
+    )
+    assert card._daq.ci[0][3] == "pfi12"
+    assert card._daq.ai == []  # no dummy channel invented
+
+
+def test_a_reading_maps_columns_by_name_not_position(monkeypatch):
+    """pylablib returns a bare 2-D array in `get_input_channels` order.
+    The adapter this replaces indexed it as `table[name][0]`, which cannot
+    work on an ndarray — this is the fix, and the reason to test it."""
+    card = connected(monkeypatch)
+    card._daq.samples = np.array([[0.25, 12345.0]])  # pd (ai), apd (ci)
+
+    reading = card._read_sync()
+    assert reading["pd"] == pytest.approx(0.25)
+    assert reading["apd"] == pytest.approx(12345.0)
+    assert reading["model"] == "PCIe-6363"
+
+
+def test_a_write_is_split_between_the_analog_and_digital_calls(monkeypatch):
+    card = connected(
+        monkeypatch, channels="x=ao0, y=ao1, shutter=do:port0/line0, pd=ai0"
+    )
+    import anyio
+
+    anyio.run(card.write, {"x": 1.5, "shutter": True})
+
+    kinds = {entry[0]: entry for entry in card._daq.written}
+    assert kinds["ao"][1:] == (["x"], [1.5])
+    assert kinds["do"][1:] == (["shutter"], [True])
+
+
+def test_disconnecting_closes_the_session(monkeypatch):
+    """A card left open is a card the next process cannot claim."""
+    card = connected(monkeypatch)
+    daq = card._daq
+    card._disconnect_sync()
+    assert daq.closed is True
+    assert card._daq is None
+
+
+# --- The card is asked what it is, on connect --------------------------------
+
+
+def test_the_table_is_checked_against_the_card_on_connect(monkeypatch):
+    """Not by a `reconcile()` somebody has to remember to call — that is
+    how a check becomes a claim."""
+    card = connected(monkeypatch, model="PCIe-6363", product="PCIe-6363")
+    assert card.warning == ""
+    assert card._read_sync()["warning"] == ""
+
+
+def test_a_card_that_disagrees_with_the_table_says_so_in_every_reading(monkeypatch):
+    """The point of the whole arrangement: a hand-entered table entry that
+    is wrong must be visible, not silently authoritative."""
+    card = connected(monkeypatch, model="PCIe-6363", product="PCIe-6323")
+
+    warning = card.warning
+    assert "PCIe-6363" in warning
+    assert "6323" in warning
+    assert "ni_probe.py" in warning
+    assert card._read_sync()["warning"] == warning
+
+
+def test_the_card_is_believed_over_the_table_and_never_the_other_way(monkeypatch):
+    """It reports, it does not resolve. Silently adopting the card's own
+    answer would hide a wiring built against the wrong model."""
+    card = connected(monkeypatch, model="PCIe-6363", product="PCIe-6323")
+    assert card.model.number == "6363"  # unchanged
+    assert card._differences["product"] == {
+        "table": "PCIe-6363", "device": "PCIe-6323"
+    }
+
+
+def test_the_unlisted_card_escape_hatch_has_nothing_to_disagree_with(monkeypatch):
+    """`generic` states no ports, so there is no claim to contradict."""
+    card = connected(monkeypatch, model="generic", product="PCIe-6399")
+    assert card.warning == ""
