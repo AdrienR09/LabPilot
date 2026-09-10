@@ -934,20 +934,19 @@ class WorkflowWindow(QMainWindow):
         )
 
     def build_pulse_editor(self, graph: dict, params: dict) -> None:
-        """The generator + rig-profile dock for the free-standing pulse
-        sequence editor. Selected by `workflow_blocks.toml`'s
+        """The timeline canvas and rig-profile dock for the free-standing
+        pulse sequence editor. Selected by `workflow_blocks.toml`'s
         `pulse_editor` block; see components/pulse_editor.py.
 
         The only control dock here that reads no instrument schema and
         makes no device call: the workflow it belongs to binds nothing,
         so every widget edits one of its parameters and running it writes
-        a sequence file. `core.pulse.library` is imported here rather than
-        in the widget so the widget stays a dumb view and the offscreen
-        harness can drive it with stubs.
+        a sequence file. `core.pulse.library` is reached from here rather
+        than from the widget so the widget stays a dumb view.
         """
         from components.pulse_editor import PulseEditorControlWidget
 
-        from labpilot.core.pulse.library import GENERATORS, generator_parameters
+        from labpilot.core.pulse.library import GENERATORS
 
         def _set_param(name: str, value) -> None:
             try:
@@ -956,38 +955,49 @@ class WorkflowWindow(QMainWindow):
             except Exception as e:
                 self.status_bar.showMessage(f"Failed to update {name}: {e}")
 
-        editor = PulseEditorControlWidget(
-            params,
-            parameters_for=generator_parameters,
-            generators=sorted(GENERATORS),
-        )
-        def _load_into_editor() -> None:
-            """Put the last run's sequence into the block table.
+        editor = PulseEditorControlWidget(params, generators=sorted(GENERATORS))
 
-            The result already carries the table form (the editor template
-            returns `blocks`), so "generate a Rabi, then hand-edit it" is
-            one gesture and nothing is converted on the way.
+        def _fill_from(generator: str) -> None:
+            """Draw one of the standard experiments on the canvas.
+
+            A starting point, not a mode: what is drawn afterwards is what
+            gets saved, so a hand-moved gate stays moved. The generator
+            runs here, in this process, because a sequence is pure data
+            and there is no hardware in one.
             """
+            from labpilot.core.pulse.library import RigProfile, build
+            from labpilot.core.pulse.tracks import timeline_from_sequence
+
             try:
-                state = self.client.get_workflow_execution_state(self.workflow_id)
+                sequence = build(generator, RigProfile(
+                    rabi_period=float(params.get("RABI_PERIOD", 200e-9)),
+                    mw_frequency=float(params.get("MW_FREQUENCY", 2.87e9)),
+                    mw_amplitude=float(params.get("MW_AMPLITUDE", 0.25)),
+                    laser_length=float(params.get("LASER_LENGTH", 3e-6)),
+                    laser_delay=float(params.get("LASER_DELAY", 700e-9)),
+                    wait_time=float(params.get("WAIT_TIME", 1e-6)),
+                    laser_channel=str(params.get("LASER_CHANNEL", "laser")),
+                    mw_channel=str(params.get("MW_CHANNEL", "mw")),
+                    gate_channel=params.get("GATE_CHANNEL") or None,
+                    analog_mw=bool(params.get("ANALOG_MW", True)),
+                ))
             except Exception as error:
-                self.status_bar.showMessage(f"Could not read the last result: {error}")
+                self.status_bar.showMessage(f"Could not draw {generator}: {error}")
                 return
-            source = state.get("last_results") or {}
-            blocks = source.get("blocks")
-            if not blocks:
-                self.status_bar.showMessage(
-                    "Generate a sequence first — there is nothing to load yet"
-                )
-                return
-            editor.load_blocks(blocks, source.get("channels"))
+
+            editor.load_timeline(
+                timeline_from_sequence(sequence, editor.channels())
+            )
+            _set_param("START_FROM", generator)
+            _set_param("ALTERNATING", sequence.alternating)
             self.status_bar.showMessage(
-                f"Loaded {len(blocks)} block(s) into the editor"
+                f"Drew {generator}: {sequence.points} points, "
+                f"{sequence.readouts()} readouts"
             )
 
         editor.sigParamChanged.connect(_set_param)
         editor.sigGenerate.connect(self._on_execute)
-        editor.sigLoadRequested.connect(_load_into_editor)
+        editor.sigFillRequested.connect(_fill_from)
 
         self.pulse_editor_control = editor
         d = dock("Sequence Editor", self)

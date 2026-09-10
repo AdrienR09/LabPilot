@@ -37,12 +37,13 @@ requires = ["AXIS_RANGES", "SCAN_AXES"]
 type = "sweep_control"
 requires = ["SWEEP_START", "SWEEP_STOP", "SWEEP_POINTS"]
 
-# The free-standing pulse sequence editor. It binds no instruments, so
-# this control edits parameters and never touches a device — see
-# components/pulse_editor.py and workflow_templates/pulse_sequence_editor.py.
+# The free-standing pulse sequence editor: the timeline canvas, one lane
+# per instrument. It binds no instruments, so this control edits parameters
+# and never touches a device — see components/pulse_editor.py,
+# components/pulse_timeline.py and workflow_templates/pulse_sequence_editor.py.
 [[controls]]
 type = "pulse_editor"
-requires = ["GENERATOR", "SEQUENCE_NAME", "GENERATOR_PARAMS"]
+requires = ["TIMELINE", "SEQUENCE_NAME", "START_FROM"]
 
 # The pulsed measurement: which saved sequence to play, how many sweeps to
 # accumulate, and how to reduce what comes back. Keyed on the parameters

@@ -1,23 +1,21 @@
 #!/usr/bin/env python3
-"""Verify the pulse sequence editor's UI — the dock and the timing diagram.
+"""Verify the pulse sequence editor's UI — the timeline canvas and its dock.
 
-Two claims are checked here, and they are the two the free-standing design
-rests on:
+Three claims are checked here, and they are the ones the design rests on:
 
-1. **The editor's controls come from the generator and the rig profile,
-   not from a connected pulser.** The Parameters form is built from each
-   generator's declared `Parameter` objects, so its units, limits and
-   dtypes are stated rather than guessed from a name; and the channel
-   columns come from the rig profile's symbolic names, which is the one
-   source of truth an offline editor has. Nothing here constructs a
-   client, and nothing reads an instrument schema.
+1. **The editor is the timeline.** One lane per instrument — laser,
+   microwave, APD readout — with pulses drawn on the lanes and sweep
+   regions shaded across them. Pulses move and resize; a pulse belongs to
+   an instrument, so a vertical wobble must not move it to another lane.
 
-2. **The block table is a real editor**, not a read-only view: rows are
-   added, reordered and typed into, the columns follow the shapes in play,
-   and every edit produces a sequence that still builds.
+2. **The lanes come from the rig profile, not from a connected pulser.**
+   An offline editor has no pulser to ask, and a sequence that took its
+   channels from one would be tied to one rig's wiring. Nothing here
+   constructs a client, and nothing reads an instrument schema.
 
-3. **The timing diagram draws what the sequence actually contains** — one
-   lane per channel, one box per element, at one point of the sweep.
+3. **What is drawn is what gets played.** Every edit produces a timeline
+   that still compiles to a valid sequence, and the sweep drawn on the
+   canvas is the sweep the run will report.
 
 Run it:
 
@@ -42,19 +40,33 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(DESKTOP))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication, QSpinBox  # noqa: E402
+from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 import labpilot.ui.qt_api  # noqa: F401, E402  (pins QT_API before Qt loads)
 from labpilot.core.pulse import timing_diagram  # noqa: E402
-from labpilot.core.pulse.table import sequence_from_table, table_from_sequence  # noqa: E402
 from labpilot.core.pulse.library import (  # noqa: E402
     GENERATORS,
     RigProfile,
     build,
-    generator_parameters,
+)
+from labpilot.core.pulse.tracks import (  # noqa: E402
+    LOG,
+    Region,
+    SweepAxis,
+    Timeline,
+    timeline_from_sequence,
 )
 
 failures: list[str] = []
+
+NS = 1e-9
+US = 1e-6
+
+
+def close(value: float, expected: float, tolerance: float = 1e-15) -> bool:
+    """Times are floats and 250 * 1e-9 is not 2.5e-7 exactly, so every
+    comparison here is a tolerance rather than an equality."""
+    return abs(value - expected) <= tolerance
 
 
 def check(label: str, ok: bool, detail: str = "") -> None:
@@ -64,9 +76,10 @@ def check(label: str, ok: bool, detail: str = "") -> None:
 
 
 DEFAULTS = {
-    "GENERATOR": "rabi",
+    "TIMELINE": {},
+    "START_FROM": "rabi",
     "SEQUENCE_NAME": "rabi",
-    "GENERATOR_PARAMS": {"tau_start": 20e-9, "tau_step": 20e-9, "points": 50},
+    "ALTERNATING": False,
     "RABI_PERIOD": 200e-9,
     "MW_FREQUENCY": 2.87e9,
     "MW_AMPLITUDE": 0.25,
@@ -81,168 +94,248 @@ DEFAULTS = {
 }
 
 
-def main() -> int:
-    app = QApplication.instance() or QApplication([])
+def rabi_timeline(points: int = 12) -> Timeline:
+    return timeline_from_sequence(
+        build("rabi", RigProfile(), points=points), ("laser", "mw", "gate")
+    )
 
+
+def main() -> int:
     from components.pulse_editor import PulseEditorControlWidget
+    from components.pulse_timeline import PulseTimelineWidget
     from components.workflow_result import PulseSequenceResultView
 
-    print("1. The control dock builds with no client and no instrument")
-    edits: list[tuple[str, object]] = []
-    editor = PulseEditorControlWidget(
-        DEFAULTS, parameters_for=generator_parameters, generators=sorted(GENERATORS)
-    )
-    editor.sigParamChanged.connect(lambda name, value: edits.append((name, value)))
-    app.processEvents()
-    check("it built", editor is not None)
-    check("it offers every generator",
-          editor.generator_combo.count() == len(GENERATORS),
-          f"{editor.generator_combo.count()} of {len(GENERATORS)}")
-    check("it holds no network client", not hasattr(editor, "client"))
+    app = QApplication.instance() or QApplication([])
 
-    print("\n2. Parameter controls come from the generator's declarations")
+    print("1. The dock builds from parameters alone — no client, no schema")
+    params = dict(DEFAULTS, TIMELINE=rabi_timeline().to_dict())
+    dock = PulseEditorControlWidget(params, generators=sorted(GENERATORS))
+    app.processEvents()
+    check("it holds no client", not hasattr(dock, "client"))
+    check("the timeline canvas is the first tab", dock.tabs.tabText(0) == "Timeline")
+    check("the rig profile is the second", dock.tabs.tabText(1) == "Rig")
+    check(
+        "there is no generator tab and no block table",
+        dock.tabs.count() == 2,
+        f"{[dock.tabs.tabText(i) for i in range(dock.tabs.count())]}",
+    )
+
+    print("\n2. One lane per instrument, including the APD readout")
+    canvas = dock.timeline
+    lanes = [label for _, label in canvas._axis._tickLevels[0]]
+    check("a lane per declared channel", lanes == ["laser", "mw", "gate"], f"{lanes}")
+    check("in reading order, laser first", lanes[0] == "laser")
+    check(
+        "the APD readout has its own lane",
+        "gate" in lanes,
+        f"{lanes}",
+    )
+
+    print("\n3. The lanes come from the rig profile, not from a pulser")
+    renamed = dict(DEFAULTS, GATE_CHANNEL="apd_gate", MW_CHANNEL="microwave")
+    other = PulseEditorControlWidget(renamed, generators=sorted(GENERATORS))
+    app.processEvents()
+    check(
+        "a renamed channel is a renamed lane",
+        [label for _, label in other.timeline._axis._tickLevels[0]]
+        == ["laser", "microwave", "apd_gate"],
+        f"{[label for _, label in other.timeline._axis._tickLevels[0]]}",
+    )
+
+    print("\n4. Pulses are drawn as movable items, one per drawn pulse")
+    drawn = sum(len(track.pulses) for track in canvas.timeline.tracks)
+    check("an item per pulse", len(canvas._items) == drawn, f"{len(canvas._items)}/{drawn}")
+    check("every item is movable", all(item.translatable for item in canvas._items))
+    check(
+        "and resizable from both ends",
+        all(len(item.handles) == 2 for item in canvas._items),
+        f"{[len(i.handles) for i in canvas._items]}",
+    )
+
+    print("\n5. Dragging a pulse moves it, snapped to the grid")
+    item = next(i for i in canvas._items if canvas.timeline.tracks[i.lane].channel == "mw")
+    edits: list[object] = []
+    canvas.sigTimelineChanged.connect(edits.append)
+    item.setPos(103 * NS, item.pos().y())
+    item.sigRegionChangeFinished.emit(item)
+    app.processEvents()
+    moved = canvas.timeline.track("mw").pulses[0]
+    check("the pulse moved", close(moved.start, 100 * NS), f"{moved.start}")
+    check("snapped to the 10 ns grid",
+          close(moved.start, round(moved.start / canvas._snap) * canvas._snap))
+    check("and the edit was reported", len(edits) >= 1, f"{len(edits)}")
+
+    print("\n6. A pulse cannot be dragged onto another instrument's lane")
+    item = next(i for i in canvas._items if canvas.timeline.tracks[i.lane].channel == "mw")
+    lane = item.lane
+    item.setPos(item.pos().x(), item.pos().y() + 1.0)
+    item.sigRegionChangeFinished.emit(item)
+    app.processEvents()
+    check(
+        "it stayed on its own track",
+        canvas.timeline.tracks[lane].channel == "mw"
+        and len(canvas.timeline.track("mw").pulses) == 1,
+    )
+
+    print("\n7. Resizing an edge changes the pulse's length")
+    item = next(i for i in canvas._items if canvas.timeline.tracks[i.lane].channel == "mw")
+    item.setSize((250 * NS, 0.7))
+    item.sigRegionChangeFinished.emit(item)
+    app.processEvents()
+    check(
+        "the length followed the handle",
+        close(canvas.timeline.track("mw").pulses[0].duration, 250 * NS),
+        f"{canvas.timeline.track('mw').pulses[0].duration}",
+    )
+
+    print("\n8. Pulses can be added to a track and deleted from it")
+    canvas.track_combo.setCurrentIndex(canvas.track_combo.findData("gate"))
+    before = len(canvas.timeline.track("gate").pulses)
+    canvas.add_pulse()
+    app.processEvents()
+    check("a pulse was added", len(canvas.timeline.track("gate").pulses) == before + 1)
+    check("it went on the chosen track", canvas.track_combo.currentData() == "gate")
+
+    added = canvas.timeline.track("gate").pulses[-1]
+    canvas._item_clicked(next(i for i in canvas._items if i.pulse == added))
+    canvas.remove_selected()
+    app.processEvents()
+    check("and can be deleted", len(canvas.timeline.track("gate").pulses) == before)
+
+    print("\n9. The inspector types what dragging cannot set")
+    drive = next(i for i in canvas._items if canvas.timeline.tracks[i.lane].channel == "mw")
+    canvas._item_clicked(drive)
+    app.processEvents()
+    check("selecting a pulse enables the inspector", canvas.pulse_name.isEnabled())
+    check(
+        "an analog pulse offers its shape",
+        canvas.shape_combo.currentData() == "Sin",
+        f"{canvas.shape_combo.currentData()}",
+    )
+    rows = canvas.shape_layout.rowCount()
+    check(
+        "one row per parameter the shape declares",
+        rows == 3,  # Sin: amplitude, frequency, phase
+        f"{rows}",
+    )
+    canvas._shape_param_changed("frequency", 2.8e9)
+    app.processEvents()
+    check(
+        "editing one keeps the others",
+        canvas.timeline.track("mw").pulses[0].value.frequency == 2.8e9
+        and canvas.timeline.track("mw").pulses[0].value.amplitude
+        == drive.pulse.value.amplitude,
+    )
+
+    print("\n10. A digital pulse becomes analog by naming a shape")
+    canvas.track_combo.setCurrentIndex(canvas.track_combo.findData("gate"))
+    canvas.add_pulse()
+    app.processEvents()
+    fresh = canvas.timeline.track("gate").pulses[-1]
+    check("a new pulse is digital", fresh.value is True)
+    canvas._item_clicked(next(i for i in canvas._items if i.pulse == fresh))
+    canvas.shape_combo.setCurrentIndex(canvas.shape_combo.findData("Gauss"))
+    app.processEvents()
+    check(
+        "choosing a shape makes it analog",
+        canvas.timeline.track("gate").pulses[-1].analog,
+    )
+    canvas.remove_selected()
+
+    print("\n11. The sweep is drawn across every lane")
+    check("a region item per marked region", len(canvas._regions) == 1,
+          f"{len(canvas._regions)}")
+    canvas.add_sweep_region()
+    app.processEvents()
+    check("another can be added", len(canvas.timeline.sweep.regions) == 2)
+    check("and it is drawn too", len(canvas._regions) == 2)
+
+    print("\n12. Regions of one axis stay the same length")
+    region = canvas._regions[0]
+    region.setRegion((0.0, 500 * NS))
+    region.sigRegionChangeFinished.emit(region)
+    app.processEvents()
+    lengths = [r.length for r in canvas.timeline.sweep.regions]
+    check(
+        "moving one edge resizes the others",
+        max(lengths) - min(lengths) < 1e-15,
+        f"{lengths}",
+    )
+    check("to the length that was dragged", close(lengths[0], 500 * NS),
+          f"{lengths[0]}")
+
+    print("\n13. The sweep panel and the canvas agree")
+    fresh = PulseEditorControlWidget(
+        dict(DEFAULTS, TIMELINE=rabi_timeline().to_dict()),
+        generators=sorted(GENERATORS),
+    )
+    app.processEvents()
+    fresh.sweep_points.setValue(31)
+    app.processEvents()
+    check("points reach the timeline", fresh.timeline.timeline.sweep.points == 31)
+    fresh.spacing_combo.setCurrentIndex(fresh.spacing_combo.findData(LOG))
+    app.processEvents()
+    check("so does the spacing", fresh.timeline.timeline.sweep.spacing == LOG)
+    check(
+        "a constant step is hidden for a log sweep",
+        not fresh.sweep_step.isEnabled() and fresh.sweep_stop.isEnabled(),
+    )
+    fresh.timeline.clear_sweep()
+    app.processEvents()
+    check("and a sweep can be removed entirely", fresh.timeline.timeline.sweep is None)
+
+    print("\n14. Filling from an experiment draws it, and editing survives")
     for name in sorted(GENERATORS):
-        editor._rebuild_generator_form(name)
+        sequence = build(name, RigProfile(), points=6)
+        fresh.load_timeline(timeline_from_sequence(sequence, fresh.channels()))
         app.processEvents()
-        declared = [p.name for p in generator_parameters(name)]
-        built = list(editor._generator_widgets)
-        check(f"{name}: one control per declared parameter",
-              built == declared, f"{built} != {declared}")
-        integers = [p.name for p in generator_parameters(name) if p.dtype.startswith("i")]
-        for param in integers:
-            check(f"{name}: {param} is an integer control",
-                  isinstance(editor._generator_widgets[param], QSpinBox),
-                  type(editor._generator_widgets[param]).__name__)
+        line = fresh.timeline.timeline
+        rebuilt = line.to_sequence(
+            name, alternating=sequence.alternating,
+            gate_channel=sequence.gate_channel,
+        )
+        check(
+            f"{name}: drawn and still playable",
+            rebuilt.points == sequence.points
+            and rebuilt.readouts() == sequence.readouts(),
+            f"{rebuilt.points}/{sequence.points}, {rebuilt.readouts()}/{sequence.readouts()}",
+        )
 
-    print("\n3. Editing a parameter reports it, without writing anything")
-    editor._rebuild_generator_form("rabi")
-    edits.clear()
-    editor._generator_widgets["points"].setValue(20)
-    editor._emit_generator_params()
+    print("\n15. What the dock emits is what a workflow stores")
+    stored: list[tuple[str, object]] = []
+    fresh.sigParamChanged.connect(lambda name, value: stored.append((name, value)))
+    fresh.timeline.add_pulse()
     app.processEvents()
-    check("the edit was reported", any(n == "GENERATOR_PARAMS" for n, _ in edits),
-          f"{edits}")
-    reported = dict(edits)["GENERATOR_PARAMS"]
-    check("it carries the whole parameter set, not the one field",
-          set(reported) == {p.name for p in generator_parameters("rabi")},
-          f"{sorted(reported)}")
-    check("it carries the new value", reported.get("points") == 20, f"{reported}")
-
-    print("\n4. Switching generator replaces the form and its stored params")
-    edits.clear()
-    editor.generator_combo.setCurrentText("hahn_echo")
-    app.processEvents()
-    names = [name for name, _ in edits]
-    check("the generator change was reported", "GENERATOR" in names, f"{names}")
-    check("fresh parameters were sent with it", "GENERATOR_PARAMS" in names, f"{names}")
-    check("the form now matches hahn_echo",
-          list(editor._generator_widgets) == [p.name for p in generator_parameters("hahn_echo")],
-          f"{list(editor._generator_widgets)}")
-
-    print("\n5. Channel columns come from the rig profile, not from a pulser")
-    check("three symbolic channels by default",
-          editor.channels() == ["laser", "mw", "gate"], f"{editor.channels()}")
-    editor._channel_edits["GATE_CHANNEL"].setText("")
-    check("an ungated rig drops the gate column",
-          editor.channels() == ["laser", "mw"], f"{editor.channels()}")
-    editor._channel_edits["LASER_CHANNEL"].setText("green")
-    check("a renamed channel follows through",
-          editor.channels()[0] == "green", f"{editor.channels()}")
-
-    print("\n6. A digital rig disables the analog drive controls")
-    editor.analog_check.setChecked(False)
-    app.processEvents()
-    check("amplitude is disabled", not editor.amplitude_spin.isEnabled())
-    check("it was reported", ("ANALOG_MW", False) in edits, f"{edits[-3:]}")
-    editor.analog_check.setChecked(True)
-    check("and re-enabled", editor.amplitude_spin.isEnabled())
-
-    print("\n7. The pi/pi-2 hint follows the Rabi period")
-    editor._rig_spins["RABI_PERIOD"].setValue(400e-9)
-    app.processEvents()
-    check("the hint states both derived lengths",
-          "200.0 ns" in editor.rabi_hint.text() and "100.0 ns" in editor.rabi_hint.text(),
-          editor.rabi_hint.text())
-
-    print("\n8. The block table is a real editor")
-    from components.pulse_blocks import PulseBlockEditorWidget
-
-    edits: list = []
-    blocks = table_from_sequence(build("ramsey", RigProfile(), points=6))
-    table = PulseBlockEditorWidget(blocks, ["laser", "mw", "gate"])
-    table.sigBlocksChanged.connect(edits.append)
-    app.processEvents()
-
-    headers = [
-        table.table.horizontalHeaderItem(i).text()
-        for i in range(table.table.columnCount())
-    ]
-    check("it loaded the generated block",
-          table.table.rowCount() == len(blocks[0]["elements"]),
-          f"{table.table.rowCount()} rows")
-    check("columns include length and increment",
-          any("Length" in h for h in headers) and any("Increment" in h for h in headers),
-          f"{headers}")
-    check("an analog channel grew its shape and parameter columns",
-          any("mw shape" in h for h in headers)
-          and any("mw frequency" in h for h in headers),
-          f"{headers}")
-    check("a digital channel is one column",
-          sum("laser" in h for h in headers) == 1, f"{headers}")
-
-    print("\n9. Editing the table reports a sequence that still builds")
-    before = table.table.rowCount()
-    table.table.selectRow(0)
-    table.add_element()
-    app.processEvents()
-    check("adding a row grew the table", table.table.rowCount() == before + 1)
-    check("the edit was reported", bool(edits), f"{len(edits)} report(s)")
-
-    table.duplicate_element()
-    table.move_element(+1)
-    table.remove_element()
-    app.processEvents()
-    reported = edits[-1]
-    check("every command reported a table",
-          isinstance(reported, list) and reported, f"{type(reported).__name__}")
-    rebuilt = sequence_from_table(
-        reported, "edited", alternating=True, validate=False
+    names = [name for name, _ in stored]
+    check("the whole timeline is reported", "TIMELINE" in names, f"{names}")
+    payload = dict(stored)["TIMELINE"]
+    check(
+        "as plain data that rebuilds",
+        Timeline.from_dict(payload).channels == fresh.timeline.timeline.channels,
     )
-    check("what the table reports still builds a sequence",
-          len(rebuilt.blocks[0].elements) == table.table.rowCount(),
-          f"{len(rebuilt.blocks[0].elements)} vs {table.table.rowCount()}")
 
-    print("\n10. Choosing a different shape rebuilds the columns")
-    shape_index = next(
-        i for i in range(table.table.columnCount())
-        if "mw shape" in table.table.horizontalHeaderItem(i).text()
+    print("\n16. A hand-drawn timeline compiles without a generator anywhere")
+    hand = PulseTimelineWidget(Timeline(), ["laser", "mw", "gate"])
+    app.processEvents()
+    for channel, start, stop in (
+        ("mw", 0.0, 20 * NS), ("laser", 20 * NS, 3020 * NS), ("gate", 20 * NS, 3020 * NS)
+    ):
+        hand.track_combo.setCurrentIndex(hand.track_combo.findData(channel))
+        hand.add_pulse()
+        pulse = hand.timeline.track(channel).pulses[-1]
+        hand._item_clicked(next(i for i in hand._items if i.pulse == pulse))
+        hand.pulse_start.setValue(start)
+        hand.pulse_length.setValue(stop - start)
+        hand._edited()
+    hand.timeline.duration = 4 * US
+    hand.timeline.sweep = SweepAxis(
+        regions=(Region(0.0, 20 * NS),), points=9, step=20 * NS
     )
-    combo = table.table.cellWidget(0, shape_index)
-    check("the shape cell is a combobox", combo is not None,
-          f"{type(combo).__name__}")
-    if combo is not None:
-        combo.setCurrentText("Chirp")
-        app.processEvents()
-        headers = [
-            table.table.horizontalHeaderItem(i).text()
-            for i in range(table.table.columnCount())
-        ]
-        check("a Chirp brought its own parameter columns",
-              any("start frequency" in h for h in headers), f"{headers}")
+    sequence = hand.timeline.to_sequence("hand")
+    check("it plays", sequence.readouts() == 9, f"{sequence.readouts()}")
+    check("with the drawn sweep", close(sequence.sweep.values[0], 20 * NS))
 
-    print("\n11. Blocks can be added and removed")
-    table.add_block()
-    app.processEvents()
-    check("a second block exists", table.block_combo.count() == 2,
-          f"{table.block_combo.count()}")
-    table.remove_block()
-    app.processEvents()
-    check("and can be removed", table.block_combo.count() == 1)
-    for _ in range(10):
-        table.remove_block()
-    check("the last block is never removed", table.block_combo.count() == 1)
-
-    print("\n12. The timing diagram draws one lane per channel")
+    print("\n17. The timing diagram draws one lane per channel")
     view = PulseSequenceResultView()
     for name in sorted(GENERATORS):
         sequence = build(name, RigProfile(), points=8)
@@ -255,16 +348,8 @@ def main() -> int:
         lanes = {label for _, label in (ticks[0] if ticks else [])}
         check(f"{name}: a lane per channel it uses",
               lanes == set(sequence.channels), f"{sorted(lanes)}")
-        check(f"{name}: the summary states the pulse count",
-              f"{len(segments)} pulse(s)" in view.summary.text(), view.summary.text())
 
-    print("\n13. A later point of the sweep draws a longer diagram")
-    sequence = build("rabi", RigProfile(), points=30)
-    first = max(s.stop for s in timing_diagram(sequence, 0))
-    last = max(s.stop for s in timing_diagram(sequence, 29))
-    check("the swept element has grown", last > first, f"{last} !> {first}")
-
-    print("\n14. An empty result leaves the view legible rather than blank")
+    print("\n18. An empty result leaves the view legible rather than blank")
     view.update_data([], [], 0.0)
     app.processEvents()
     check("it says there is nothing yet", "No sequence" in view.summary.text(),

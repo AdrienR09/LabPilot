@@ -1,4 +1,4 @@
-"""Design a pulse sequence with no hardware — a workflow that binds nothing.
+"""Draw a pulse sequence with no hardware — a workflow that binds nothing.
 
 This is the authoring half of the pulsed subsystem, and it is deliberately
 a *separate workflow* from the measurement that plays what it writes.
@@ -15,6 +15,15 @@ Three things follow from that, and each is the reason for the split:
   measurement's parameters.
 - **It stays testable headless.** This is a pure function from parameters
   to a document.
+
+## The timeline is the sequence
+
+`TIMELINE` is what the editor draws and what this file compiles: one
+track per instrument — laser, microwave, APD readout — with pulses on it,
+and the swept regions marked across them. Editing is horizontal, one lane
+per instrument; a pulser plays a run of vertical time slices; and
+`core/pulse/tracks.py` converts by the one rule that every edge on every
+track is a slice boundary.
 
 ## What it writes, and what it deliberately does not
 
@@ -39,18 +48,18 @@ place that choice is worth diverging on.
 
 What the editor *does* need is physics, not driver settings: the Rabi
 period (pi and pi/2 derive from it), the laser length and delay, the wait
-time, and the symbolic channel names. All of it is editable offline and
-saved with the sequence.
+time, and the symbolic channel names. All of it is editable offline, and
+it is what **Start from** draws with.
 
 `ANALOG_MW = False` describes a digital-only rig — a PulseBlaster gating
 an external microwave source rather than an AWG synthesising the drive.
-The four sequences are otherwise identical, which is the whole point of
-the flag.
+The four starting points are otherwise identical, which is the whole
+point of the flag.
 """
 
 from labpilot.core.pulse import save_sequence, timing_diagram
 from labpilot.core.pulse.library import RigProfile, build
-from labpilot.core.pulse.table import sequence_from_table, table_from_sequence
+from labpilot.core.pulse.tracks import Timeline, timeline_from_sequence
 
 # Binds nothing. That is the feature, not an omission.
 REQUIRED_INSTRUMENTS: dict = {}
@@ -62,40 +71,25 @@ RESULT_UI = {
     "duration_key": "point_duration",
 }
 
-# --- Where the sequence comes from -----------------------------------------
+# --- What is drawn ----------------------------------------------------------
 
-# "generator" builds one of the four standard experiments from the
-# parameters below. "table" plays back BLOCKS, which is what the block
-# editor writes — so the usual path is to generate a Rabi, press "Load into
-# editor", and hand-edit from there.
-SOURCE = "generator"
+# The editor's canvas, as data: one entry per track, each with its pulses;
+# the timeline's own length; and the swept regions. Empty means nothing has
+# been drawn yet, and START_FROM fills it.
+TIMELINE: dict = {}
 
-# The edited block table: one entry per block, each with its own elements.
-# Exactly the form a sequence file stores, so nothing is lost round-tripping
-# between the generator, the table and the file.
-BLOCKS: list = []
-
-# A hand-edited sequence has to say what it swept, because nothing else
-# can know. Empty means "no declared sweep" — the run then plots against
-# readout index, which is right for a sequence that is not a sweep.
-SWEEP: dict = {}
-
-# Whether consecutive readouts alternate signal and reference. Set by the
-# generator for the experiments that need it; declare it yourself when
-# hand-authoring one that does.
-ALTERNATING = False
-
-# One of core/pulse/library.py's generators: rabi, ramsey, hahn_echo, t1.
-GENERATOR = "rabi"
+# Which of core/pulse/library.py's experiments the "Start from" button
+# draws — rabi, ramsey, hahn_echo, t1. Recorded so a sequence says where
+# it began, not used unless the timeline is empty.
+START_FROM = "rabi"
 
 # Saved as ~/.labpilot/sequences/<slug>.json, and what the pulsed
 # measurement workflow's SEQUENCE parameter names.
 SEQUENCE_NAME = "rabi"
 
-# This generator's own parameters. Which ones it takes, with their units
-# and limits, comes from `generator_parameters(GENERATOR)` — the editor UI
-# builds its controls from exactly that.
-GENERATOR_PARAMS: dict = {"tau_start": 20e-9, "tau_step": 20e-9, "points": 50}
+# Whether consecutive readouts alternate signal and reference. Set for you
+# by the experiments that need it; declare it when hand-drawing one.
+ALTERNATING = False
 
 # --- The rig profile: physics, not driver settings -------------------------
 
@@ -128,35 +122,40 @@ profile = RigProfile(
     gate_channel=GATE_CHANNEL,
     analog_mw=ANALOG_MW,
 )
+channels = [name for name in (LASER_CHANNEL, MW_CHANNEL, GATE_CHANNEL) if name]
 
-# Either way the sequence is validated before it is returned, so an
-# unplayable one is caught here rather than by the hardware an hour later.
-if SOURCE == "table" and BLOCKS:
-    sequence = sequence_from_table(
-        BLOCKS,
-        SEQUENCE_NAME,
-        sweep=SWEEP or None,
-        laser_channel=LASER_CHANNEL,
-        gate_channel=GATE_CHANNEL,
-        alternating=ALTERNATING,
-        description="Hand-edited in the block editor.",
-    )
-else:
-    sequence = build(GENERATOR, profile, **GENERATOR_PARAMS).evolve(name=SEQUENCE_NAME)
+# An empty canvas draws the chosen experiment, so a freshly loaded
+# workflow has something to run rather than an error. Anything drawn wins:
+# a hand-moved gate must survive pressing Save.
+timeline = Timeline.from_dict(TIMELINE)
+alternating = ALTERNATING
+if not any(track.pulses for track in timeline.tracks):
+    started = build(START_FROM, profile)
+    timeline = timeline_from_sequence(started, channels)
+    alternating = started.alternating
+
+# Validated before it is returned, so an unplayable sequence is caught
+# here rather than by the hardware an hour later.
+sequence = timeline.to_sequence(
+    SEQUENCE_NAME,
+    laser_channel=LASER_CHANNEL,
+    gate_channel=GATE_CHANNEL,
+    alternating=alternating,
+    description=f"Drawn in the pulse editor, starting from {START_FROM}.",
+)
 
 path = save_sequence(sequence)
 segments = timing_diagram(sequence, PREVIEW_POINT)
 
 RESULT = {
     "sequence": SEQUENCE_NAME,
-    "source": SOURCE,
-    "generator": GENERATOR,
+    "start_from": START_FROM,
     "path": str(path),
     "description": sequence.description,
-    # What the block editor loads. Carrying it in the result is what makes
-    # "generate a Rabi, then hand-edit it" one gesture rather than two
-    # separate authoring paths that cannot meet.
-    "blocks": table_from_sequence(sequence),
+    # What the editor loads back. Carrying it in the result is what makes
+    # "start from a Rabi, then edit it" one gesture rather than two
+    # authoring paths that cannot meet.
+    "timeline": timeline.to_dict(),
     "points": sequence.points,
     "readouts": sequence.readouts(),
     "duration": sequence.duration,

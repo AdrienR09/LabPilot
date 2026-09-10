@@ -59,9 +59,9 @@ instruments, so it opens and runs with everything disconnected.
 | `core/pulse/sampling.py` — `expand`, `sample`, `timing_diagram` | **Done.** Two compilation paths; see below. |
 | `core/pulse/store.py` — saved sequence files | **Done.** `~/.labpilot/sequences/<name>.json`, listed with a reason when one will not play. |
 | `workflow_templates/pulse_sequence_editor.py` | **Done.** Binds nothing; writes a sequence file and returns its timing diagram. |
-| `ui/desktop/components/pulse_blocks.py` — the block editor | **Done.** Qudi's dynamic-column element table: one row per element, one column per channel, an analog channel expanding into a shape plus its parameters. |
-| `core/pulse/table.py` — the column rule | **Done.** Qt-free, so the fiddly part is tested headless. |
-| `ui/desktop/components/pulse_editor.py` + the `pulse_sequence` result view | **Done.** Generator, Blocks and Rig tabs, and a one-lane-per-channel diagram. |
+| `core/pulse/tracks.py` — the timeline model | **Done.** Per-track intervals to time slices and back, by one rule: every edge on every track is a slice boundary. Qt-free, so the fiddly part is tested headless. |
+| `ui/desktop/components/pulse_timeline.py` — the canvas | **Done.** One lane per instrument, pulses dragged and resized on it, sweep regions shaded across it. |
+| `ui/desktop/components/pulse_editor.py` + the `pulse_sequence` result view | **Done.** The canvas, the sweep panel and a Rig tab, plus a one-lane-per-channel diagram of the finished sequence. |
 | `core/device/` — `Action`, records, capabilities, `Constraints` | **Done.** The four framework gaps that blocked any of this. |
 | `instruments/pulser_mixin.py` — `PulserMixin` | **Done.** `upload_sequence` takes the abstract sequence and returns what the device really loaded. |
 | `instruments/gated_counter_mixin.py` — `GatedCounterMixin` | **Done.** `configure_gates` returns what it actually set; `get_trace()` is a 2-D `Dataset` with real axes. |
@@ -71,7 +71,7 @@ instruments, so it opens and runs with everything disconnected.
 | `core/pulse/analyse.py` — `mean`, `mean_norm`, `mean_reference` | **Done.** One value per swept point, with Poisson errors. |
 | `core/run/plans.py` — `PulsedMeasurementPlan` | **Done.** Accumulation is the iterated axis; the result is a `(sweeps, tau)` history. |
 | `core/analysis/fits.py` — `fit_rabi`, `fit_decay` | **Done.** Extends the one fitting module rather than starting a second. |
-| `workflow_templates/pulsed_measurement.py` + four presets | **Done.** Rabi, Ramsey, Hahn echo and T1 are a sequence name and a fit name, not four files. |
+| `workflow_templates/pulsed_measurement.py` | **Done.** *One* acquisition workflow. Which experiment it runs is which sequence you pick in its dock. |
 | `ui/desktop/components/pulse_control.py` | **Done.** Sequence library, sweeps, and the two method combos, filled from the registries. |
 | `PulsedResultView` + a `pick_view` branch | **Done.** The curve with Poisson error bars and its fit, over the raw record with the extracted window shaded on it. |
 | `instruments/AWG/` | Five pylablib **function generators** — frequency, amplitude, offset, enable. Not an arbitrary waveform generator: no upload, no sequence, no channels, no triggering. |
@@ -100,29 +100,72 @@ mapping onto physical channels is the rig's, so it lives with the
 measurement workflow's bindings. Qudi bakes `d_ch1` into its generation
 parameters, which ties a saved sequence to one wiring.
 
-## What the editor is, and what it was not
+## The editor is the timeline
 
-The **Generator** tab is Qudi's *predefined-methods* panel: pick
-`generate_rabi`, fill in a parameter form. That is a starting point, not an
-editor, and for a while it was all there was here.
+One canvas, one lane per instrument — laser, microwave, APD readout,
+whatever the rig profile names. A pulse is a box on its lane: drag it
+along, drag its edges to resize, click it to type what dragging cannot
+set. There is no table and no separate generator form.
 
-The **Blocks** tab is Qudi's actual PulseEditor. One row per element; one
-column per channel, plus Length and Increment; rows added, duplicated,
-reordered and typed into. The columns are **not fixed** — a digital channel
-is a checkbox, and an analog channel contributes a shape combobox plus one
-column per that shape's parameters, so choosing `Sin` on the microwave
-channel grows Amplitude, Frequency and Phase columns and choosing `Chirp`
-replaces them with the chirp's own.
+That is the shape a pulse sequence actually has. Every paper draws one,
+every oscilloscope shows one, and a person setting a rig up thinks "the
+gate opens 300 ns after the laser" rather than "element 4 has
+`gate=True`".
 
-The two paths meet rather than compete: **Load into editor** puts the last
-generated sequence into the table, because the generator's output is
-already in the table's own form. A row *is* an element's entry in the
-sequence file, so nothing is converted and nothing is lost.
+**Start from** draws one of the four standard experiments onto the
+canvas. A starting point, not a mode: after that the timeline is what
+gets saved, so a hand-moved gate stays moved.
 
-One deliberate difference from Qudi: the columns come from the **rig
+### Editing is horizontal; the model is vertical
+
+A `PulseElement` is one interval with a value for *every* channel, so a
+sequence is a run of time slices — which is what a pulser plays, and what
+makes `increment` one number per slice. A person draws three independent
+objects on three lanes, none of which knows about the others' edges.
+
+`core/pulse/tracks.py` reconciles them with one rule: **every edge on
+every track is a slice boundary**. Collect the times at which anything
+changes, sort them, and each consecutive pair becomes an element. Going
+back, adjacent slices holding the same value on a channel merge into the
+one pulse someone drew. All four experiments round-trip exactly — points,
+readouts, duration and sweep values.
+
+Two things fall out of that rule and are easy to get wrong:
+
+- **The timeline has a length of its own**, not "wherever the last pulse
+  ends". The repolarisation wait is silence, and silence has no edges. A
+  sequence that repolarises for 0 ns instead of 1 µs still runs and still
+  produces a curve — the wrong one.
+- **An empty lane is not a channel.** A T1 on a rig with a microwave
+  source does not use it, and writing `mw: False` into every element
+  would make the saved sequence claim a channel the pulser then has to
+  have free.
+
+### The sweep is drawn, not configured elsewhere
+
+A sweep region is a shaded span across every lane. Everything after it
+shifts as it grows, which is what a swept sequence physically does. One
+mechanism covers every case:
+
+- a Rabi marks the region over its microwave pulse;
+- a Ramsey marks a **gap** — which is not a drawn object at all, so a
+  per-pulse increment could not express it without a second gesture;
+- a Ramsey marks **two** regions and a Hahn echo **four**, because each
+  point's tau appears once per alternating arm. They are regions of one
+  axis, so dragging one resizes the others rather than leaving two sweeps
+  to be kept in step by hand.
+
+Linear spacing compiles to one block repeated `points` times with an
+`increment` — the model's own sweep primitive. Log spacing cannot be
+written that way, since no constant increment produces a geometric
+series, so it compiles to one block per point. Both produce the same
+`Sweep` on the finished sequence, so nothing downstream knows which was
+used.
+
+One deliberate difference from Qudi: the lanes come from the **rig
 profile's symbolic channels**, never from a connected pulser's
 `activation_config`. An offline editor has no pulser to ask, and taking
-columns from one would tie a saved sequence to a single rig's wiring.
+lanes from one would tie a saved sequence to a single rig's wiring.
 
 ## Sampling is a library, not a pipeline stage
 
@@ -231,21 +274,24 @@ it survives someone re-cabling an AOM; the normalisation window is a
 microsecond of the tail, late enough that the laser has repolarised the
 spin and the count rate there measures the laser rather than the state.
 
-## Four experiments, one template
+## One acquisition workflow
 
-Rabi, Ramsey, Hahn echo and T1 are **presets of `pulsed_measurement`**,
-not four templates. They differ in which saved sequence they play and
-which curve they fit; uploading, gating, counting, extraction, analysis,
-streaming and the HDF5 save are the same code. Adding a fifth is an entry
-in `presets.toml` and a sequence file — the same consolidation that turned
-four scanners into presets of `omniscan`.
+Not one per experiment. `pulsed_measurement` binds `pulser` and
+`counter`, and which experiment it runs is **which sequence you pick in
+its dock** — the library on disk, listed with its point count and its
+duration, and marked with a reason when a file will not play. Rabi,
+Ramsey, Hahn echo and T1 are four files, not four workflows.
+
+That is the same reasoning that turned four scanners into presets of
+`omniscan`, taken one step further: there is nothing left for a preset to
+configure that is not already a parameter in the dock.
 
 The fit is **named, not inferred**. A sequence's name says nothing about
-the physics it measures, and a hand-edited one may measure something else
+the physics it measures, and a hand-drawn one may measure something else
 entirely, so `FIT` is `"rabi"`, `"decay"` or `"none"` rather than a guess
 from the file it was loaded from.
 
-A fresh install has an empty sequence library, so the template writes the
+A fresh install has an empty sequence library, so the workflow writes the
 four standard experiments out on its first run. It never overwrites: an
 edited `rabi.json` is yours, and silently restoring the shipped one would
 undo an afternoon of calibration.
@@ -268,10 +314,10 @@ Rabi period fits to 199.7 ns, a 1.5 µs T2\* to 1.46 µs, a 4 µs Hahn echo
 to 3.83 µs. The sequences upload unchanged to a PulseStreamer and a
 PulseBlaster, each reporting its own quantisation.
 
-Headless: `test_pulse_extract.py`, `test_pulse_analyse.py`,
-`test_pulsed_plan.py`, `test_plan_transport.py`, plus the template and
-all four presets in `test_template_smoke.py`. Offscreen:
-`scripts/verify_pulse_editor.py` (47 checks) and
+Headless: `test_pulse_tracks.py`, `test_pulse_extract.py`,
+`test_pulse_analyse.py`, `test_pulsed_plan.py`, `test_plan_transport.py`,
+plus both templates in `test_template_smoke.py`. Offscreen:
+`scripts/verify_pulse_editor.py` (52 checks, driving the real canvas) and
 `scripts/verify_pulse_measurement.py` (34).
 
 ## Deliberate differences from Qudi
@@ -308,10 +354,10 @@ The design is cited; the source is not copied.
 - **6a.5** (plain-Python workflow scripts) — complete.
 - **6b** (sequence model, generator library, sampling, storage) — complete.
 - **6d.5 / 6e, editor half** (the free-standing editor workflow, the
-  generator form, the dynamic-column block editor, the timing-diagram
-  result view) — complete.
+  timeline canvas, the drawn sweep, the timing-diagram result view) —
+  complete.
 - **6c** (pulser and gated-counter contracts, mock rig, PulseStreamer,
   PulseBlaster) — complete.
 - **6d** (measurement plan, extraction, analysis, fits) — complete.
-- **6e, measurement half** (the pulsed-measurement template, its four
-  presets, the control dock and the `pulsed` result view) — complete.
+- **6e, measurement half** (the one pulsed-measurement workflow, its
+  control dock and the `pulsed` result view) — complete.
