@@ -172,9 +172,32 @@ class ScanPlan:
     """Which device `hold` names parameters of. Defaults to the first
     axis's device, which is the ordinary case: the other axes of the same
     stage."""
+    repeats: int = 1
+    """Play the whole grid this many times, keeping each pass separately.
+
+    Averaging, expressed as a dimension rather than as arithmetic. The
+    result gains a leading `repeat` axis, so what is saved is every pass
+    rather than only their mean — which is Qudi's own ODMR accumulation
+    matrix, and the reason it exists: a drifting resonance and a noisy one
+    look identical once averaged, and different the moment the passes are
+    laid side by side. Nothing is written for this axis; it is time, not
+    position.
+
+    It varies *slowest*, so a pass is a whole grid rather than each point
+    being read N times in a row — those are different measurements and
+    only the first averages away drift. One consequence: with repeats the
+    leading axis is not movable, so `actuator_axis_count` is zero and no
+    view offers a crosshair. That is right rather than unfortunate —
+    a crosshair on a `(repeat, x)` image cannot say which pass it points
+    at.
+    """
     settle_tolerance: float = DEFAULT_TOLERANCE
     max_settle_polls: int = DEFAULT_MAX_POLLS
     params: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def passes(self) -> int:
+        return max(int(self.repeats), 1)
 
     async def describe(self, session: Session) -> RunDescriptor:
         detector = session.get(self.detector)
@@ -189,6 +212,15 @@ class ScanPlan:
             )
             for axis in self.axes
         )
+        if self.passes > 1:
+            scan_axes = (
+                Axis(
+                    name="repeat",
+                    values=np.arange(self.passes, dtype=float),
+                    kind="repeat",
+                ),
+                *scan_axes,
+            )
         points = int(np.prod([len(a) for a in scan_axes], dtype=int)) if scan_axes else 0
         if points > MAX_POINTS:
             raise ValueError(
@@ -240,8 +272,10 @@ class ScanPlan:
 
         await detector.stage()
         try:
-            grid = itertools.product(*(axis.values for axis in self.axes))
-            for index, combination in enumerate(grid):
+            grid = itertools.product(
+                range(self.passes), *(axis.values for axis in self.axes)
+            )
+            for index, (_pass, *combination) in enumerate(grid):
                 position = dict(zip((a.name for a in self.axes), combination, strict=True))
                 for device, targets in _by_device(position, self.axes).items():
                     await self._command(session.get(device), targets)

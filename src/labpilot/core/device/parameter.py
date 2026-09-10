@@ -108,6 +108,23 @@ Adapters name it `integration_time_ms`, `integration_time_s`,
 `exposure_time_ms`, `exposure`, ... — this tag is how a caller asks for it
 once instead of four modules each searching for a substring."""
 
+FREQUENCY = "frequency"
+"""Standard tag for "the frequency this source emits at".
+
+Adapters name it `cw_frequency`, `frequency`, `freq`, `carrier`, ... and
+an ODMR sweep has to know which one to step. It used to find out by
+taking the first settable whose name did not contain "power", which is a
+guess that a source with a settable phase or modulation depth silently
+gets wrong — and getting it wrong means sweeping the wrong quantity and
+fitting a resonance in it."""
+
+POWER = "power"
+"""Standard tag for "the level this source emits at".
+
+The companion to `FREQUENCY`: the amplitude or power setpoint, parked
+once before a sweep rather than stepped. `cw_power`, `power`, `amplitude`,
+`level`, ..."""
+
 
 # Legacy dtype string -> (element dtype, shape). Covers every dtype string
 # any adapter in this repo actually uses, plus the near-miss spellings

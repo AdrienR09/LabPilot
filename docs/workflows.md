@@ -32,6 +32,21 @@ dict). They were four separate modules until each turned out to be
 `omniscan` plus a params dict once `Run` owned the scan loop and a
 `Dataset` could describe its own axes.
 
+## Averaging is a dimension, not arithmetic
+
+`ScanPlan(repeats=N)` plays the whole grid N times and keeps each pass as
+one row of the result, under a leading `repeat` axis. What is saved is
+every pass rather than only their mean, which is Qudi's ODMR
+accumulation matrix and the reason it exists: a resonance that drifts and
+one that is merely noisy look identical once averaged, and obviously
+different the moment the passes are laid side by side.
+
+A pass is a whole grid, so `repeat` varies slowest — reading each point N
+times in a row is a different measurement and only the first averages
+away drift. One consequence: with repeats the leading axis is not
+movable, so no view offers a crosshair. A crosshair on a `(repeat, x)`
+image could not say which pass it points at.
+
 ## Running a workflow
 
 **From the Manager:**

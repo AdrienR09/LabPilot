@@ -75,7 +75,7 @@ instruments, so it opens and runs with everything disconnected.
 | `ui/desktop/components/pulse_control.py` | **Done.** Sequence library, sweeps, and the two method combos, filled from the registries. |
 | `PulsedResultView` + a `pick_view` branch | **Done.** The curve with Poisson error bars and its fit, over the raw record with the extracted window shaded on it. |
 | `instruments/AWG/` | Five pylablib **function generators** — frequency, amplitude, offset, enable. Not an arbitrary waveform generator: no upload, no sequence, no channels, no triggering. |
-| `workflow_templates/odmr_sweep.py` | Works, but is **CW ODMR**, not pulsed — and predates the plan layer, so it hand-rolls its loop. |
+| `workflow_templates/odmr_sweep.py` | **CW ODMR**, not pulsed — but now a `ScanPlan(repeats=...)` like everything else, with its swept parameter declared rather than guessed. |
 
 ## Authoring is offline; execution is online
 

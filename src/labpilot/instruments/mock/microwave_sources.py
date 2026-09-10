@@ -23,6 +23,7 @@ from typing import Any
 
 import numpy as np
 
+from labpilot.core.device.parameter import FREQUENCY, POWER, Parameter, ParamRole
 from labpilot.core.device.schema import DeviceSchema
 from labpilot.instruments._base import AdapterBase, adapter_registry
 
@@ -60,18 +61,35 @@ class MockMicrowaveSource(AdapterBase):
                 # count isn't; this is read-only scan progress context.
                 "scan_total_points": "int32",
             },
+            # The two a sweep actually needs are declared as `Parameter`s
+            # so they can be *found* rather than guessed at. `odmr_sweep`
+            # used to take the first settable whose name did not contain
+            # "power", which a source with a settable phase or modulation
+            # depth silently gets wrong — and getting it wrong means
+            # sweeping the wrong quantity and fitting a resonance in it.
+            parameters=(
+                Parameter(
+                    "cw_frequency", unit="Hz", role=ParamRole.SETTING,
+                    settable=True, readable=False, limits=(1e5, 20e9),
+                    tags=frozenset({FREQUENCY}),
+                    description="Frequency emitted in CW mode",
+                ),
+                Parameter(
+                    "cw_power", unit="dBm", role=ParamRole.SETTING,
+                    settable=True, readable=False, limits=(-60.0, 20.0),
+                    tags=frozenset({POWER}),
+                    description="Level emitted in CW mode",
+                ),
+            ),
             settable={
-                "cw_frequency": "float64", "cw_power": "float64",
                 "scan_start": "float64", "scan_stop": "float64",
                 "scan_points": "int32", "scan_power": "float64",
             },
             units={
                 "frequency": "Hz", "power": "dBm",
-                "cw_frequency": "Hz", "cw_power": "dBm",
                 "scan_start": "Hz", "scan_stop": "Hz", "scan_power": "dBm",
             },
             limits={
-                "cw_frequency": (1e5, 20e9), "cw_power": (-60.0, 20.0),
                 "scan_start": (1e5, 20e9), "scan_stop": (1e5, 20e9),
                 "scan_points": (2, 10001), "scan_power": (-60.0, 20.0),
             },

@@ -1,41 +1,64 @@
-"""ODMR sweep.
+"""ODMR sweep — step a source's frequency, count photons, fit the dip.
 
-Qudi's signature workflow: step a source's output (canonically a
-microwave source's frequency, but works against any settable numeric
-source output) through a series of values, averaging `AVERAGES` repeats
-of the sweep, and fit a single dip in the resulting averaged trace — the
-standard optically-detected magnetic resonance (ODMR) measurement pattern
-(core/analysis/fits.py's `fit_dip`, same Lorentzian/Gaussian models qudi's
-own fit_logic uses for this). Each repeat's raw trace is also kept as one
-row of a growing `matrix` — qudi's own ODMR GUI shows this as a 2D
-accumulation image below the averaged spectrum, since it's the easiest
-way to see drift or a bad average visually instead of only in the final
-number.
+Qudi's signature workflow. Sweep a microwave source across a resonance,
+read a detector at every point, average several passes, and fit a single
+dip in the result: optically-detected magnetic resonance.
 
-References its instruments by *role*, not a specific instrument id — bind
-"source" and "detector" (via the flowchart, or
-PUT /api/workflows/{id}/bindings/{role}) to whichever real connected
-instruments should play each part before running. Rebind either role at
+Each pass is kept separately as one row of an accumulation matrix — the
+2-D image Qudi's own ODMR GUI shows under the averaged spectrum, and the
+reason it does: a resonance that drifts and one that is merely noisy look
+identical once averaged, and obviously different the moment the passes
+are laid side by side.
+
+## What changed, and why it is shorter
+
+This used to hand-roll its loop, pre-allocate its own arrays, count its
+own progress and publish its own frames — sixty lines of scaffolding
+around ten lines of measurement. It is now a `ScanPlan` with `repeats`,
+so the buffer, the counters, the progress event, the per-point patch
+streaming, pause, abort and the automatic HDF5 save all come from `Run`.
+The accumulation matrix is not assembled here either: it is the result's
+own leading `repeat` axis.
+
+## Which parameter gets swept is declared, not guessed
+
+It used to be found like this:
+
+    sweep_key = next(k for k, dt in settable.items()
+                     if dt != "bool" and "power" not in k.lower())
+
+— the first settable whose name does not contain "power". A source with a
+settable phase, modulation depth or reference level silently gets that
+wrong, and getting it wrong means sweeping the wrong quantity and fitting
+a resonance in it. Nothing raises; the plot just looks odd.
+
+So a source now *declares* which parameter is its frequency and which is
+its level, with the `FREQUENCY` and `POWER` tags
+(`core/device/parameter.py`), and this asks. `SWEEP_PARAMETER` and
+`POWER_PARAMETER` below name them explicitly for a source that has not
+been tagged yet — an override, not a guess, and the error says which to
+set.
+
+References its instruments by *role*: bind "source" and "detector" to
+whichever connected instruments should play each part. Rebind either at
 any time; the script itself never needs editing.
 """
 
 import numpy as np
 
 from labpilot.core.analysis.fits import evaluate_dip, fit_dip
-from labpilot.core.session import Session
+from labpilot.core.device.parameter import FREQUENCY, POWER
+from labpilot.core.run import ScanAxis, ScanPlan
+from labpilot.script import bind, execute
 
 REQUIRED_INSTRUMENTS = {
     "source": {"kind": "source", "dimensionality": "SOURCE"},
     "detector": {"kind": "detector", "dimensionality": "0D"},
 }
-SOURCE_ID = "source"
-DETECTOR_ID = "detector"
 
-# Read by the native desktop window (workflow_window.py) to render a live
-# spectrum+matrix view that grows as the sweep runs — see
-# session.report_progress() below. fit_x_key/fit_y_key/fit_center_key are
-# optional — only populated in the final last_results, once the fit
-# itself has run.
+# Read by the native desktop window to render a live spectrum + matrix
+# view that grows as the sweep runs. fit_* are only populated in the final
+# result, once the fit itself has run.
 RESULT_UI = {
     "type": "odmr",
     "x_key": "sweep_values",
@@ -49,108 +72,128 @@ RESULT_UI = {
     "fit_center_key": "fit_center",
 }
 
-# Sweep range, in whatever unit the bound source's own schema reports for
-# its settable frequency-like output (Hz for mock_microwave_source's
-# cw_frequency). Edit via PUT /api/workflows/{id}/params/SWEEP_START etc.,
-# or the native Sweep Control dock.
+# Sweep range, in whatever unit the bound source reports for its frequency
+# parameter (Hz for mock_microwave_source's cw_frequency).
 SWEEP_START = 2.82e9  # Hz
 SWEEP_STOP = 2.86e9  # Hz
 SWEEP_POINTS = 21
 
-# Written once, before sweeping, to whichever settable key's name contains
-# "power" (if any) — most microwave sources separate a power setpoint from
-# the frequency being swept.
+# Parked once, before the sweep starts, on the source's level parameter.
 SWEEP_POWER = -10.0  # dBm
 
-# Number of full sweeps to repeat and average — qudi's "Scans to Average".
-# Each repeat's raw (unaveraged) trace becomes one row of RESULT_UI's
-# matrix view.
+# Full sweeps to repeat — Qudi's "Scans to Average". Each becomes one row
+# of the accumulation matrix.
 AVERAGES = 5
 
-# "lorentzian" matches a real ODMR dip's physical lineshape best; "gaussian"
-# is also supported by core.analysis.fits.fit_dip if preferred.
+# "lorentzian" matches a real ODMR dip's physical lineshape best;
+# "gaussian" is also supported by core.analysis.fits.fit_dip.
 FIT_SHAPE = "lorentzian"
 
+# Empty means "ask the source which parameter is which", via the FREQUENCY
+# and POWER tags. Name one here for a source that has not declared them —
+# an override rather than a guess.
+SWEEP_PARAMETER = ""
+POWER_PARAMETER = ""
 
-async def run(session: Session) -> dict:
-    # source.write({...}) stays generic dict-based (below) rather than a
-    # typed method: which settable key is "the swept axis" vs. "the power
-    # setpoint" is genuinely instrument-specific business logic (see
-    # sweep_key/power_key detection below) — a generic Source wrapper
-    # (core/device/kinds.py) can't honestly guess that for an arbitrary
-    # microwave source, so this stays hand-written. detector.read_value()
-    # (below) DOES generalize cleanly — a 0D detector's reading is always
-    # "the one scalar value" regardless of manufacturer.
-    source = session.get(SOURCE_ID)
-    detector = session.get(DETECTOR_ID)
-    settable = source.schema.settable
-    # The frequency-like sweep axis is the one non-bool, non-power settable
-    # key (a source's other settable keys, if any, are typically a power
-    # setpoint and/or an on/off enable flag — see MoveControlComponent's
-    # identical enable_key convention on the native UI side).
-    sweep_key = next(k for k, dt in settable.items() if dt != "bool" and "power" not in k.lower())
-    power_key = next((k for k, dt in settable.items() if "power" in k.lower()), None)
 
-    sweep_values = np.linspace(SWEEP_START, SWEEP_STOP, int(SWEEP_POINTS)).tolist()
-    matrix: list[list[float]] = []
-    sums = [0.0] * len(sweep_values)
-    total_points = AVERAGES * len(sweep_values)
+def _named(schema, override: str, tag: str, what: str) -> str:
+    """Which parameter to sweep or park: the override, or the tagged one.
 
-    if power_key:
-        await source.write({power_key: SWEEP_POWER})
+    Raises rather than falling back to a name heuristic. The failure mode
+    a heuristic has here is silent and expensive — sweeping a modulation
+    depth and fitting a resonance in it — so an error that names both the
+    tag and the override is the cheaper outcome by a wide margin.
+    """
+    if override:
+        if override not in schema.settable:
+            raise KeyError(
+                f"{schema.name} has no settable {override!r} — it offers "
+                f"{', '.join(sorted(schema.settable)) or 'nothing'}"
+            )
+        return override
 
-    await detector.stage()
-    try:
-        for repeat in range(int(AVERAGES)):
-            row: list[float] = []
-            for i, target in enumerate(sweep_values):
-                await source.write({sweep_key: target})
+    found = schema.first(settable=True, tags={tag})
+    if found is None:
+        raise KeyError(
+            f"{schema.name} does not declare which of its parameters is its "
+            f"{what} (no parameter tagged {tag!r}), so this sweep cannot "
+            f"know what to {'step' if tag == FREQUENCY else 'park'}. Set "
+            f"{'SWEEP_PARAMETER' if tag == FREQUENCY else 'POWER_PARAMETER'} "
+            f"to its name — one of {', '.join(sorted(schema.settable))} — or "
+            f"tag it in the adapter's schema."
+        )
+    return found.name
 
-                value = await detector.read_value()
-                row.append(value)
-                completed = repeat * len(sweep_values) + i + 1
-                if repeat == 0:
-                    # No repeat has completed yet — show this first pass's
-                    # raw trace growing point by point (same as before
-                    # averaging existed), rather than a running average
-                    # that would need to divide by zero.
-                    live_x, live_counts = sweep_values[: i + 1], row
-                else:
-                    live_x, live_counts = sweep_values, [s / repeat for s in sums]
-                await session.report_progress({
-                    "sweep_values": live_x,
-                    "counts": live_counts,
-                    "matrix": matrix,  # only completed rows — the in-progress row joins once finished
-                    "repeats_done": repeat,
-                    "completed": completed,
-                    "total": total_points,
-                })
-            for i, value in enumerate(row):
-                sums[i] += value
-            matrix.append(row)
-    finally:
-        await detector.unstage()
 
-    counts = [s / AVERAGES for s in sums]
+source = bind("source")
+bind("detector")
+schema = source.schema
 
-    fit = fit_dip(sweep_values, counts, FIT_SHAPE)
-    fit_curve_x: list[float] = []
-    fit_curve_y: list[float] = []
-    fit_center = None
-    if fit is not None:
-        fit_curve_x = np.linspace(min(sweep_values), max(sweep_values), 200).tolist()
-        fit_curve_y = evaluate_dip(fit, fit_curve_x, FIT_SHAPE)
-        fit_center = fit["center"]
+swept = _named(schema, SWEEP_PARAMETER, FREQUENCY, "frequency")
+level = ""
+try:
+    level = _named(schema, POWER_PARAMETER, POWER, "level")
+except KeyError:
+    # A source with no level setpoint is a real source. Only an explicitly
+    # named POWER_PARAMETER that does not exist is an error worth raising.
+    if POWER_PARAMETER:
+        raise
 
-    return {
-        "source": SOURCE_ID,
-        "detector": DETECTOR_ID,
-        "sweep_values": sweep_values,
-        "counts": counts,
-        "matrix": matrix,  # one row per repeat, raw (unaveraged) trace
-        "repeats_done": AVERAGES,
-        "fit": fit,  # {center, amplitude, fwhm, baseline} in sweep_values' units, or None if the fit didn't converge
-        "fit_curve_x": fit_curve_x,  # dense curve for the result view's fit overlay — see RESULT_UI above
-        "fit_curve_y": fit_curve_y,
-        "fit_center": fit_center,
-    }
+result = execute(
+    ScanPlan(
+        axes=[
+            ScanAxis(
+                swept, "source", float(SWEEP_START), float(SWEEP_STOP),
+                int(SWEEP_POINTS), unit=schema.units.get(swept, ""),
+            )
+        ],
+        detector="detector",
+        repeats=int(AVERAGES),
+        # `hold` parks a parameter once before the grid starts, which is
+        # exactly what a power setpoint is.
+        hold={level: float(SWEEP_POWER)} if level else {},
+        hold_device="source",
+        name="odmr_sweep",
+    )
+)
+
+# The result is (repeats, points) when averaging and (points,) when not —
+# `repeat` is a real axis, so the matrix the ODMR view draws is a reshape
+# rather than something assembled by hand.
+passes = max(int(AVERAGES), 1)
+sweep_values = np.linspace(SWEEP_START, SWEEP_STOP, int(SWEEP_POINTS)).tolist()
+measured = np.asarray(
+    [np.nan if v is None else v for v in result["data"]], dtype=float
+).reshape(passes, len(sweep_values))
+
+# Untaken points are NaN — an aborted run keeps what it measured, and
+# averaging a partial pass in with the complete ones would pull the curve
+# towards whichever points happened to be measured twice.
+with np.errstate(invalid="ignore"):
+    counts = np.nanmean(measured, axis=0)
+complete = [row for row in measured.tolist() if not any(np.isnan(row))]
+
+fit = fit_dip(sweep_values, counts.tolist(), FIT_SHAPE)
+fit_curve_x: list = []
+fit_curve_y: list = []
+fit_center = None
+if fit is not None:
+    fit_curve_x = np.linspace(min(sweep_values), max(sweep_values), 200).tolist()
+    fit_curve_y = evaluate_dip(fit, fit_curve_x, FIT_SHAPE)
+    fit_center = fit["center"]
+
+RESULT = {
+    **result,
+    "source": "source",
+    "detector": "detector",
+    "swept_parameter": swept,
+    "power_parameter": level,
+    "sweep_values": sweep_values,
+    "counts": counts.tolist(),
+    "matrix": complete,  # one row per completed pass, raw (unaveraged)
+    "repeats_done": len(complete),
+    "fit": fit,  # {center, amplitude, fwhm, baseline}, or None if it did not converge
+    "fit_curve_x": fit_curve_x,  # dense curve for the result view's overlay
+    "fit_curve_y": fit_curve_y,
+    "fit_center": fit_center,
+}

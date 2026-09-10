@@ -38,7 +38,13 @@ from pydantic import (
 )
 
 from labpilot.core.device.action import Action
-from labpilot.core.device.parameter import INTEGRATION_TIME, Parameter, ParamRole
+from labpilot.core.device.parameter import (
+    FREQUENCY,
+    INTEGRATION_TIME,
+    POWER,
+    Parameter,
+    ParamRole,
+)
 from labpilot.core.errors import UnknownParameterError
 
 if TYPE_CHECKING:
@@ -322,6 +328,18 @@ class DeviceSchema(BaseModel):
     def integration_time(self) -> Parameter | None:
         """This device's integration-time parameter, if it has one."""
         return self.first(settable=True, tags={INTEGRATION_TIME})
+
+    @property
+    def frequency(self) -> Parameter | None:
+        """The frequency setpoint a sweep would step, if this device
+        declares one — see `parameter.FREQUENCY`."""
+        return self.first(settable=True, tags={FREQUENCY})
+
+    @property
+    def power(self) -> Parameter | None:
+        """The level setpoint a sweep would park, if this device declares
+        one — see `parameter.POWER`."""
+        return self.first(settable=True, tags={POWER})
 
     @property
     def primary(self) -> Parameter | None:
