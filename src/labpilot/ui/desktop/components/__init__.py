@@ -12,6 +12,7 @@ import labpilot.ui.qt_api  # pins QT_API before qtpy loads
 
 from components import (  # noqa: F401 — import for registration side effect
     actions,
+    channel_table,
     hyperspectral_viewer,
     move_controls,
     poll_rate,

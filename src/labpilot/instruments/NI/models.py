@@ -173,6 +173,19 @@ class NICardModel:
             )
         raise ValueError(f"No such terminal kind: {kind!r}")
 
+    @property
+    def stated(self) -> bool:
+        """Whether this entry describes any ports at all.
+
+        An entry that describes none is not a card with no ports — it is
+        the escape hatch for a card this table does not list. Nothing is
+        checked against it offline; NI-DAQmx does the checking when the
+        card is opened, which it would have done anyway. That keeps an
+        unlisted model from being a dead end without letting a guessed
+        inventory reject a working rig.
+        """
+        return bool(self.ai or self.ao or self.counters or self.dio)
+
     def knows(self, kind: str) -> bool:
         """Whether this model states its inventory of `kind`.
 
@@ -303,9 +316,11 @@ def find_model(name: str, models: dict[str, NICardModel] | None = None) -> NICar
     near = sorted(n for n in table if n[:2] == number[:2]) or sorted(table)
     raise KeyError(
         f"No NI card model {name!r} in the table (read as {number!r}). "
-        f"Nearest: {', '.join(near[:6])}. Add it to "
-        f"~/.labpilot/config/ni_models.toml — `python scripts/ni_probe.py` "
-        f"prints the block for a card that is plugged in."
+        f"Nearest: {', '.join(near[:6])}. Either set the model to 'generic', "
+        f"which validates no terminals and leaves the checking to NI-DAQmx, "
+        f"or add the card to ~/.labpilot/config/ni_models.toml — "
+        f"`python scripts/ni_probe.py` prints the block for one that is "
+        f"plugged in."
     )
 
 

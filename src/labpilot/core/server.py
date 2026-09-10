@@ -49,6 +49,7 @@ from labpilot.core.workflow.instrument_roles import (
     read_result_ui,
     read_template_description,
     read_workflow_params,
+    role_refusal,
 )
 from labpilot.core.workflow.migrate import migrate_library_workflows
 from labpilot.core.workflow.presets import load_presets
@@ -1364,21 +1365,14 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
             if request.instrument_id not in lab:
                 raise HTTPException(status_code=404, detail=f"Instrument {request.instrument_id!r} not found")
             handle = lab[request.instrument_id]
-            requirement = required[role]
-            actual_kind = handle.schema.kind
-            actual_dim = handle.dimensionality
-            if requirement.get("kind") and actual_kind != requirement["kind"]:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Role {role!r} needs kind={requirement['kind']!r}, "
-                           f"but {request.instrument_id!r} is {actual_kind!r}",
-                )
-            if requirement.get("dimensionality") and actual_dim != requirement["dimensionality"]:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Role {role!r} needs dimensionality={requirement['dimensionality']!r}, "
-                           f"but {request.instrument_id!r} is {actual_dim!r}",
-                )
+            # A `generic` instrument fits any role — see role_refusal, which
+            # holds that rule beside the role declarations themselves.
+            refusal = role_refusal(
+                role, required[role], request.instrument_id,
+                handle.schema.kind, handle.dimensionality,
+            )
+            if refusal:
+                raise HTTPException(status_code=422, detail=refusal)
 
         bindings = dict(graph.metadata.get("instrument_bindings", {}))
         bindings[role] = request.instrument_id

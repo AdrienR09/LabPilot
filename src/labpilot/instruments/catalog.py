@@ -416,6 +416,9 @@ INSTRUMENT_CATALOG.extend([
     # the manufacturer's own package, and both `describe()` without it, so
     # they are listed and searchable on a machine with no hardware.
     InstrumentMetadata("swabian_pulse_streamer", "Swabian", "Pulse Streamer 8/2", "Swabian Pulse Streamer", InstrumentType.GENERIC, InstrumentBackend.VENDOR, connection_types=['ethernet'], tags=['pulser', 'sequencer', 'ttl', 'digital', 'odmr', 'pulsed']),
+    # The counting half of a pulsed rig, and the first non-mock one: its
+    # TimeDifferences measurement is the (gate, time_bin) contract.
+    InstrumentMetadata("swabian_time_tagger", "Swabian", "Time Tagger", "Swabian Time Tagger", InstrumentType.DETECTOR_1D, InstrumentBackend.VENDOR, connection_types=['usb_serial_number'], tags=['counter', 'gated-counter', 'photon-counting', 'tcspc', 'odmr', 'pulsed']),
     InstrumentMetadata("spincore_pulse_blaster", "SpinCore", "PulseBlaster ESR-PRO", "SpinCore PulseBlaster", InstrumentType.GENERIC, InstrumentBackend.VENDOR, connection_types=['pci'], tags=['pulser', 'sequencer', 'ttl', 'digital', 'odmr', 'pulsed']),
     # Every Ocean Optics / Ocean Insight spectrometer as one entry: the
     # model is a setting, and OceanOptics/models.toml (transcribed from

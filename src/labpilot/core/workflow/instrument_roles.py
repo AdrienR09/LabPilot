@@ -29,6 +29,7 @@ from typing import Optional
 from labpilot.core.workflow.result_types import ResultUIError, parse_result_ui_literal
 
 __all__ = [
+    "GENERIC",
     "read_required_instruments",
     "read_required_instruments_from_file",
     "read_template_description",
@@ -36,7 +37,61 @@ __all__ = [
     "read_result_ui_from_file",
     "read_capabilities",
     "read_workflow_params",
+    "role_refusal",
 ]
+
+#: The kind that means "does not fit the other four", and therefore fits
+#: any role — see `role_refusal`.
+GENERIC = "generic"
+
+
+def role_refusal(
+    role: str,
+    requirement: dict,
+    instrument_id: str,
+    kind: str,
+    dimensionality: str,
+) -> str | None:
+    """Why this instrument may not fill this role, or None if it may.
+
+    ## A generic instrument fits every role
+
+    `kind` sorts a device into one of five buckets, and `generic` is the
+    bucket for devices that are not one thing: an NI DAQ card is
+    simultaneously an actuator (its analog outputs), a detector (its
+    analog inputs), a counter (its counters) and a hardware-timed
+    scanner, depending only on which terminal a workflow asks for. A
+    lock-in is a source and a detector at once. Refusing to bind those to
+    a `detector` role is the taxonomy asserting something it cannot know,
+    and it is the reason a card that does the job is missing from the
+    list.
+
+    So `generic` satisfies any requirement, and what it can *actually* do
+    is settled where that is knowable: by its schema, when the script asks
+    for a parameter it does not have. That check is exact, names the
+    parameter, and needs no taxonomy.
+
+    The check stays for every other kind, where it is still useful: a
+    `motor` bound to a `detector` role is nearly always a mis-click, and
+    the error is cheaper than the failed run.
+    """
+    if kind == GENERIC:
+        return None
+
+    wanted = requirement.get("kind")
+    if wanted and kind != wanted:
+        return (
+            f"Role {role!r} needs kind={wanted!r}, but {instrument_id!r} "
+            f"is {kind!r}"
+        )
+
+    wanted_dim = requirement.get("dimensionality")
+    if wanted_dim and dimensionality != wanted_dim:
+        return (
+            f"Role {role!r} needs dimensionality={wanted_dim!r}, but "
+            f"{instrument_id!r} is {dimensionality!r}"
+        )
+    return None
 
 # Constant names read_workflow_params never treats as a tunable workflow
 # parameter: REQUIRED_INSTRUMENTS/RESULT_UI have their own special-purpose

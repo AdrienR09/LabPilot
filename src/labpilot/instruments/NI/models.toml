@@ -561,6 +561,30 @@ notes = "OCXO timebase."
 # wherever channel-to-channel skew matters.
 
 [[card]]
+number = "6110"
+family = "S"
+buses = ["PCI", "PXI"]
+ai = 4
+ai_rate = 5.0e6
+ai_bits = 12
+ai_ranges = [0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 42.0]
+ao = 2
+ao_rate = 4.0e6
+dio = 8
+
+[[card]]
+number = "6111"
+family = "S"
+buses = ["PCI", "PXI"]
+ai = 2
+ai_rate = 5.0e6
+ai_bits = 12
+ai_ranges = [0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 42.0]
+ao = 2
+ao_rate = 4.0e6
+dio = 8
+
+[[card]]
 number = "6115"
 family = "S"
 buses = ["PCI", "PXI"]
@@ -570,6 +594,29 @@ ai_bits = 12
 ai_ranges = [0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 42.0]
 ao = 2
 ao_rate = 4.0e6
+dio = 8
+
+[[card]]
+number = "6120"
+family = "S"
+buses = ["PCI", "PXI"]
+ai = 4
+ai_rate = 800.0e3
+ai_bits = 16
+ai_ranges = [0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 42.0]
+ao = 2
+ao_rate = 1.0e6
+dio = 8
+
+[[card]]
+number = "6132"
+family = "S"
+buses = ["PCI", "PXI"]
+ai = 8
+ai_rate = 2.5e6
+ai_bits = 14
+ai_ranges = [1.25, 2.5, 5.0, 10.0]
+ao = 0
 dio = 8
 
 [[card]]
@@ -593,3 +640,17 @@ ai_bits = 16
 ai_ranges = [5.0]
 ao = 0
 dio = 8
+
+
+# --- The escape hatch -------------------------------------------------------
+# For a card this table does not list. Nothing is stated, so nothing is
+# validated: every terminal is taken on trust and the wiring is checked by
+# NI-DAQmx itself when the card is opened. Use it to get running, then run
+# `python scripts/ni_probe.py` on the machine with the card in it and paste
+# the block it prints into ~/.labpilot/config/ni_models.toml — after which
+# the terminals are checked properly again.
+
+[[card]]
+number = "generic"
+label = "Unlisted NI card"
+notes = "No inventory stated, so no terminal is validated offline."

@@ -28,7 +28,12 @@ from labpilot.instruments.catalog import INSTRUMENT_CATALOG
 from labpilot.instruments.connections import CONNECTION_METHODS
 from labpilot.instruments.mock.ni_card import MockNICard
 from labpilot.instruments.NI.card import NICardAdapter
-from labpilot.instruments.NI.channels import Channel, parse_channels, validate_channels
+from labpilot.instruments.NI.channels import (
+    KINDS,
+    Channel,
+    parse_channels,
+    validate_channels,
+)
 from labpilot.instruments.NI.models import (
     AI,
     AO,
@@ -436,3 +441,130 @@ def test_normalising_a_product_name_keeps_what_was_typed_when_it_has_no_number()
     """So the error message can quote what was actually asked for."""
     assert normalise_number("  PCIe-6363 ") == "6363"
     assert normalise_number("nonsense") == "nonsense"
+
+
+# --- Configuring the card from the settings window ---------------------------
+
+
+def test_the_model_is_a_dropdown_of_every_card_in_the_table():
+    """"All NI card models available, chosen in the settings" — the
+    parameter carries the choices, so the ordinary settings tree renders
+    it as a dropdown with no new UI at all."""
+    from labpilot.instruments.NI.card import model_choices
+
+    model = wired().schema.require("model")
+    assert model.settable
+    assert model.choices == model_choices()
+    assert "PCIe-6363" in model.choices
+    assert len(model.choices) == len(load_models())
+
+
+def test_the_channel_table_is_declared_as_the_widget_expects():
+    """The other half of `scripts/verify_channel_table.py`, which writes
+    this shape out by hand because it cannot import the adapter. If the
+    two ever disagree, the harness is verifying a fiction."""
+    channels = wired().schema.require("channels")
+    assert channels.settable
+    assert channels.dtype == "record"
+    assert channels.shape == (None,)
+    assert [f.name for f in channels.fields] == ["name", "kind", "terminal", "source"]
+    kinds = next(f for f in channels.fields if f.name == "kind")
+    assert kinds.choices == KINDS
+
+
+def test_the_wiring_reads_back_as_the_table_that_was_written():
+    card = wired(channels="x=ao0, apd=ctr0/pfi8")
+    assert card._read_sync()["channels"] == [
+        {"name": "x", "kind": "ao", "terminal": "ao0", "source": ""},
+        {"name": "apd", "kind": "ci", "terminal": "ctr0", "source": "pfi8"},
+    ]
+
+
+async def test_rewiring_from_the_table_changes_what_the_instrument_is():
+    card = wired()
+    await card.connect()
+    await card.write({"channels": [
+        {"name": "z", "kind": "ao", "terminal": "ao3", "source": ""},
+        {"name": "shutter", "kind": "do", "terminal": "port0/line0", "source": ""},
+    ]})
+
+    assert set(card.schema.settable) >= {"z", "shutter"}
+    assert "x" not in card.schema.settable
+    assert HARDWARE_SCAN not in card.schema.capabilities  # nothing to read back now
+
+
+async def test_a_bad_row_leaves_the_wiring_exactly_as_it_was():
+    """Half-applying a port map is worse than refusing it: the instrument
+    would claim terminals it has not got."""
+    card = wired()
+    await card.connect()
+    before = card._read_sync()["channels"]
+
+    with pytest.raises(ValueError, match="ao9"):
+        await card.write({"channels": [
+            {"name": "x", "kind": "ao", "terminal": "ao9", "source": ""},
+        ]})
+    assert card._read_sync()["channels"] == before
+
+
+async def test_changing_the_model_re_checks_the_wiring_against_the_new_card():
+    """Pick the wrong card from the dropdown and it says which terminal
+    that card does not have — rather than leaving an instrument that
+    claims four counters it hasn't got."""
+    card = wired(channels="x=ao0, y=ao1, apd=ctr0/pfi8")
+    await card.connect()
+
+    with pytest.raises(ValueError, match="6602 has none"):
+        await card.write({"model": "PCI-6602"})
+    assert card.model.number == "6363"  # unchanged
+
+    await card.write({"model": "PCIe-6323"})
+    assert card.model.number == "6323"
+
+
+async def test_switching_to_a_lesser_card_drops_a_capability_it_cannot_have():
+    """A USB-6008's outputs are software-timed, so the same wiring that
+    scans on a 6363 cannot scan there — and the window must stop offering
+    it."""
+    card = wired(channels="x=ao0, pd=ai0")
+    await card.connect()
+    assert HARDWARE_SCAN in card.schema.capabilities
+
+    await card.write({"model": "USB-6008"})
+    assert HARDWARE_SCAN not in card.schema.capabilities
+
+
+# --- A card the table does not list ------------------------------------------
+
+
+def test_an_unlisted_card_has_a_way_through():
+    """The table cannot be complete — NI has shipped hundreds of models
+    and keeps shipping more — so "not in the table" must not mean "cannot
+    use this card". `generic` states no ports, and an entry that states
+    no ports validates nothing: DAQmx does the checking it would have done
+    anyway."""
+    generic = find_model("generic")
+    assert generic.stated is False
+    assert validate_channels(
+        parse_channels("apd=ctr7/pfi31, x=ao9, pd=ai47"), generic
+    )
+
+
+def test_the_escape_hatch_is_named_in_the_error_for_a_missing_model():
+    """An error that says only "not found" leaves someone stuck; this one
+    says both ways out."""
+    with pytest.raises(KeyError, match="generic"):
+        find_model("PCIe-9999")
+
+
+def test_the_escape_hatch_still_refuses_a_duplicate():
+    """Two channels sharing a name is wrong whatever the card is, and it
+    is this repo's mistake to catch rather than DAQmx's."""
+    with pytest.raises(ValueError, match="both named"):
+        validate_channels(parse_channels("x=ao0, x=ao1"), find_model("generic"))
+
+
+def test_a_stated_card_is_still_checked():
+    """The escape hatch must not accidentally apply to a real entry."""
+    assert find_model("6363").stated is True
+    assert find_model("6602").stated is True  # counters and DIO, no analog

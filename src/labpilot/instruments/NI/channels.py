@@ -273,6 +273,12 @@ def validate_channels(
     checked = tuple(channels)
     _no_duplicates(checked)
 
+    if not model.stated:
+        # An entry describing no ports is the "unlisted card" escape hatch
+        # — see `NICardModel.stated`. Two channels still may not share a
+        # name or a terminal, since that is wrong whatever the card is.
+        return checked
+
     for channel in checked:
         _check_terminal(channel, model)
         _check_source(channel, model)

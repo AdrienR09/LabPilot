@@ -96,6 +96,26 @@ a binding is made or changed. `REQUIRED_INSTRUMENTS` is read with
 unbound role fails fast with a clear error naming it, rather than a
 generic `KeyError` deep inside the script.
 
+### A generic instrument fits any role
+
+The binding is checked against the role's declared `kind` — a motor bound
+to a detector role is refused, because that is nearly always a mis-click
+and the error is cheaper than the failed run.
+
+`kind="generic"` is exempt, and deliberately so. It is the bucket for a
+device that is not one thing: an NI DAQ card is an actuator (its analog
+outputs), a detector (its analog inputs), a counter and a hardware-timed
+scanner at once, decided by which terminal a workflow reaches for; a
+lock-in is a source and a detector together. Refusing to bind those to a
+`detector` role is the taxonomy asserting something it cannot know, and
+the symptom is that the instrument which can do the job is simply missing
+from the list, with no error to explain why.
+
+So a generic instrument can fill any role, and what it can *actually* do
+is settled where that is knowable — by its schema, when the script asks it
+for a parameter it does not have. That check names the parameter and needs
+no taxonomy (`core/workflow/instrument_roles.py::role_refusal`).
+
 `session.get(role_name)` returns a kind-typed object (`Motor`/`Detector`/
 `Source`/`Scanner`) with the ergonomic method set for that role's kind
 (`move_abs()`, `read_value()`, ...) rather than just a generic

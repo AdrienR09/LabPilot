@@ -116,9 +116,26 @@ class MockNICard(_CardConfig, AdapterBase):
         counts = np.random.poisson(max(rate * dwell, 0.0))
         return float(counts / dwell)
 
+    def _rewired(self) -> None:
+        """Bring the simulated outputs back in line with the new wiring.
+
+        A channel that is gone stops existing; one that is new starts at
+        zero. Keeping a stale entry would let `read()` report a voltage
+        for a terminal nothing is wired to.
+        """
+        self._outputs = {
+            c.name: self._outputs.get(c.name, 0.0) for c in self.of_kind("ao")
+        }
+        self._digital = {
+            c.name: self._digital.get(c.name, False) for c in self.of_kind("do")
+        }
+        self._push_position()
+
     def _read_sync(self) -> dict[str, Any]:
         reading: dict[str, Any] = {
-            "model": self._product_name, "device": self._device
+            "model": self._product_name,
+            "channels": self.channel_records(),
+            "device": self._device,
         }
         brightness = self._brightness()
         for channel in self.of_kind("ai"):
@@ -132,7 +149,14 @@ class MockNICard(_CardConfig, AdapterBase):
         return reading
 
     async def write(self, values: dict[str, Any]) -> None:
-        for key, value in self.validate_write(values).items():
+        checked = self.validate_write(values)
+        # Configuration first — see NICardAdapter.write.
+        if "model" in checked:
+            self.apply_model(str(checked.pop("model")))
+        if "channels" in checked:
+            self.apply_channels(checked.pop("channels"))
+
+        for key, value in checked.items():
             channel = self.channel(key)
             if channel.kind == "ao":
                 self._outputs[key] = float(value)

@@ -250,8 +250,8 @@ opens. The same wiring can also be given as a list of records
 (`{"name": "x", "kind": "ao", "terminal": "ao0"}`), which is what a config
 file or a script would normally use.
 
-`src/labpilot/instruments/NI/models.toml` describes ~46 models — X Series,
-M Series, the low-cost USB boxes, the counter/timer cards and a few S
+`src/labpilot/instruments/NI/models.toml` describes 51 models — X Series,
+M Series, the low-cost USB boxes, the counter/timer cards and the S
 Series — as ports and limits. It is what makes a card configurable with no
 card present: qudi, pylablib, pyMoDAQ and Micro-Manager all ask NI-DAQmx
 at run time and therefore cannot help you at a desk, and NI ships no DAQmx
@@ -268,6 +268,19 @@ block, and `--check` compares it with the shipped table. Add or correct a
 model in `~/.labpilot/config/ni_models.toml`, which is merged over the
 packaged file entry by entry — a `[[card]]` there overrides only the
 fields it names, so a later release's new models still arrive.
+
+Both the model and the wiring are **settings**, not connection details:
+open the card's window and `model` is a dropdown of every model in the
+table, `channels` is an editable port table (`components/channel_table.py`,
+which renders any record-table parameter). Changing either re-validates
+the other before anything is applied — pick a PCI-6602 while an analog
+output is wired and it says the 6602 has none, and the wiring stays as it
+was. On a connected card the DAQmx tasks are rebuilt in place.
+
+For a card the table does not list, set the model to `generic`: it states
+no ports, so nothing is validated offline and DAQmx does the checking it
+would have done anyway. Then run `ni_probe.py` and paste the block in to
+get real checking back.
 
 What a card can do follows from the model and the wiring rather than from
 which adapter you picked: `hardware_scan` is claimed only when there is an

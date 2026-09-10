@@ -59,12 +59,30 @@ from labpilot.core.device.parameter import Parameter, ParamRole
 from labpilot.core.device.schema import DeviceSchema
 from labpilot.instruments._base import AdapterBase, adapter_registry
 from labpilot.instruments.hardware_scan_mixin import build_scan_waveform
-from labpilot.instruments.NI.channels import Channel, parse_channels, validate_channels
-from labpilot.instruments.NI.models import NICardModel, find_model
+from labpilot.instruments.NI.channels import (
+    KINDS,
+    Channel,
+    parse_channels,
+    validate_channels,
+)
+from labpilot.instruments.NI.models import NICardModel, find_model, load_models
 
-__all__ = ["NICardAdapter", "card_schema"]
+__all__ = ["NICardAdapter", "card_schema", "model_choices"]
 
 DEFAULT_MODEL = "PCIe-6363"
+
+
+def model_choices() -> tuple[str, ...]:
+    """Every card in the table, as the dropdown shows them.
+
+    The product name rather than the bare number — `PCIe-6363` is what is
+    printed on the card and what NI-MAX reports, and a list of four-digit
+    numbers is a list nobody can read. One entry per model, using its
+    first bus, since matching ignores the prefix anyway.
+    """
+    return tuple(
+        sorted(model.product_names()[0] for model in load_models().values())
+    )
 
 
 def card_schema(
@@ -82,9 +100,33 @@ def card_schema(
     configuration you arrive at is the one the card will accept.
     """
     parameters = [
+        # Both settable, and both rendered by the ordinary settings tree:
+        # `model` has `choices`, which the tree turns into a dropdown, and
+        # `channels` is a record table, which `components/channel_table.py`
+        # owns. Together they are the whole configuration of an NI card,
+        # editable in the settings window of a running instrument rather
+        # than only in the form that created it.
         Parameter(
-            "model", dtype="str", readable=True, settable=False,
-            role=ParamRole.STATUS, description=f"{model.label} ({model.family} Series)",
+            "model", dtype="str", settable=True, role=ParamRole.SETTING,
+            choices=model_choices(),
+            description=f"Which card this is — currently {model.label}"
+            + (f" ({model.family} Series)" if model.family else ""),
+        ),
+        Parameter(
+            "channels", shape=(None,), settable=True, role=ParamRole.SETTING,
+            fields=(
+                Parameter("name", dtype="str", settable=True,
+                          description="What a workflow calls this channel"),
+                Parameter("kind", dtype="str", settable=True, choices=KINDS,
+                          description="ai/ao input or output, ci counter, "
+                                      "di/do digital, co pulse train"),
+                Parameter("terminal", dtype="str", settable=True,
+                          description="ai0, ao1, ctr0, port0/line3"),
+                Parameter("source", dtype="str", settable=True,
+                          description="For a counter: the PFI line it counts"),
+            ),
+            description="What is wired where. Terminals are checked against "
+                        "the chosen model.",
         ),
         Parameter(
             "device", dtype="str", readable=True, settable=False,
@@ -194,6 +236,52 @@ class _CardConfig:
 
     def of_kind(self, *kinds: str) -> tuple[Channel, ...]:
         return tuple(c for c in self._channels if c.kind in kinds)
+
+    # --- Reconfiguring, from the settings window --------------------------
+
+    def apply_model(self, product_name: str) -> None:
+        """Point this instrument at a different card model.
+
+        The wiring is re-validated against the new model *before* anything
+        changes, so choosing the wrong card from the dropdown says which
+        terminal does not exist on it rather than leaving an instrument
+        that claims terminals it has not got. Either both change or
+        neither does.
+        """
+        model = find_model(product_name)
+        channels = validate_channels(self._channels, model)
+        self._model = model
+        self._channels = channels
+        self._product_name = str(product_name)
+        self._range = self._model.voltage_range
+        self._rewired()
+
+    def apply_channels(self, spec: Any) -> None:
+        """Re-wire, from the channel table or a script.
+
+        Validated against the current model first, for the same reason:
+        a half-applied wiring is worse than a rejected one.
+        """
+        self._channels = validate_channels(parse_channels(spec), self._model)
+        self._rewired()
+
+    def _rewired(self) -> None:
+        """Called after the model or the wiring changed.
+
+        The base does nothing — a configuration object has nothing to
+        rebuild. Each adapter overrides it to bring its own state back in
+        line, which for the real card means rebuilding its DAQmx tasks.
+        """
+
+    def channel_records(self) -> list[dict[str, Any]]:
+        """The wiring as the record table the settings window edits."""
+        return [
+            {
+                "name": c.name, "kind": c.kind,
+                "terminal": c.terminal, "source": c.source,
+            }
+            for c in self._channels
+        ]
 
     def channel(self, name: str) -> Channel:
         for channel in self._channels:
@@ -348,9 +436,25 @@ class NICardAdapter(_CardConfig, AdapterBase):
 
     # --- Reading and writing ----------------------------------------------
 
+    def _rewired(self) -> None:
+        """Rebuild the DAQmx tasks against the new wiring.
+
+        A task is created per channel at connect time, so a card that is
+        open has to be closed and reopened — there is no way to add a
+        counter to a running task. Doing it here rather than asking the
+        user to reconnect is the difference between editing the wiring in
+        the settings window and editing a config file.
+        """
+        if self._daq is None:
+            return
+        self._disconnect_sync()
+        self._connect_sync()
+
     def _read_sync(self) -> dict[str, Any]:
         reading: dict[str, Any] = {
-            "model": self._product_name, "device": self._device
+            "model": self._product_name,
+            "channels": self.channel_records(),
+            "device": self._device,
         }
         inputs = self.of_kind("ai", "ci", "di")
         if not inputs or self._daq is None:
@@ -374,8 +478,18 @@ class NICardAdapter(_CardConfig, AdapterBase):
         class's: there is no `set_x` method to define when `x` is whatever
         someone called the galvo axis."""
         checked = self.validate_write(values)
-        daq = self._require()
 
+        # `model` and `channels` are configuration, not output: they change
+        # what this instrument *is*, so they are applied first and the rest
+        # of the write then goes to the wiring that results.
+        if "model" in checked:
+            self.apply_model(str(checked.pop("model")))
+        if "channels" in checked:
+            self.apply_channels(checked.pop("channels"))
+        if not checked:
+            return
+
+        daq = self._require()
         analog = {k: float(v) for k, v in checked.items() if self.channel(k).kind == "ao"}
         digital = {k: bool(v) for k, v in checked.items() if self.channel(k).kind == "do"}
         if analog:

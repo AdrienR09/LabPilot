@@ -136,6 +136,10 @@ blocks = [
   ] },
   { type = "actions" },
   { type = "settings_tree" },
+  # A DAQ card's port map: which terminal is wired to what. Builds nothing
+  # for an instrument that declares no record-table parameter, so it is
+  # safe here for every generic device, not only the ones that have one.
+  { type = "channel_table", dock_title = "Channels" },
 ]
 
 # --- Capability sections --------------------------------------------------
