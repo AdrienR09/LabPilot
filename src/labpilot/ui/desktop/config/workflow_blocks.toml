@@ -28,6 +28,13 @@
 #
 # Copied to ~/.labpilot/config/ on first run, like ui_blocks.toml, and
 # re-read every time a workflow window opens — edit freely.
+#
+# Your copy is an *override layer* over this one, not a replacement: a
+# control added by an upgrade appears without your edits being touched,
+# and your version of a control wins, matched by `type`. Removing a line
+# from your copy therefore does nothing — it looks like a line you never
+# wrote. To drop a control, name it in a top-level
+# `disabled = ["sweep_control"]` instead.
 
 [[controls]]
 type = "axes_control"

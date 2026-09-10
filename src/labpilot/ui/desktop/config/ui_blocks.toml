@@ -48,6 +48,13 @@
 # own DeviceSchema dtype/limits, nothing to configure here) always renders
 # as a switch instead of a numeric control, regardless of dimensionality.
 
+# Your copy in ~/.labpilot/config/ is an *override layer* over this file,
+# not a replacement: a block or a whole section added by an upgrade
+# appears without your edits being touched, and your version of a block
+# wins, matched by `type`. Removing a line from your copy therefore does
+# nothing — it looks like a line you never wrote. To drop a block, name it
+# in a top-level `disabled = ["poll_rate"]` instead.
+
 [detector."0D"]
 blocks = [
   { type = "toolbar", title = "Trace Controls", actions = [
