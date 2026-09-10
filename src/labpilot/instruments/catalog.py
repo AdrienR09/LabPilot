@@ -84,6 +84,7 @@ def _pymeasure(key: str, mfg: str, model: str, name: str, itype: InstrumentType,
 
 INSTRUMENT_CATALOG: list[InstrumentMetadata] = [
     # Mock adapters (41) — src/instruments/mock/
+    _mock("mock_ni_card", "NI-DAQmx", "Mock NI DAQ Card (any model)", InstrumentType.GENERIC, ["daq", "ni-daqmx", "counter", "scanner", "hardware-scan"]),
     _mock("mock_spectrometer", "Basic", "Mock Spectrometer", InstrumentType.DETECTOR_1D, ["spectrometer", "visible"]),
     _mock("mock_hi_res_spectrometer", "HighRes", "Mock High-Resolution Spectrometer", InstrumentType.DETECTOR_1D, ["spectrometer", "high-res"]),
     _mock("mock_uv_vis_spectrometer", "UV-VIS", "Mock UV-VIS Spectrometer", InstrumentType.DETECTOR_1D, ["spectrometer", "uv-vis"]),
@@ -426,12 +427,13 @@ INSTRUMENT_CATALOG.extend([
     InstrumentMetadata("andor_shamrock", "Andor", "Shamrock", "Andor Shamrock Spectrograph", InstrumentType.ACTUATOR_1D, InstrumentBackend.PYLABLIB, tags=['spectrograph', 'monochromator', 'grating']),
     InstrumentMetadata("pco", "PCO", "pco.edge", "PCO Camera", InstrumentType.DETECTOR_2D, InstrumentBackend.PYLABLIB, tags=['camera', 'scmos']),
     InstrumentMetadata("hamamatsu_dcam", "Hamamatsu", "DCAM", "Hamamatsu Camera (DCAM)", InstrumentType.DETECTOR_2D, InstrumentBackend.PYLABLIB, tags=['camera']),
-    InstrumentMetadata("ni_daq", "National Instruments", "NI-DAQmx", "NI-DAQmx Analog I/O", InstrumentType.GENERIC, InstrumentBackend.PYLABLIB, tags=['daq', 'analog-io', 'ni-daqmx']),
-    # Hardware-timed scanning (position output + detector input clocked as
-    # one) — see core/workflow/capabilities.py's HardwareTimedScanCapability.
-    # Untested against physical hardware (built directly against pylablib's
-    # verified API; no NI card in this dev environment — see NIDAQScannerAdapter's docstring).
-    InstrumentMetadata("ni_daq_scanner", "National Instruments", "NI-DAQmx Scanner", "NI-DAQmx Hardware-Timed Scanner", InstrumentType.GENERIC, InstrumentBackend.PYLABLIB, tags=['daq', 'ni-daqmx', 'scanner', 'hardware-scan']),
+    # Every NI DAQ card, as one entry: the model is chosen in its settings
+    # (instruments/NI/models.toml lists ~50 of them) and the terminals are
+    # wired there too. Replaces the separate `ni_daq` and `ni_daq_scanner`
+    # entries, which made one physical card appear as two instruments.
+    # The I/O paths are built against pylablib's verified API but have not
+    # been run against a card — see NICardAdapter's docstring.
+    InstrumentMetadata("ni_card", "National Instruments", "NI-DAQmx", "NI DAQ Card (any model)", InstrumentType.GENERIC, InstrumentBackend.PYLABLIB, connection_types=['ni_daqmx'], tags=['daq', 'ni-daqmx', 'analog-io', 'counter', 'scanner', 'hardware-scan']),
     InstrumentMetadata("pylablib_agilent33220a", "Agilent", "33220A", "Agilent 33220A Function Generator", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, tags=['awg', 'function-generator']),
     InstrumentMetadata("pylablib_agilent33500", "Agilent", "33500", "Agilent 33500 Function Generator", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, tags=['awg', 'function-generator']),
     InstrumentMetadata("pylablib_rigol_dg1000", "Rigol", "DG1000", "Rigol DG1000 Function Generator", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, tags=['awg', 'function-generator']),

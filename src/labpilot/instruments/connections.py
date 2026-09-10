@@ -56,6 +56,22 @@ CONNECTION_METHODS: dict[str, ConnectionMethod] = {
         "usb_serial_number", "USB (serial number)",
         (ConnectionField("serial_number", "str", "Device serial number", ""),),
     ),
+    # An NI card is not reached by an address: DAQmx already knows it by
+    # the name NI-MAX gave it. What has to be said instead is which card
+    # it is and what is plugged into which terminal — see
+    # instruments/NI/channels.py for the one-line channel syntax, which
+    # exists so the whole wiring fits in a form field like this one.
+    "ni_daqmx": ConnectionMethod(
+        "ni_daqmx", "NI-DAQmx device",
+        (
+            ConnectionField("device", "str", "NI-MAX device name", "Dev1"),
+            ConnectionField("model", "str", "Card model", "PCIe-6363"),
+            ConnectionField(
+                "channels", "str", "Channels (name=terminal, comma separated)",
+                "x=ao0, y=ao1, apd=ctr0/pfi8",
+            ),
+        ),
+    ),
     "none": ConnectionMethod("none", "No connection (mock/simulated)", ()),
 }
 

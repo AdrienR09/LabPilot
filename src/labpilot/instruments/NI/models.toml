@@ -1,0 +1,595 @@
+# NI DAQ card models — ports and limits, for configuring a card offline.
+#
+# Read `models.py` first: this table is NOT authoritative. When a card is
+# actually opened, NI-DAQmx is asked and the device wins; this exists so
+# that a rig can be wired up, validated and saved with no card present,
+# which is the one thing qudi, pylablib, pyMoDAQ and Micro-Manager all
+# leave you to do by reading a datasheet.
+#
+# Editing it
+# ----------
+# Override or add models in ~/.labpilot/config/ni_models.toml, which is
+# merged over this file entry by entry — a `[[card]]` there with a
+# `number` that appears here overrides just the fields it names.
+# `python scripts/ni_probe.py` prints the block for a card that is
+# plugged in, which is the reliable way to add one.
+#
+# Omission means "not stated"
+# ---------------------------
+# Every field is optional and an absent one is never validated. That is
+# deliberate: a missing `pfi` count means a PFI terminal is taken on
+# trust, whereas a guessed one would reject a perfectly good wiring. Port
+# *counts* are the exception — they generate the terminal names, so they
+# are stated for every model here.
+#
+# Fields
+#   number          model number, without the bus prefix ("6363")
+#   family          key into [family.*] below, for the shared defaults
+#   buses           bus prefixes NI ships it on; informational only —
+#                   matching is on the number, so an unlisted bus is
+#                   never a reason to reject a card
+#   ai / ao         channel counts (single-ended AI; differential is ai/2
+#                   on a multiplexed card)
+#   ai_rate         aggregate S/s for the card, or per channel when
+#                   ai_simultaneous is true
+#   ao_rate         S/s; ABSENT means software-timed only, which is what
+#                   makes a card unable to drive a hardware-timed scan
+#   dio             total digital lines; dio_ports overrides the layout
+#   pfi             PFI lines, PFI0..pfi-1
+#   counters        general-purpose counter/timers, ctr0..counters-1
+#   timebase        maximum internal counter timebase, Hz
+
+
+# --- Family defaults --------------------------------------------------------
+# Series-wide facts, stated once. An entry's own field always wins.
+
+[family.X]
+counters = 4
+counter_bits = 32
+timebase = 100.0e6
+pfi = 16
+ai_bits = 16
+ai_ranges = [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0]
+ao_range = 10.0
+
+[family.Xs]  # simultaneous-sampling X Series: one ADC per channel
+counters = 4
+counter_bits = 32
+timebase = 100.0e6
+pfi = 16
+ai_bits = 16
+ai_simultaneous = true
+ai_ranges = [1.0, 2.0, 5.0, 10.0]
+ao_range = 10.0
+
+[family.M]
+counters = 2
+counter_bits = 32
+timebase = 80.0e6
+pfi = 16
+ai_bits = 16
+ai_ranges = [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0]
+ao_range = 10.0
+
+[family.S]  # simultaneous-sampling S Series
+counters = 2
+counter_bits = 24
+timebase = 20.0e6
+pfi = 10
+ai_simultaneous = true
+ao_range = 10.0
+
+[family.USB]  # low-cost bus-powered USB
+counters = 1
+counter_bits = 32
+ao_range = 10.0
+
+[family.CTR]  # counter/timer and digital I/O only
+counter_bits = 32
+
+
+# --- X Series (63xx) --------------------------------------------------------
+# The current multifunction line, and the one most quantum-optics rigs are
+# built on: four 32-bit counters and a 100 MHz timebase are what make a
+# card usable for photon counting as well as scanning.
+
+[[card]]
+number = "6320"
+family = "X"
+buses = ["PCIe", "PXIe"]
+ai = 16
+ai_rate = 250.0e3
+ao = 0
+dio = 24
+notes = "No analog output — an input-only X Series card."
+
+[[card]]
+number = "6321"
+family = "X"
+buses = ["PCIe", "USB"]
+ai = 16
+ai_rate = 250.0e3
+ao = 2
+ao_rate = 900.0e3
+dio = 24
+
+[[card]]
+number = "6323"
+family = "X"
+buses = ["PCIe", "PXIe", "USB"]
+ai = 32
+ai_rate = 250.0e3
+ao = 4
+ao_rate = 900.0e3
+dio = 48
+
+[[card]]
+number = "6341"
+family = "X"
+buses = ["PCIe", "PXIe", "USB"]
+ai = 16
+ai_rate = 500.0e3
+ao = 2
+ao_rate = 900.0e3
+dio = 24
+
+[[card]]
+number = "6343"
+family = "X"
+buses = ["PCIe", "PXIe", "USB"]
+ai = 32
+ai_rate = 500.0e3
+ao = 4
+ao_rate = 900.0e3
+dio = 48
+
+[[card]]
+number = "6351"
+family = "X"
+buses = ["PCIe", "PXIe", "USB"]
+ai = 16
+ai_rate = 1.25e6
+ao = 2
+ao_rate = 2.86e6
+dio = 24
+
+[[card]]
+number = "6353"
+family = "X"
+buses = ["PCIe", "PXIe", "USB"]
+ai = 32
+ai_rate = 1.25e6
+ao = 4
+ao_rate = 2.86e6
+dio = 48
+
+[[card]]
+number = "6356"
+family = "Xs"
+buses = ["PCIe", "PXIe", "USB"]
+ai = 8
+ai_rate = 1.25e6
+ao = 2
+ao_rate = 3.33e6
+dio = 24
+
+[[card]]
+number = "6358"
+family = "Xs"
+buses = ["PCIe", "PXIe", "USB"]
+ai = 16
+ai_rate = 1.25e6
+ao = 4
+ao_rate = 3.33e6
+dio = 48
+
+[[card]]
+number = "6361"
+family = "X"
+buses = ["PCIe", "PXIe", "USB"]
+ai = 16
+ai_rate = 2.0e6
+ao = 2
+ao_rate = 2.86e6
+dio = 24
+
+[[card]]
+number = "6363"
+family = "X"
+buses = ["PCIe", "PXIe", "USB"]
+ai = 32
+ai_rate = 2.0e6
+ao = 4
+ao_rate = 2.86e6
+dio = 48
+notes = "The usual confocal/ODMR workhorse: 4 counters, 2 MS/s, 4 AO."
+
+[[card]]
+number = "6366"
+family = "Xs"
+buses = ["PCIe", "PXIe", "USB"]
+ai = 8
+ai_rate = 2.0e6
+ao = 2
+ao_rate = 3.33e6
+dio = 24
+
+[[card]]
+number = "6368"
+family = "Xs"
+buses = ["PCIe", "PXIe", "USB"]
+ai = 16
+ai_rate = 2.0e6
+ao = 4
+ao_rate = 3.33e6
+dio = 48
+
+
+# --- M Series (62xx) --------------------------------------------------------
+# The previous generation, still everywhere. Two counters rather than
+# four, and an 80 MHz timebase.
+
+[[card]]
+number = "6210"
+family = "M"
+buses = ["USB"]
+ai = 16
+ai_rate = 250.0e3
+ao = 0
+dio = 8
+dio_ports = [4, 4]
+pfi = 4
+notes = "Bus-powered, screw-terminal: 4 DI + 4 DO on separate ports."
+
+[[card]]
+number = "6211"
+family = "M"
+buses = ["USB"]
+ai = 16
+ai_rate = 250.0e3
+ao = 2
+ao_rate = 250.0e3
+dio = 8
+dio_ports = [4, 4]
+pfi = 4
+
+[[card]]
+number = "6212"
+family = "M"
+buses = ["USB"]
+ai = 16
+ai_rate = 400.0e3
+ao = 2
+ao_rate = 250.0e3
+dio = 32
+
+[[card]]
+number = "6215"
+family = "M"
+buses = ["USB"]
+ai = 16
+ai_rate = 250.0e3
+ao = 2
+ao_rate = 250.0e3
+dio = 8
+dio_ports = [4, 4]
+pfi = 4
+notes = "Isolated."
+
+[[card]]
+number = "6216"
+family = "M"
+buses = ["USB"]
+ai = 16
+ai_rate = 400.0e3
+ao = 2
+ao_rate = 250.0e3
+dio = 32
+notes = "Isolated."
+
+[[card]]
+number = "6218"
+family = "M"
+buses = ["USB"]
+ai = 32
+ai_rate = 250.0e3
+ao = 2
+ao_rate = 250.0e3
+dio = 8
+dio_ports = [4, 4]
+pfi = 4
+
+[[card]]
+number = "6220"
+family = "M"
+buses = ["PCI", "PCIe", "PXI"]
+ai = 16
+ai_rate = 250.0e3
+ao = 0
+dio = 24
+
+[[card]]
+number = "6221"
+family = "M"
+buses = ["PCI", "PCIe", "PXI", "USB"]
+ai = 16
+ai_rate = 250.0e3
+ao = 2
+ao_rate = 833.0e3
+dio = 24
+
+[[card]]
+number = "6224"
+family = "M"
+buses = ["PCI", "PCIe", "PXI", "USB"]
+ai = 32
+ai_rate = 250.0e3
+ao = 0
+dio = 48
+
+[[card]]
+number = "6225"
+family = "M"
+buses = ["PCI", "PCIe", "PXI", "USB"]
+ai = 80
+ai_rate = 250.0e3
+ao = 2
+ao_rate = 833.0e3
+dio = 24
+
+[[card]]
+number = "6229"
+family = "M"
+buses = ["PCI", "PCIe", "PXI", "USB"]
+ai = 32
+ai_rate = 250.0e3
+ao = 4
+ao_rate = 833.0e3
+dio = 48
+
+[[card]]
+number = "6250"
+family = "M"
+buses = ["PCI", "PCIe", "PXI"]
+ai = 16
+ai_rate = 1.25e6
+ao = 0
+dio = 24
+
+[[card]]
+number = "6251"
+family = "M"
+buses = ["PCI", "PCIe", "PXI", "USB"]
+ai = 16
+ai_rate = 1.25e6
+ao = 2
+ao_rate = 2.86e6
+dio = 24
+
+[[card]]
+number = "6254"
+family = "M"
+buses = ["PCI", "PCIe", "PXI"]
+ai = 32
+ai_rate = 1.25e6
+ao = 0
+dio = 48
+
+[[card]]
+number = "6255"
+family = "M"
+buses = ["PCI", "PCIe", "PXI", "USB"]
+ai = 80
+ai_rate = 1.25e6
+ao = 2
+ao_rate = 2.86e6
+dio = 24
+
+[[card]]
+number = "6259"
+family = "M"
+buses = ["PCI", "PCIe", "PXI", "USB"]
+ai = 32
+ai_rate = 1.25e6
+ao = 4
+ao_rate = 2.86e6
+dio = 48
+
+[[card]]
+number = "6280"
+family = "M"
+buses = ["PCI", "PXI"]
+ai = 16
+ai_rate = 625.0e3
+ai_bits = 18
+ao = 0
+dio = 24
+
+[[card]]
+number = "6281"
+family = "M"
+buses = ["PCI", "PCIe", "PXI"]
+ai = 16
+ai_rate = 625.0e3
+ai_bits = 18
+ao = 2
+ao_rate = 2.86e6
+dio = 24
+
+[[card]]
+number = "6284"
+family = "M"
+buses = ["PCI", "PXI"]
+ai = 32
+ai_rate = 625.0e3
+ai_bits = 18
+ao = 0
+dio = 48
+
+[[card]]
+number = "6289"
+family = "M"
+buses = ["PCI", "PCIe", "PXI"]
+ai = 32
+ai_rate = 625.0e3
+ai_bits = 18
+ao = 4
+ao_rate = 2.86e6
+dio = 48
+
+
+# --- Low-cost USB -----------------------------------------------------------
+# One counter, few lines, and — on the 6008/6009 — analog outputs that
+# cannot follow a clock at all, so they will refuse a hardware-timed scan
+# rather than run one badly.
+
+[[card]]
+number = "6001"
+family = "USB"
+buses = ["USB"]
+ai = 8
+ai_rate = 20.0e3
+ai_bits = 14
+ai_ranges = [10.0]
+ao = 2
+ao_rate = 5.0e3
+dio = 13
+pfi = 1
+
+[[card]]
+number = "6002"
+family = "USB"
+buses = ["USB"]
+ai = 8
+ai_rate = 50.0e3
+ai_bits = 16
+ai_ranges = [10.0]
+ao = 2
+ao_rate = 5.0e3
+dio = 13
+pfi = 1
+
+[[card]]
+number = "6003"
+family = "USB"
+buses = ["USB"]
+ai = 8
+ai_rate = 100.0e3
+ai_bits = 16
+ai_ranges = [10.0]
+ao = 2
+ao_rate = 5.0e3
+dio = 13
+pfi = 1
+
+[[card]]
+number = "6008"
+family = "USB"
+buses = ["USB"]
+ai = 8
+ai_rate = 10.0e3
+ai_bits = 12
+ai_ranges = [1.0, 1.25, 2.0, 2.5, 4.0, 5.0, 10.0, 20.0]
+ao = 2
+dio = 12
+pfi = 1
+notes = "Analog outputs are software-timed: no hardware-timed scanning."
+
+[[card]]
+number = "6009"
+family = "USB"
+buses = ["USB"]
+ai = 8
+ai_rate = 48.0e3
+ai_bits = 14
+ai_ranges = [1.0, 1.25, 2.0, 2.5, 4.0, 5.0, 10.0, 20.0]
+ao = 2
+dio = 12
+pfi = 1
+notes = "Analog outputs are software-timed: no hardware-timed scanning."
+
+[[card]]
+number = "6501"
+family = "USB"
+buses = ["USB"]
+ai = 0
+ao = 0
+dio = 24
+notes = "Digital I/O and one counter; no analog at all."
+
+
+# --- Counter/timer cards ----------------------------------------------------
+# Eight counters and nothing else — what a lab buys when the card's whole
+# job is counting photons.
+
+[[card]]
+number = "6601"
+family = "CTR"
+buses = ["PCI", "PXI"]
+counters = 4
+timebase = 80.0e6
+dio = 32
+
+[[card]]
+number = "6602"
+family = "CTR"
+buses = ["PCI", "PXI"]
+counters = 8
+timebase = 80.0e6
+dio = 32
+
+[[card]]
+number = "6612"
+family = "CTR"
+buses = ["PCIe", "PXIe", "USB"]
+counters = 8
+timebase = 100.0e6
+dio = 32
+
+[[card]]
+number = "6614"
+family = "CTR"
+buses = ["PXIe"]
+counters = 8
+timebase = 100.0e6
+dio = 32
+notes = "OCXO timebase."
+
+
+# --- S Series (61xx) --------------------------------------------------------
+# Simultaneous sampling, one ADC per channel. Rare in NV work, common
+# wherever channel-to-channel skew matters.
+
+[[card]]
+number = "6115"
+family = "S"
+buses = ["PCI", "PXI"]
+ai = 4
+ai_rate = 10.0e6
+ai_bits = 12
+ai_ranges = [0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 42.0]
+ao = 2
+ao_rate = 4.0e6
+dio = 8
+
+[[card]]
+number = "6133"
+family = "S"
+buses = ["PCI", "PXI"]
+ai = 8
+ai_rate = 3.0e6
+ai_bits = 14
+ai_ranges = [1.25, 2.5, 5.0, 10.0]
+ao = 0
+dio = 8
+
+[[card]]
+number = "6143"
+family = "S"
+buses = ["PCI", "PXI"]
+ai = 8
+ai_rate = 250.0e3
+ai_bits = 16
+ai_ranges = [5.0]
+ao = 0
+dio = 8

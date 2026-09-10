@@ -218,14 +218,72 @@ defines each method's own parameter fields:
 | `serial` | `port` (e.g. `COM3`), `baudrate`, `timeout` |
 | `tcp` | `host`, `port` |
 | `usb_serial_number` | `serial_number` |
+| `ni_daqmx` | `device` (e.g. `Dev1`), `model`, `channels` |
 | `none` | — (mock/simulated devices) |
 
 The "Connect Device" flow in the Devices tab renders whichever method you
 pick as a form built from these fields.
 
+## NI DAQ cards
+
+Every NI DAQ card is one adapter, `ni_card` (and `mock_ni_card`, which is
+the same configuration with a simulated specimen behind it). Which card it
+is, and what is plugged into which terminal, are settings:
+
+```python
+from labpilot.instruments import create_adapter
+
+card = create_adapter("ni_card", {
+    "device": "Dev1",
+    "model": "PCIe-6363",
+    "channels": "x=ao0, y=ao1, apd=ctr0/pfi8, pd=ai0, shutter=do:port0/line0",
+})
+```
+
+The channel names are the rig's, not the card's: `read()` comes back as
+`{"apd": ..., "pd": ...}`, a workflow binds to `apd`, and moving the APD
+to another PFI line is one character in a config file. The kind of each
+channel follows from its terminal — `ai0` can only be an input, `ctr0/pfi8`
+can only be a counter — except a digital line, which must say `do:` or
+`di:` because guessing wrong there means a shutter that silently never
+opens. The same wiring can also be given as a list of records
+(`{"name": "x", "kind": "ao", "terminal": "ao0"}`), which is what a config
+file or a script would normally use.
+
+`src/labpilot/instruments/NI/models.toml` describes ~46 models — X Series,
+M Series, the low-cost USB boxes, the counter/timer cards and a few S
+Series — as ports and limits. It is what makes a card configurable with no
+card present: qudi, pylablib, pyMoDAQ and Micro-Manager all ask NI-DAQmx
+at run time and therefore cannot help you at a desk, and NI ships no DAQmx
+for macOS at all. So the model is chosen from a table, the wiring is
+validated against it, and errors name what the card actually has:
+
+    'apd' counts edges on 'pfi99', which the 6363 does not have —
+    it offers pfi0..pfi15 (16 of them)
+
+The table is **not** authoritative. On connect, `reconcile()` asks DAQmx
+what the card really is and reports every disagreement; `python
+scripts/ni_probe.py` prints a connected card's real inventory as a TOML
+block, and `--check` compares it with the shipped table. Add or correct a
+model in `~/.labpilot/config/ni_models.toml`, which is merged over the
+packaged file entry by entry — a `[[card]]` there overrides only the
+fields it names, so a later release's new models still arrive.
+
+What a card can do follows from the model and the wiring rather than from
+which adapter you picked: `hardware_scan` is claimed only when there is an
+analog output to drive, something to read back, and outputs that can
+follow a clock (a USB-6008's cannot, so it never claims it). Counter
+outputs become `pulse_on`/`pulse_off` actions.
+
+It is deliberately not a gated counter for pulsed work: an NI counter bins
+on a sample clock it must be given, and nothing on the card produces a
+33 MHz gate to slice a 3 µs readout into 30 ns bins. qudi does not
+implement a fast counter on NI hardware either. Use a TimeTagger or a
+FastComTec for that; see [pulsed.md](pulsed.md).
+
 ## The instrument catalog
 
-301 instruments are catalogued across 95 manufacturers: mock/test-fixture
+304 instruments are catalogued across 95 manufacturers: mock/test-fixture
 devices (for development without real hardware), PyMeasure-backed
 adapters (hand-written and auto-generated from every class in the
 installed `pymeasure` library), and pylablib-backed adapters. `catalog.py`

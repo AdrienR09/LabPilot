@@ -10,6 +10,7 @@ from .lasers import *
 from .lock_in_amplifiers import *
 from .microwave_sources import *
 from .motors import *
+from .ni_card import *
 from .optical_modulators import *
 from .oscilloscopes import *
 from .power_meters import *
@@ -72,4 +73,6 @@ __all__ = [
     'MockGatedCounter',
     # Hardware-timed (NI-card-style) scanning — src/instruments/mock/hardware_scan.py
     'MockNIScanner',
+    # A whole simulated NI card, chosen by model number — mock/ni_card.py
+    'MockNICard',
 ]
