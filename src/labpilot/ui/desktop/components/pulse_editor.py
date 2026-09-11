@@ -57,6 +57,7 @@ network call. It emits `sigParamChanged(name, value)` and
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 import pyqtgraph as pg
@@ -73,12 +74,15 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QScrollArea,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from labpilot.core.config.paths import sequence_dir
+from labpilot.core.pulse.library import GATE, KINDS, LASER, MW, OTHER
 from labpilot.core.pulse.sequence import SequenceError
 from labpilot.core.pulse.store import slug
 from labpilot.core.pulse.tracks import Timeline
@@ -96,6 +100,16 @@ __all__ = ["PulseEditorControlWidget"]
 #: build time; this is only the fallback when that is unavailable, and the
 #: order the well-known experiments should appear in.
 _KNOWN = ("rabi", "ramsey", "hahn_echo", "t1", "pulsed_odmr")
+
+#: What each channel kind is called in the table, spelled out rather than
+#: left as the bare token — "gate" alone does not say that it is the lane
+#: whose edges the run counts.
+_KIND_LABELS = {
+    LASER: "Laser — polarise and read out",
+    MW: "Microwave — drive (can sweep frequency)",
+    GATE: "Gate — opens the counter",
+    OTHER: "Other — trigger, shutter, …",
+}
 
 #: How wide the settings column is. The canvas takes everything else,
 #: which is the point of the split.
@@ -166,7 +180,7 @@ class PulseEditorControlWidget(QWidget):
             Timeline.from_dict(self._params.get("TIMELINE") or {}),
             self.channels_from(self._params),
             readout=self.readout_from(self._params),
-            laser=str(self._params.get("LASER_CHANNEL") or ""),
+            kinds=self.kinds_from(self._params),
         )
         self.timeline.sigTimelineChanged.connect(self._on_timeline_changed)
         self.timeline.sigSelectionChanged.connect(lambda _pulse: self._describe())
@@ -394,50 +408,95 @@ class PulseEditorControlWidget(QWidget):
 
         channels = QGroupBox("Symbolic channels")
         channels.setToolTip(
-            "Names, not wiring. The mapping onto a pulser's physical "
+            "Names, not wiring: the mapping onto a pulser's physical "
             "channels belongs to the measurement workflow's bindings, so "
-            "this file runs on any rig."
+            "this file runs on any rig.\n\n"
+            "A rig may have several of a kind — two lasers, two microwave "
+            "lines, two counters. The *kind* is what the editor reasons "
+            "about, never the name, so a drive called 'mw2' is a drive "
+            "because it says so.\n\n"
+            "Declare no gate and the rig is ungated: the laser pulses are "
+            "then the readouts."
         )
-        channel_form = QFormLayout(channels)
-        self._channel_edits: dict[str, QLineEdit] = {}
-        for label, name, default in (
-            ("Laser:", "LASER_CHANNEL", "laser"),
-            ("Microwave:", "MW_CHANNEL", "mw"),
-            ("APD readout:", "GATE_CHANNEL", "gate"),
-        ):
-            edit = QLineEdit(str(self._params.get(name, default) or ""))
-            edit.editingFinished.connect(
-                lambda key=name, w=edit: self._on_channel_renamed(
-                    key, w.text().strip() or None
-                )
-            )
-            channel_form.addRow(label, edit)
-            self._channel_edits[name] = edit
-        self._channel_edits["GATE_CHANNEL"].setPlaceholderText(
-            "empty = ungated; laser pulses are the readouts"
+        box = QVBoxLayout(channels)
+        self.channel_table = QTableWidget(0, 2)
+        self.channel_table.setHorizontalHeaderLabels(["Name", "Used for"])
+        self.channel_table.horizontalHeader().setStretchLastSection(True)
+        self.channel_table.verticalHeader().setVisible(False)
+        self.channel_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
         )
+        self.channel_table.setMinimumHeight(140)
+        box.addWidget(self.channel_table)
+
+        buttons = QWidget()
+        row = QHBoxLayout(buttons)
+        row.setContentsMargins(0, 0, 0, 0)
+        add = IconButton("Add channel", "list-add")
+        add.clicked.connect(lambda _checked=False: self._add_channel_row())
+        row.addWidget(add)
+        drop = IconButton("Remove", "list-remove")
+        drop.clicked.connect(lambda _checked=False: self._remove_channel_row())
+        row.addWidget(drop)
+        row.addStretch(1)
+        box.addWidget(buttons)
+        self._fill_channel_table()
         layout.addWidget(channels)
 
         layout.addStretch()
         return page
 
-    def _on_channel_renamed(self, key: str, value: str | None) -> None:
-        """A renamed channel is a renamed lane, so the canvas follows.
+    # --- The channel table ------------------------------------------------
 
-        Otherwise the editor would keep a lane called `mw` after the rig
-        was told the channel is `microwave`, and the sequence would
-        validate against a channel no element uses.
+    def _fill_channel_table(self) -> None:
+        self.channel_table.blockSignals(True)
+        # Nothing is connected on the first fill, and `disconnect` raises
+        # rather than shrugging when that is so.
+        with contextlib.suppress(TypeError):
+            self.channel_table.itemChanged.disconnect()
+        self.channel_table.setRowCount(0)
+        for entry in self.declared_channels(self._params):
+            self._add_channel_row(entry["name"], entry["kind"], report=False)
+        self.channel_table.blockSignals(False)
+        self.channel_table.itemChanged.connect(lambda _item: self._channels_edited())
+
+    def _add_channel_row(
+        self, name: str = "", kind: str = OTHER, report: bool = True
+    ) -> None:
+        row = self.channel_table.rowCount()
+        self.channel_table.insertRow(row)
+        self.channel_table.setItem(row, 0, QTableWidgetItem(name))
+
+        combo = QComboBox()
+        for choice in KINDS:
+            combo.addItem(_KIND_LABELS[choice], choice)
+        combo.setCurrentIndex(max(combo.findData(kind), 0))
+        combo.currentIndexChanged.connect(lambda _index: self._channels_edited())
+        self.channel_table.setCellWidget(row, 1, combo)
+        if report:
+            self._channels_edited()
+
+    def _remove_channel_row(self) -> None:
+        row = self.channel_table.currentRow()
+        if row >= 0:
+            self.channel_table.removeRow(row)
+            self._channels_edited()
+
+    def _channels_edited(self) -> None:
+        """Push the table back as the CHANNELS parameter, and relane.
+
+        A renamed or added channel is a renamed or added lane, so the
+        canvas follows immediately — otherwise the editor would keep a
+        lane called `mw` after the rig was told the channel is
+        `microwave`, and the sequence would validate against a channel no
+        element uses.
         """
-        self.sigParamChanged.emit(key, value)
-        self._params[key] = value
-        self.timeline.set_channels(self.channels())
-        # Clearing the gate makes the laser lane the measurement, which is
-        # the rule the sequence itself applies — so the mark has to move
-        # with it rather than stay on a lane that no longer gates anything.
-        self.timeline.set_roles(
-            str(self._params.get("LASER_CHANNEL") or ""),
-            self.readout_from(self._params),
-        )
+        declared = self.channels()
+        self._params["CHANNELS"] = declared
+        self.sigParamChanged.emit("CHANNELS", declared)
+        self.timeline.set_channels([entry["name"] for entry in declared])
+        self.timeline.set_kinds({e["name"]: e["kind"] for e in declared})
+        self._describe()
 
     def _on_analog_toggled(self, analog: bool) -> None:
         self.sigParamChanged.emit("ANALOG_MW", analog)
@@ -494,30 +553,56 @@ class PulseEditorControlWidget(QWidget):
     # --- Called by the window ---------------------------------------------
 
     @staticmethod
-    def channels_from(params: dict[str, Any]) -> list[str]:
-        """The rig's symbolic channels, in reading order.
+    def declared_channels(params: dict[str, Any]) -> list[dict[str, str]]:
+        """The rig's channels, in lane order, each with its kind.
 
         A plain function of the parameters rather than of the Rig tab's
         widgets, because the canvas is built before that tab exists — and
         because these are the one source of truth an offline editor has
-        for its lanes.
+        for its lanes. A malformed entry is skipped rather than raised on:
+        a hand-edited parameter must not cost the whole window.
         """
-        names = [
-            params.get(key)
-            for key in ("LASER_CHANNEL", "MW_CHANNEL", "GATE_CHANNEL")
-        ]
-        return [str(name) for name in names if name]
+        declared = params.get("CHANNELS")
+        if not isinstance(declared, list):
+            return []
+        entries: list[dict[str, str]] = []
+        for entry in declared:
+            if not isinstance(entry, dict) or not entry.get("name"):
+                continue
+            kind = str(entry.get("kind", OTHER))
+            entries.append({
+                "name": str(entry["name"]),
+                "kind": kind if kind in KINDS else OTHER,
+            })
+        return entries
 
-    @staticmethod
-    def readout_from(params: dict[str, Any]) -> str:
+    @classmethod
+    def channels_from(cls, params: dict[str, Any]) -> list[str]:
+        """Just the lane names."""
+        return [entry["name"] for entry in cls.declared_channels(params)]
+
+    @classmethod
+    def kinds_from(cls, params: dict[str, Any]) -> dict[str, str]:
+        """Lane name -> what it is for. What decides which lane is the
+        measurement and which may sweep a carrier."""
+        return {e["name"]: e["kind"] for e in cls.declared_channels(params)}
+
+    @classmethod
+    def readout_from(cls, params: dict[str, Any]) -> str:
         """Which lane is the measurement.
 
         The same rule `PulseSequence.readout_channel` applies, and it has
         to be the same one or the canvas would mark a lane the run does
-        not count: the gate when there is one, and otherwise the laser,
-        because on an ungated rig the laser pulses *are* the readouts.
+        not count: the first gate when there is one, and otherwise the
+        first laser, because on an ungated rig the laser pulses *are* the
+        readouts.
         """
-        return str(params.get("GATE_CHANNEL") or params.get("LASER_CHANNEL") or "")
+        entries = cls.declared_channels(params)
+        for kind in (GATE, LASER):
+            first = next((e["name"] for e in entries if e["kind"] == kind), "")
+            if first:
+                return first
+        return ""
 
     def load_timeline(self, timeline: Timeline) -> None:
         """Draw a sequence on the canvas, replacing what is there.
@@ -542,11 +627,20 @@ class PulseEditorControlWidget(QWidget):
         dock."""
         self.setEnabled(not locked)
 
-    def channels(self) -> list[str]:
-        """The symbolic channels this rig declares — what the lanes come
-        from, and the one source of truth an offline editor has."""
-        names = [
-            self._channel_edits[key].text().strip()
-            for key in ("LASER_CHANNEL", "MW_CHANNEL", "GATE_CHANNEL")
-        ]
-        return [name for name in names if name]
+    def channels(self) -> list[dict[str, str]]:
+        """What the channel table currently says — name and kind per lane.
+
+        Rows with a blank name are dropped rather than refused: a
+        half-typed row is an ordinary state to be in while adding one.
+        """
+        entries: list[dict[str, str]] = []
+        for row in range(self.channel_table.rowCount()):
+            item = self.channel_table.item(row, 0)
+            combo = self.channel_table.cellWidget(row, 1)
+            name = (item.text().strip() if item else "")
+            if name:
+                entries.append({
+                    "name": name,
+                    "kind": (combo.currentData() if combo else OTHER) or OTHER,
+                })
+        return entries

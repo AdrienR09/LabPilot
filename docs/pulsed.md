@@ -100,6 +100,35 @@ mapping onto physical channels is the rig's, so it lives with the
 measurement workflow's bindings. Qudi bakes `d_ch1` into its generation
 parameters, which ties a saved sequence to one wiring.
 
+A rig declares its channels as a table of **name and kind**, so it can
+have several of any of them: two lasers at different wavelengths, two
+microwave lines for two transitions, two counters. The *kind* is what
+everything reasons about, never the name — a drive called `mw2` is a
+drive because it says so, and a counter called `apd_b` is still a
+counter. That is what decides which lane is marked as the measurement
+(the first gate, or the first laser on an ungated rig) and which pulses
+may sweep a carrier. Nothing guesses from substrings, which is exactly
+the trap Qudi's GUI falls into when it reads units out of parameter
+names.
+
+### What a saved file looks like
+
+```json
+{ "name": "mw", "duration": 2e-08, "channels": { "mw": {"shape": "Sin", …} },
+  "sweep": "duration", "increment": 2e-08 }
+```
+
+Two rules make it readable. **An element names only the channels it
+asserts** — a channel absent from one is low by definition, so writing a
+`false` per idle lane says nothing, and on a six-channel rig the nothings
+would be most of the file. **The sweep is on the element** rather than
+inferred from it: before that, reading a file back meant guessing that a
+non-zero `increment` marked the swept element, and finding a log sweep —
+which has no increment, because a geometric series has no constant one —
+by diffing the first two blocks against each other. Both guesses are
+right until someone hand-writes a sequence that looks like the other
+case.
+
 ## The editor is the timeline
 
 One canvas, one lane per instrument — laser, microwave, APD readout,

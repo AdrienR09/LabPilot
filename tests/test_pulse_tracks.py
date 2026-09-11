@@ -87,22 +87,25 @@ def test_the_slices_come_from_every_track_s_edges():
     assert lengths == pytest.approx([20 * NS, 3000 * NS, 5 * US - 3020 * NS])
 
 
-def test_each_slice_names_every_channel():
-    """What makes it playable: a pulser needs a level for every channel
-    at every instant, not only for the one whose pulse started here."""
+def test_each_slice_names_only_the_channels_it_asserts():
+    """A channel absent from an element is low by definition, so spelling
+    out a `false` per idle lane says nothing — and on a six-channel rig
+    the nothings are most of the file."""
     element = simple().to_sequence("rabi", validate=False).blocks[0].elements[0]
-    assert set(element.channels) == set(CHANNELS)
-    assert element.channels["laser"] is False
+    assert set(element.channels) == {"mw"}
     assert isinstance(element.channels["mw"], Sin)
+    # Which is the same statement, read the other way.
+    assert element.is_high("laser") is False
 
 
-def test_a_gap_between_pulses_is_a_slice_with_everything_low():
+def test_a_gap_between_pulses_is_a_slice_that_names_nothing():
     line = Timeline(
         tracks=[Track("laser", [Pulse(0.0, US), Pulse(2 * US, 3 * US)])],
         duration=3 * US,
     )
     elements = line.to_sequence("gapped", validate=False).blocks[0].elements
-    assert [e.channels["laser"] for e in elements] == [True, False, True]
+    assert [e.is_high("laser") for e in elements] == [True, False, True]
+    assert elements[1].channels == {}
 
 
 def test_an_element_takes_its_name_from_the_pulse_that_spans_it():
@@ -207,9 +210,9 @@ def test_the_swept_pulse_may_be_a_gap_that_drives_nothing():
     marked = [e for e in sequence.blocks[0].elements if e.increment]
     assert len(marked) == 1
     # The timing block drives nothing, so the gate is low across it — it
-    # is the gap, not a readout.
-    assert marked[0].channels["gate"] is False
-    assert marked[0].channels["mw"] is False
+    # is the gap, not a readout, and it names no channel at all.
+    assert marked[0].channels == {}
+    assert marked[0].is_high("gate") is False
     assert sequence.sweep.values[:3] == pytest.approx([50 * NS, 100 * NS, 150 * NS])
 
 

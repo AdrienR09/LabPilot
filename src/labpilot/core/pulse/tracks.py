@@ -80,6 +80,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from labpilot.core.pulse.sequence import (
+    DURATION,
+    FREQUENCY,
     PulseBlock,
     PulseElement,
     PulseSequence,
@@ -108,13 +110,6 @@ __all__ = [
 
 LINEAR = "linear"
 LOG = "log"
-
-#: What a marked pulse varies. `DURATION` stretches the pulse itself and
-#: the pulser plays every point in one pass; `FREQUENCY` leaves the drawing
-#: untouched and steps the microwave source between passes. Both live on
-#: `Pulse.sweep`.
-DURATION = "duration"
-FREQUENCY = "frequency"
 
 #: Two edges closer together than this are the same edge. A pulse whose
 #: end was dragged onto another track's edge should produce one boundary,
@@ -465,17 +460,23 @@ class Timeline:
                 f"nothing to play"
             )
 
-        # Only lanes that actually assert something become channels. An
-        # empty lane — or one holding nothing but timing blocks — means the
-        # rig has that instrument and this sequence does not drive it, and
-        # writing it into every element as `False` would make the sequence
-        # claim a channel the pulser then has to have free.
+        # Each element names only the channels it actually asserts. A
+        # channel absent from an element is low by definition, so writing
+        # `False` for every idle lane says nothing and costs most of the
+        # file — and an element that named a lane holding nothing but
+        # timing blocks would make the sequence claim a channel the pulser
+        # then has to have free.
         drawn = [track for track in self.tracks if track.driving]
         elements = [
             PulseElement(
                 duration=stop - start,
-                channels={track.channel: track.at(start, stop) for track in drawn},
+                channels={
+                    track.channel: value
+                    for track in drawn
+                    if (value := track.at(start, stop)) is not False
+                },
                 name=self._name_at(start, stop),
+                sweep=self._sweep_at(start, stop),
             )
             for start, stop in pairwise(boundaries)
         ]
@@ -608,6 +609,20 @@ class Timeline:
                     return pulse.name
         return ""
 
+    def _sweep_at(self, start: float, stop: float) -> str:
+        """What the measurement varies about this slice, if anything.
+
+        Written onto *every* element inside a swept pulse, not only the
+        one carrying the increment. A pulse cut in two by another track's
+        edge is still one swept interval, and marking both halves is what
+        lets the span be read back as the pulse someone drew rather than
+        re-derived from which element happens to hold the increment.
+        """
+        for pulse in self.swept:
+            if pulse.covers(start, stop):
+                return pulse.sweep
+        return ""
+
     def _blocks(
         self, elements: list[PulseElement], boundaries: list[float]
     ) -> list[PulseBlock]:
@@ -720,11 +735,17 @@ class Timeline:
 def _with(
     element: PulseElement, *, duration: float | None = None, increment: float = 0.0
 ) -> PulseElement:
-    return PulseElement(
+    """The element with its timing changed and everything else kept.
+
+    `replace` rather than a fresh `PulseElement`: rebuilding one from the
+    fields this function happens to name drops every field it does not,
+    which is how the swept elements ended up in the file unmarked — the
+    one place the mark is written is also the one place it was lost.
+    """
+    return replace(
+        element,
         duration=element.duration if duration is None else duration,
-        channels=element.channels,
         increment=increment,
-        name=element.name,
     )
 
 
@@ -830,48 +851,54 @@ def _axis_of(
 ) -> tuple[SweepAxis | None, str, list[tuple[float, float]]]:
     """The axis, what it varies, and which spans of the drawing move.
 
-    Recovered from the elements carrying an increment (linear) or, for a
-    multi-block log sweep, from the elements whose length differs between
-    the first two blocks — the same elements the editor would have
-    written. A frequency sweep changes no element at all, so its axis is
-    entirely in the sweep's own values and there is no span to find.
+    Read off the elements' own `sweep` marks — a contiguous run of marked
+    elements is one swept pulse. Before those existed this had to guess:
+    an element with a non-zero increment was swept, and a log sweep, which
+    has no increment at all, was found by diffing the first two blocks
+    against each other. Both guesses are right until someone hand-writes a
+    sequence that happens to look like the other case.
+
+    A frequency sweep changes no element's timing, so it marks one element
+    and there is no span to stretch.
     """
     if sequence.sweep is None or not len(sequence.sweep):
         return None, "", []
 
     values = sequence.sweep.array
-    axis = SweepAxis(
-        points=len(values), start=float(values[0]), stop=float(values[-1]),
-        spacing=LINEAR, name=sequence.sweep.name,
-    )
-    if sequence.sweep.stepped:
-        return axis, FREQUENCY, []
-
-    swept = [
-        position for position, element in enumerate(block.elements) if element.increment
+    marked = [
+        (position, element) for position, element in enumerate(block.elements)
+        if element.sweep
     ]
-    if not swept and len(sequence.blocks) > 1:
-        second = sequence.blocks[1]
-        swept = [
-            position
-            for position, (a, b) in enumerate(
-                zip(block.elements, second.elements, strict=False)
-            )
-            if abs(a.duration - b.duration) > EPSILON
-        ]
-        axis = replace(axis, spacing=LOG)
-    if not swept:
+    quantity = (
+        FREQUENCY if sequence.sweep.stepped
+        else marked[0][1].sweep if marked
+        else ""
+    )
+    if not quantity:
         return None, "", []
 
-    # A swept pulse measures the sweep's first *value*, which is not always
-    # the swept element's own length: a pulse cut in two by another track's
-    # edge keeps a fixed first half. So the span is anchored at its end and
-    # extended backwards by the value.
-    first = float(values[0])
-    spans = []
-    for position in swept:
-        stop = sum(e.duration for e in block.elements[: position + 1])
-        spans.append((max(stop - first, 0.0), stop))
+    # Log spacing has no constant increment to carry, so it is written as
+    # one block per point instead — which is what says so here.
+    spacing = LOG if len(sequence.blocks) > 1 and quantity == DURATION else LINEAR
+    axis = SweepAxis(
+        points=len(values), start=float(values[0]), stop=float(values[-1]),
+        spacing=spacing, name=sequence.sweep.name,
+    )
+    if quantity == FREQUENCY:
+        return axis, FREQUENCY, []
+
+    # Consecutive marked elements are one pulse that another track's edge
+    # happened to cut, so they are one span.
+    starts = [0.0]
+    for element in block.elements:
+        starts.append(starts[-1] + element.duration)
+
+    spans: list[tuple[float, float]] = []
+    for position, _element in marked:
+        if spans and abs(spans[-1][1] - starts[position]) <= EPSILON:
+            spans[-1] = (spans[-1][0], starts[position + 1])
+        else:
+            spans.append((starts[position], starts[position + 1]))
     return axis, DURATION, spans
 
 

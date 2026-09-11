@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 import labpilot.core.workflow_templates as templates
-from labpilot.core.pulse import PulseSequence, list_sequences, load_sequence
+from labpilot.core.pulse import PulseSequence, Sin, list_sequences, load_sequence
 from labpilot.core.pulse.library import RigProfile, build
 from labpilot.core.pulse.tracks import (
     DURATION,
@@ -154,6 +154,40 @@ async def test_the_saved_name_is_the_parameter_not_the_experiment(sequences):
     assert load_sequence("rabi_sample_b").name == "rabi_sample_b"
 
 
+async def test_the_saved_file_names_only_the_channels_each_element_asserts(
+    sequences,
+):
+    """A `false` says the same thing as an absent key, and on a rig with
+    six channels the absent keys are most of the file."""
+    await edit(SEQUENCE_NAME="rabi")
+    written = json.loads((sequences / "rabi.json").read_text())
+    elements = written["blocks"][0]["elements"]
+
+    assert all(
+        value is not False
+        for element in elements for value in element["channels"].values()
+    )
+    # The drive names the microwave and nothing else; the wait names none.
+    assert set(elements[0]["channels"]) == {"mw"}
+    assert elements[-1]["channels"] == {}
+
+
+async def test_the_saved_file_says_which_element_is_swept_and_how(sequences):
+    """Stated rather than inferred from a non-zero increment, which a log
+    sweep does not have at all."""
+    await edit(SEQUENCE_NAME="rabi")
+    elements = json.loads((sequences / "rabi.json").read_text())["blocks"][0]["elements"]
+    marked = [e for e in elements if e.get("sweep")]
+    assert [e["sweep"] for e in marked] == ["duration"]
+
+    await edit(START_FROM="pulsed_odmr", SEQUENCE_NAME="odmr")
+    blocks = json.loads((sequences / "odmr.json").read_text())["blocks"]
+    marked = [e for e in blocks[0]["elements"] if e.get("sweep")]
+    assert [e["sweep"] for e in marked] == ["frequency"]
+    # And nothing is stretched: the source moves, the drawing does not.
+    assert all("increment" not in e for e in blocks[0]["elements"])
+
+
 async def test_the_rig_profile_is_physics_and_reaches_the_sequence(sequences):
     """Rabi period, laser length and delay are properties of the
     experiment, not of any driver, which is why they are editable with
@@ -173,9 +207,91 @@ async def test_a_digital_rig_needs_only_a_flag(sequences):
 
 
 async def test_an_ungated_rig_counts_laser_pulses_as_readouts(sequences):
-    result = await edit(GATE_CHANNEL=None)
+    """Declare no gate channel and the rig is ungated — the model's own
+    rule rather than a flag the editor has to set."""
+    result = await edit(CHANNELS=[
+        {"name": "laser", "kind": "laser"},
+        {"name": "mw", "kind": "mw"},
+    ])
     assert result["readouts"] == result["points"]
     assert load_sequence("rabi").readout_channel == "laser"
+
+
+# --- A rig may have several channels of a kind ------------------------------
+
+
+async def test_a_rig_can_declare_two_of_a_kind(sequences):
+    """Two lasers, two drives, two counters. The kind is what everything
+    reasons about, so the *names* are free."""
+    result = await edit(CHANNELS=[
+        {"name": "green", "kind": "laser"},
+        {"name": "red", "kind": "laser"},
+        {"name": "mw", "kind": "mw"},
+        {"name": "mw2", "kind": "mw"},
+        {"name": "apd_a", "kind": "gate"},
+        {"name": "apd_b", "kind": "gate"},
+        {"name": "trigger", "kind": "other"},
+    ], SEQUENCE_NAME="two_of_each")
+
+    saved = load_sequence("two_of_each")
+    # Start from draws a one-of-each experiment, so it uses the *first* of
+    # each kind — and the readouts are counted on that one.
+    assert saved.laser_channel == "green"
+    assert saved.gate_channel == "apd_a"
+    assert saved.readout_channel == "apd_a"
+    assert result["readouts"] == result["points"]
+
+
+async def test_the_extra_lanes_are_there_to_draw_on(sequences):
+    """An unused lane is not a channel the sequence claims — but the
+    timeline it hands back has one, so there is somewhere to put the
+    second drive."""
+    result = await edit(CHANNELS=[
+        {"name": "laser", "kind": "laser"},
+        {"name": "mw", "kind": "mw"},
+        {"name": "mw2", "kind": "mw"},
+        {"name": "gate", "kind": "gate"},
+    ], SEQUENCE_NAME="spare_drive")
+
+    line = Timeline.from_dict(result["timeline"])
+    assert "mw2" in line.channels
+    assert line.track("mw2").pulses == []
+    assert "mw2" not in load_sequence("spare_drive").channels
+
+
+async def test_drawing_on_a_second_drive_reaches_the_file(sequences):
+    line = Timeline(
+        tracks=[
+            Track("laser", [Pulse(0.0, 3 * US)]),
+            Track("gate", [Pulse(0.0, 3 * US)]),
+            Track("mw", [Pulse(4 * US, 4.1 * US, Sin(), "pi (a)")]),
+            Track("mw2", [Pulse(4.2 * US, 4.3 * US, Sin(), "pi (b)")]),
+        ],
+        duration=5 * US,
+    )
+    await edit(
+        TIMELINE=line.to_dict(),
+        CHANNELS=[
+            {"name": "laser", "kind": "laser"},
+            {"name": "mw", "kind": "mw"},
+            {"name": "mw2", "kind": "mw"},
+            {"name": "gate", "kind": "gate"},
+        ],
+        SEQUENCE_NAME="two_drives",
+    )
+    assert load_sequence("two_drives").channels == {"laser", "gate", "mw", "mw2"}
+
+
+async def test_two_channels_with_one_name_are_refused(sequences):
+    """A channel is addressed by its name, so a duplicate is not a rig —
+    it is two lanes the sequence cannot tell apart."""
+    from labpilot.core.pulse import SequenceError
+
+    with pytest.raises(SequenceError, match="share a name"):
+        await edit(CHANNELS=[
+            {"name": "mw", "kind": "mw"},
+            {"name": "mw", "kind": "laser"},
+        ])
 
 
 async def test_a_misspelled_starting_point_lists_the_real_ones(sequences):

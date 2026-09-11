@@ -64,6 +64,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from labpilot.core.pulse.library import GATE, LASER, MW
 from labpilot.core.pulse.shapes import SHAPES
 from labpilot.core.pulse.tracks import (
     DURATION,
@@ -215,19 +216,25 @@ class PulseTimelineWidget(QWidget):
         timeline: Timeline | None = None,
         channels: list[str] | None = None,
         readout: str = "",
-        laser: str = "",
+        kinds: dict[str, str] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.timeline = timeline or Timeline()
         self._channels = list(channels or [])
         self._readout = readout
-        self._laser = laser
+        #: Lane name -> what it is for. A rig may have two microwave lines
+        #: and two counters, so what a lane can do is read off its *kind*
+        #: rather than off its name or its position.
+        self._kinds = dict(kinds or {})
         self._snap = 10e-9
         self._items: list[PulseItem] = []
         self._regions: list[pg.LinearRegionItem] = []
         self._selected: PulseItem | None = None
         self._silent = False
+        #: Lanes the last rebuild drew. The y-range is only reset when this
+        #: changes, so adding a channel reframes and moving a pulse does not.
+        self._lanes_drawn = -1
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -244,6 +251,7 @@ class PulseTimelineWidget(QWidget):
         # declared channel with nothing drawn on it still gets a lane —
         # otherwise a new sequence opens with nowhere to put the laser.
         self.set_channels(self._channels or self.timeline.channels)
+        self.fit_view()
 
     # --- Chrome -----------------------------------------------------------
 
@@ -268,6 +276,15 @@ class PulseTimelineWidget(QWidget):
         remove.setToolTip("Remove the selected pulse.")
         remove.clicked.connect(self.remove_selected)
         row.addWidget(remove)
+
+        fit = IconButton("Fit", "zoom-fit-best")
+        fit.setToolTip(
+            "Frame the whole sequence. Editing never reframes on its own: "
+            "you zoom in to place an edge, and rescaling under the cursor "
+            "would throw that away."
+        )
+        fit.clicked.connect(lambda _checked=False: self.fit_view())
+        row.addWidget(fit)
 
         row.addSpacing(12)
         row.addWidget(QLabel("Snap"))
@@ -442,13 +459,19 @@ class PulseTimelineWidget(QWidget):
 
     # --- Building the canvas ----------------------------------------------
 
-    def set_roles(self, laser: str, readout: str) -> None:
-        """Which lanes are the laser and the measurement.
+    def set_kinds(self, kinds: dict[str, str]) -> None:
+        """What each lane is for.
 
-        Both, because both decide what the inspector offers: the frequency
-        sweep belongs to a drive, and neither of these two is one.
+        Decides two things the canvas shows: which lane is marked as the
+        measurement, and which pulses are offered a frequency sweep. A rig
+        with two microwave lines gets it on both; one that calls its
+        counter `apd_b` still does not, because a gate has no carrier.
         """
-        self._laser = laser
+        self._kinds = dict(kinds)
+        readout = next(
+            (name for name, kind in self._kinds.items() if kind == GATE),
+            next((name for name, kind in self._kinds.items() if kind == LASER), ""),
+        )
         self.set_readout(readout)
 
     def set_readout(self, channel: str) -> None:
@@ -476,8 +499,11 @@ class PulseTimelineWidget(QWidget):
         self.rebuild()
 
     def set_timeline(self, timeline: Timeline) -> None:
+        """A different sequence entirely — so the view reframes, which an
+        ordinary edit deliberately does not."""
         self.timeline = timeline
         self.set_channels(self._channels or timeline.channels)
+        self.fit_view()
 
     def rebuild(self) -> None:
         """Redraw every lane from the timeline. Called after any change
@@ -499,7 +525,9 @@ class PulseTimelineWidget(QWidget):
         self._axis.setWidth(
             max((metrics.horizontalAdvance(label) for label in labels), default=40) + 16
         )
-        self.plot.setYRange(-0.8, max(len(tracks) - 0.2, 0.8))
+        if len(tracks) != self._lanes_drawn:
+            self.plot.setYRange(-0.8, max(len(tracks) - 0.2, 0.8))
+            self._lanes_drawn = len(tracks)
 
         for index, track in enumerate(tracks):
             colour = colour_for(track.channel, index)
@@ -514,9 +542,22 @@ class PulseTimelineWidget(QWidget):
                 self._items.append(item)
 
         self._draw_sweep()
+        self._show_selection()
+
+    def fit_view(self) -> None:
+        """Frame the whole sequence.
+
+        Called when a *new* sequence arrives, and from the Fit button —
+        never on an ordinary edit. Re-framing on every edit meant that
+        nudging one pulse rescaled the canvas under the cursor, which is
+        the opposite of what dragging something is supposed to do: you
+        zoom in to place an edge precisely, and the zoom is exactly what
+        gets thrown away.
+        """
         end = self.timeline.end or 1e-6
         self.plot.setXRange(-0.02 * end, end * 1.02)
-        self._show_selection()
+        self.plot.setYRange(-0.8, max(len(self.timeline.tracks) - 0.2, 0.8))
+        self._lanes_drawn = len(self.timeline.tracks)
 
     def _draw_sweep(self) -> None:
         """Shade each swept pulse's span across every lane.
@@ -825,7 +866,7 @@ class PulseTimelineWidget(QWidget):
             self.timeline.tracks[lane].channel
             if 0 <= lane < len(self.timeline.tracks) else ""
         )
-        drive = channel not in (self._laser, self._readout) and bool(channel)
+        drive = self._kinds.get(channel) == MW
         self.sweep_combo.clear()
         self.sweep_combo.addItem("Fixed", "")
         self.sweep_combo.addItem("Sweep its length", DURATION)

@@ -52,6 +52,8 @@ from labpilot.core.errors import LabPilotError
 from labpilot.core.pulse.shapes import Shape, shape_from_dict, shape_to_dict
 
 __all__ = [
+    "DURATION",
+    "FREQUENCY",
     "ChannelMap",
     "PulseBlock",
     "PulseElement",
@@ -61,6 +63,15 @@ __all__ = [
     "linear_sweep",
     "log_sweep",
 ]
+
+#: What a measurement varies about one pulse. `DURATION` stretches it and
+#: the pulser plays every point in one pass; `FREQUENCY` leaves the timing
+#: alone and an instrument steps the carrier between passes. Declared here
+#: rather than with the editor's model because both `PulseElement.sweep`
+#: and `Sweep.parameter` are written in these terms, and a saved file uses
+#: them as its own vocabulary.
+DURATION = "duration"
+FREQUENCY = "frequency"
 
 
 class SequenceError(LabPilotError):
@@ -136,11 +147,14 @@ def log_sweep(name: str, start: float, stop: float, points: int, unit: str = "s"
 
 @dataclass(frozen=True, slots=True)
 class PulseElement:
-    """One interval, and what every channel does during it.
+    """One interval, and what the channels it names do during it.
 
     A digital channel is a `bool` — high or low for the whole element. An
-    analog channel is a `Shape`. A channel absent from `channels` is low
-    (or idle) by omission, so an element only names what it actually does.
+    analog channel is a `Shape`. **A channel absent from `channels` is low
+    (or idle) by omission**, so an element names only what it actually
+    does. That is what keeps a saved file readable: a sequence on a
+    six-channel rig would otherwise spell out five `false`s per element
+    to say nothing at all.
     """
 
     duration: float
@@ -148,8 +162,19 @@ class PulseElement:
     channels: Mapping[str, bool | Shape] = field(default_factory=dict)
     increment: float = 0.0
     """Added once per repetition of the containing block. This is the
-    whole sweep mechanism."""
+    mechanism a played duration sweep runs on; `sweep` is what says so."""
     name: str = ""
+    sweep: str = ""
+    """What the measurement varies about this element — `""` nothing,
+    `"duration"` its length, `"frequency"` the carrier driving it.
+
+    Stated rather than inferred. Without it, reading a saved file back
+    meant guessing: an element with a non-zero `increment` was swept, and
+    a log sweep — which has no increment, because a geometric series has
+    no constant one — had to be found by diffing the first two blocks
+    against each other. Both guesses are right until someone writes a
+    sequence by hand that happens to look like the other case.
+    """
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "channels", dict(self.channels))
@@ -157,6 +182,11 @@ class PulseElement:
             raise SequenceError(
                 f"Element {self.name or '<unnamed>'} has a negative duration "
                 f"({self.duration} s)"
+            )
+        if self.sweep not in ("", DURATION, FREQUENCY):
+            raise SequenceError(
+                f"Element {self.name or '<unnamed>'} sweeps {self.sweep!r} — "
+                f"use {DURATION!r}, {FREQUENCY!r}, or '' for a fixed element"
             )
         for channel, value in self.channels.items():
             if not isinstance(value, (bool, np.bool_)) and not isinstance(value, Shape):
@@ -432,21 +462,7 @@ class PulseSequence:
                 {
                     "name": block.name,
                     "repetitions": block.repetitions,
-                    "elements": [
-                        {
-                            "name": element.name,
-                            "duration": element.duration,
-                            "increment": element.increment,
-                            "channels": {
-                                channel: (
-                                    value if isinstance(value, (bool, np.bool_))
-                                    else shape_to_dict(value)
-                                )
-                                for channel, value in element.channels.items()
-                            },
-                        }
-                        for element in block.elements
-                    ],
+                    "elements": [_element_to_dict(element) for element in block.elements],
                 }
                 for block in self.blocks
             ],
@@ -470,18 +486,7 @@ class PulseSequence:
                 name=block.get("name", ""),
                 repetitions=int(block.get("repetitions", 1)),
                 elements=tuple(
-                    PulseElement(
-                        duration=float(element["duration"]),
-                        increment=float(element.get("increment", 0.0)),
-                        name=element.get("name", ""),
-                        channels={
-                            channel: (
-                                bool(value) if isinstance(value, bool)
-                                else shape_from_dict(value)
-                            )
-                            for channel, value in (element.get("channels") or {}).items()
-                        },
-                    )
+                    _element_from_dict(element)
                     for element in block.get("elements") or ()
                 ),
             )
@@ -501,6 +506,47 @@ class PulseSequence:
 
     def evolve(self, **changes: Any) -> PulseSequence:
         return replace(self, **changes)
+
+
+def _element_to_dict(element: PulseElement) -> dict[str, Any]:
+    """One element as JSON, naming only what it actually does.
+
+    `channels` carries the channels this element asserts and no others: a
+    `false` says the same thing as an absent key, and on a six-channel rig
+    the absent keys are most of the file. `increment` and `sweep` are
+    likewise omitted at their defaults, so a fixed element is two lines.
+    """
+    data: dict[str, Any] = {
+        "name": element.name,
+        "duration": element.duration,
+        "channels": {
+            channel: (
+                True if isinstance(value, (bool, np.bool_)) else shape_to_dict(value)
+            )
+            for channel, value in element.channels.items()
+            if value is not False and value is not np.False_
+        },
+    }
+    if element.sweep:
+        data["sweep"] = element.sweep
+    if element.increment:
+        data["increment"] = element.increment
+    return data
+
+
+def _element_from_dict(data: Mapping[str, Any]) -> PulseElement:
+    """The other direction. A channel this element does not name is low,
+    which is what makes the omission above lossless."""
+    return PulseElement(
+        duration=float(data["duration"]),
+        increment=float(data.get("increment", 0.0)),
+        name=data.get("name", ""),
+        sweep=str(data.get("sweep", "")),
+        channels={
+            channel: (bool(value) if isinstance(value, bool) else shape_from_dict(value))
+            for channel, value in (data.get("channels") or {}).items()
+        },
+    )
 
 
 @dataclass(frozen=True, slots=True)

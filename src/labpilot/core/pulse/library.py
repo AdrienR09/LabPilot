@@ -37,6 +37,8 @@ if TYPE_CHECKING:
 
 from labpilot.core.device.parameter import Parameter, ParamRole
 from labpilot.core.pulse.sequence import (
+    DURATION,
+    FREQUENCY,
     PulseBlock,
     PulseElement,
     PulseSequence,
@@ -48,7 +50,13 @@ from labpilot.core.pulse.sequence import (
 from labpilot.core.pulse.shapes import Sin
 
 __all__ = [
+    "GATE",
     "GENERATORS",
+    "KINDS",
+    "LASER",
+    "MW",
+    "OTHER",
+    "RigChannel",
     "RigProfile",
     "centre_to_centre",
     "generator",
@@ -59,6 +67,43 @@ __all__ = [
     "ramsey",
     "t1",
 ]
+
+
+#: What a rig channel is *for*. `LASER` polarises and reads out, `MW`
+#: drives the spin, `GATE` opens the counter, and `OTHER` is a trigger, a
+#: shutter, a second AOM — anything the rig has that is none of the three.
+#: A rig can have several of each: two lasers at different wavelengths,
+#: two microwave lines for two transitions, two counters.
+LASER, MW, GATE, OTHER = "laser", "mw", "gate", "other"
+KINDS = (LASER, MW, GATE, OTHER)
+
+
+@dataclass(frozen=True, slots=True)
+class RigChannel:
+    """One symbolic channel the rig has, and what it is for.
+
+    The *kind* is what the editor and the model reason about, never the
+    name: a channel called `mw2` is a drive because it says so, not
+    because of how it is spelled. That is what lets a rig have two
+    microwave lines, or call its counter `apd_a`, without anything
+    guessing from substrings — which is exactly the trap Qudi's GUI falls
+    into when it reads units out of parameter names.
+    """
+
+    name: str
+    kind: str = OTHER
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise SequenceError("A rig channel needs a name")
+        if self.kind not in KINDS:
+            raise SequenceError(
+                f"Channel {self.name!r} is kind {self.kind!r} — use one of "
+                f"{', '.join(KINDS)}"
+            )
+
+    def to_dict(self) -> dict[str, str]:
+        return {"name": self.name, "kind": self.kind}
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,14 +129,74 @@ class RigProfile:
     wait_time: float = 1e-6
     """Repolarisation before the next repetition."""
 
+    channels: tuple[RigChannel, ...] = ()
+    """Every channel this rig has, in lane order, each with its kind.
+
+    A rig may have several of a kind — two lasers, two microwave lines, a
+    trigger out — and this is where that is said. Empty means "not
+    stated", and the three names below are then taken as a one-of-each
+    rig, so every existing caller and saved sequence keeps working.
+    """
+
     laser_channel: str = "laser"
     mw_channel: str = "mw"
     gate_channel: str | None = "gate"
+    """The *primary* channel of each kind — what the shipped generators
+    draw with, and what a sequence counts readouts on. Derived from
+    `channels` when that is given, since the first of a kind is the one a
+    single-laser experiment means."""
     analog_mw: bool = True
     """Whether the microwave channel carries an analog shape or simply
     gates an external source. A PulseBlaster rig is digital-only and
     switches a separate microwave generator, so this is False there — and
     the sequences below are otherwise identical."""
+
+    def __post_init__(self) -> None:
+        if self.channels:
+            object.__setattr__(self, "channels", tuple(self.channels))
+            names = [c.name for c in self.channels]
+            if len(set(names)) != len(names):
+                raise SequenceError(
+                    f"Two rig channels share a name ({', '.join(sorted(names))}). "
+                    f"A channel is addressed by its name, so they must differ."
+                )
+            for kind, field_name in ((LASER, "laser_channel"), (MW, "mw_channel")):
+                first = self.first(kind)
+                if first:
+                    object.__setattr__(self, field_name, first)
+            object.__setattr__(self, "gate_channel", self.first(GATE) or None)
+            return
+        # Not stated: a one-of-each rig, spelled out so everything below
+        # can read `channels` without caring which way it was given.
+        declared = [RigChannel(self.laser_channel, LASER), RigChannel(self.mw_channel, MW)]
+        if self.gate_channel:
+            declared.append(RigChannel(self.gate_channel, GATE))
+        object.__setattr__(self, "channels", tuple(declared))
+
+    def first(self, kind: str) -> str:
+        """The primary channel of a kind, or `""` if the rig has none."""
+        return next((c.name for c in self.channels if c.kind == kind), "")
+
+    def of_kind(self, kind: str) -> tuple[str, ...]:
+        """Every channel of a kind, in lane order."""
+        return tuple(c.name for c in self.channels if c.kind == kind)
+
+    def kind_of(self, channel: str) -> str:
+        """What a channel is for, or `OTHER` for one the rig never declared."""
+        return next((c.kind for c in self.channels if c.name == channel), OTHER)
+
+    @property
+    def lanes(self) -> tuple[str, ...]:
+        """Every channel name, in the order the editor stacks the lanes."""
+        return tuple(c.name for c in self.channels)
+
+    @property
+    def readout_channel(self) -> str:
+        """Which channel's rising edges are readouts — the first gate, or
+        the first laser on an ungated rig. The same rule
+        `PulseSequence.readout_channel` applies, kept here so the editor
+        marks the lane the run will actually count."""
+        return self.first(GATE) or self.first(LASER)
 
     @property
     def pi(self) -> float:
@@ -112,16 +217,22 @@ class RigProfile:
     # --- The elements every experiment shares ----------------------------
 
     def drive(self, length: float, *, phase: float = 0.0, increment: float = 0.0,
-              name: str = "mw") -> PulseElement:
+              name: str = "mw", sweep: str = "") -> PulseElement:
+        # Only the microwave channel is named: the laser is low here by
+        # omission, which is what an absent channel means.
         return PulseElement(
-            length, {self.mw_channel: self.mw(phase), self.laser_channel: False},
+            length, {self.mw_channel: self.mw(phase)},
             increment=increment, name=name,
+            sweep=sweep or (DURATION if increment else ""),
         )
 
     def idle(self, length: float, *, increment: float = 0.0,
-             name: str = "idle") -> PulseElement:
-        return PulseElement(length, {self.laser_channel: False},
-                            increment=increment, name=name)
+             name: str = "idle", sweep: str = "") -> PulseElement:
+        """Nothing on at all — an element that names no channel."""
+        return PulseElement(
+            length, {}, increment=increment, name=name,
+            sweep=sweep or (DURATION if increment else ""),
+        )
 
     def readout(self, name: str = "readout") -> tuple[PulseElement, ...]:
         """Laser on with the counter gated, then the delay that lets the
@@ -344,7 +455,7 @@ def t1(
             (
                 profile.polarise(),
                 profile.idle(profile.wait_time, name="settle"),
-                profile.idle(tau, name="tau"),
+                profile.idle(tau, name="tau", sweep=DURATION),
                 *profile.readout(),
             ),
         )
@@ -403,7 +514,7 @@ def pulsed_odmr(
         (
             profile.polarise(),
             profile.idle(profile.wait_time, name="settle"),
-            profile.drive(profile.pi, name="pi"),
+            profile.drive(profile.pi, name="pi", sweep=FREQUENCY),
             *profile.readout(),
         ),
     )

@@ -108,9 +108,11 @@ DEFAULTS = {
     "LASER_LENGTH": 3e-6,
     "LASER_DELAY": 700e-9,
     "WAIT_TIME": 1e-6,
-    "LASER_CHANNEL": "laser",
-    "MW_CHANNEL": "mw",
-    "GATE_CHANNEL": "gate",
+    "CHANNELS": [
+        {"name": "laser", "kind": "laser"},
+        {"name": "mw", "kind": "mw"},
+        {"name": "gate", "kind": "gate"},
+    ],
     "ANALOG_MW": True,
 }
 
@@ -169,7 +171,10 @@ def main() -> int:
         f"{marked}",
     )
     ungated = PulseEditorControlWidget(
-        dict(DEFAULTS, GATE_CHANNEL=None), generators=sorted(GENERATORS)
+        dict(DEFAULTS, CHANNELS=[
+            {"name": "laser", "kind": "laser"}, {"name": "mw", "kind": "mw"},
+        ]),
+        generators=sorted(GENERATORS),
     )
     app.processEvents()
     ungated_marked = [
@@ -183,7 +188,11 @@ def main() -> int:
     )
 
     print("\n3. The lanes come from the rig profile, not from a pulser")
-    renamed = dict(DEFAULTS, GATE_CHANNEL="apd_gate", MW_CHANNEL="microwave")
+    renamed = dict(DEFAULTS, CHANNELS=[
+        {"name": "laser", "kind": "laser"},
+        {"name": "microwave", "kind": "mw"},
+        {"name": "apd_gate", "kind": "gate"},
+    ])
     other = PulseEditorControlWidget(renamed, generators=sorted(GENERATORS))
     app.processEvents()
     check(
@@ -447,10 +456,90 @@ def main() -> int:
         ),
     )
 
+    print("\n13f. A rig can declare several channels of a kind")
+    many = PulseEditorControlWidget(
+        dict(DEFAULTS, CHANNELS=[
+            {"name": "green", "kind": "laser"},
+            {"name": "red", "kind": "laser"},
+            {"name": "mw", "kind": "mw"},
+            {"name": "mw2", "kind": "mw"},
+            {"name": "apd_a", "kind": "gate"},
+            {"name": "apd_b", "kind": "gate"},
+            {"name": "trigger", "kind": "other"},
+        ]),
+        generators=sorted(GENERATORS),
+    )
+    app.processEvents()
+    lanes = [_lane(label) for _, label in many.timeline._axis._tickLevels[0]]
+    check(
+        "a lane per declared channel, whatever the kinds",
+        lanes == ["green", "red", "mw", "mw2", "apd_a", "apd_b", "trigger"],
+        f"{lanes}",
+    )
+    marked = [
+        _lane(label) for _, label in many.timeline._axis._tickLevels[0]
+        if MEASURED in label
+    ]
+    check("the first gate is the measurement", marked == ["apd_a"], f"{marked}")
+
+    def offered(canvas, channel: str) -> list:
+        lane = canvas.timeline.channels.index(channel)
+        canvas.add_pulse(channel)
+        canvas._item_clicked(
+            next(i for i in canvas._items if i.lane == lane)
+        )
+        app.processEvents()
+        return [canvas.sweep_combo.itemData(i) for i in range(canvas.sweep_combo.count())]
+
+    check(
+        "both microwave lanes may sweep a carrier",
+        offered(many.timeline, "mw2") == ["", DURATION, FREQUENCY],
+    )
+    check(
+        "the second counter may not — a gate has none",
+        offered(many.timeline, "apd_b") == ["", DURATION],
+    )
+    check(
+        "nor may the second laser",
+        offered(many.timeline, "red") == ["", DURATION],
+    )
+    check(
+        "and neither may a trigger",
+        offered(many.timeline, "trigger") == ["", DURATION],
+    )
+
+    print("\n13g. The channel table is what the rig tab edits")
+    check(
+        "one row per channel",
+        many.channel_table.rowCount() == 7,
+        f"{many.channel_table.rowCount()}",
+    )
+    reported: list = []
+    many.sigParamChanged.connect(
+        lambda name, value: reported.append((name, value))
+    )
+    many._add_channel_row("shutter", "other")
+    app.processEvents()
+    check(
+        "adding one reports CHANNELS",
+        reported and reported[-1][0] == "CHANNELS",
+        f"{[n for n, _ in reported]}",
+    )
+    check(
+        "with the kind it was given",
+        reported[-1][1][-1] == {"name": "shutter", "kind": "other"},
+        f"{reported[-1][1][-1]}",
+    )
+    check(
+        "and the canvas grew a lane for it",
+        "shutter" in many.timeline.timeline.channels,
+        f"{many.timeline.timeline.channels}",
+    )
+
     print("\n14. Filling from an experiment draws it, and editing survives")
     for name in sorted(GENERATORS):
         sequence = build(name, RigProfile(), points=6)
-        fresh.load_timeline(timeline_from_sequence(sequence, fresh.channels()))
+        fresh.load_timeline(timeline_from_sequence(sequence, [c["name"] for c in fresh.channels()]))
         app.processEvents()
         line = fresh.timeline.timeline
         rebuilt = line.to_sequence(

@@ -383,11 +383,17 @@ class WorkflowWindow(QMainWindow):
         # Replaces the per-panel Save buttons _ScanImagePanel used to have
         # (one qudi-style button duplicated on every axis-pair panel) —
         # one toolbar action exports every scan panel's image at once
-        # (see _on_save_all). Only meaningful once a scan panel exists.
+        # (see _on_save_all). Only meaningful once a scan panel exists, so
+        # it is hidden until this workflow has a result view at all —
+        # shown-but-useless put a "Save" beside Execute in the sequence
+        # editor, whose own Save button is in its dock, and clicking the
+        # wrong one answered "No scan panels to save".
         save_action = QAction(LabPilotStyle.icon("document-save"), "Save", self)
         save_action.setToolTip("Save every scan panel's image as PNG.")
         save_action.triggered.connect(self._on_save_all)
         toolbar.addAction(save_action)
+        self._save_images_action = save_action
+        save_action.setVisible(False)
 
         # Only meaningful when RESULT_UI declares a crosshair (qudi's own
         # scanning_optimize_logic.py/OptimizerDockWidget pattern: a quick
@@ -710,11 +716,13 @@ class WorkflowWindow(QMainWindow):
         menu_bar = self.menuBar()
 
         file_menu = menu_bar.addMenu("&File")
-        save_all_action = QAction("Save All Scans (Images)", self)
-        save_all_action.setToolTip("Export each scan panel's current view as a PNG image.")
-        save_all_action.triggered.connect(self._on_save_all)
-        file_menu.addAction(save_all_action)
         if self.result_view is not None:
+            save_all_action = QAction("Save All Scans (Images)", self)
+            save_all_action.setToolTip(
+                "Export each scan panel's current view as a PNG image."
+            )
+            save_all_action.triggered.connect(self._on_save_all)
+            file_menu.addAction(save_all_action)
             save_data_action = QAction("Save Data (HDF5)…", self)
             save_data_action.setToolTip(
                 "Save this workflow's last completed result as real data (.h5), not a picture of it."
@@ -965,7 +973,7 @@ class WorkflowWindow(QMainWindow):
             runs here, in this process, because a sequence is pure data
             and there is no hardware in one.
             """
-            from labpilot.core.pulse.library import RigProfile, build
+            from labpilot.core.pulse.library import RigChannel, RigProfile, build
             from labpilot.core.pulse.tracks import timeline_from_sequence
 
             try:
@@ -976,9 +984,13 @@ class WorkflowWindow(QMainWindow):
                     laser_length=float(params.get("LASER_LENGTH", 3e-6)),
                     laser_delay=float(params.get("LASER_DELAY", 700e-9)),
                     wait_time=float(params.get("WAIT_TIME", 1e-6)),
-                    laser_channel=str(params.get("LASER_CHANNEL", "laser")),
-                    mw_channel=str(params.get("MW_CHANNEL", "mw")),
-                    gate_channel=params.get("GATE_CHANNEL") or None,
+                    # From the editor's live channel table rather than the
+                    # stored parameter: a channel added and not yet saved
+                    # is still a lane the generator should draw onto.
+                    channels=tuple(
+                        RigChannel(entry["name"], entry["kind"])
+                        for entry in editor.channels()
+                    ),
                     analog_mw=bool(params.get("ANALOG_MW", True)),
                 ))
             except Exception as error:
@@ -986,7 +998,9 @@ class WorkflowWindow(QMainWindow):
                 return
 
             editor.load_timeline(
-                timeline_from_sequence(sequence, editor.channels())
+                timeline_from_sequence(
+                    sequence, [entry["name"] for entry in editor.channels()]
+                )
             )
             _set_param("START_FROM", generator)
             _set_param("ALTERNATING", sequence.alternating)
@@ -1387,6 +1401,9 @@ class WorkflowWindow(QMainWindow):
             return
         self.result_view = view
         self._result_view_adapter = adapter_cls
+        # There is something to export a picture of now — see
+        # _build_workflow_toolbar on why it starts hidden.
+        self._save_images_action.setVisible(True)
         if adapter_cls.manages_own_docks:
             # NDScanResultView isn't a single QWidget to embed in one
             # generic dock — it manages its own QDockWidget per axis-pair

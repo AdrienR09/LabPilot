@@ -58,7 +58,7 @@ point of the flag.
 """
 
 from labpilot.core.pulse import save_sequence
-from labpilot.core.pulse.library import RigProfile, build
+from labpilot.core.pulse.library import RigChannel, RigProfile, build
 from labpilot.core.pulse.tracks import Timeline, timeline_from_sequence
 
 # Binds nothing. That is the feature, not an omission.
@@ -101,9 +101,20 @@ LASER_LENGTH = 3e-6       # readout window
 LASER_DELAY = 700e-9      # photons arriving and the laser actually shutting off
 WAIT_TIME = 1e-6          # repolarisation before the next repetition
 
-LASER_CHANNEL = "laser"
-MW_CHANNEL = "mw"
-GATE_CHANNEL = "gate"     # None on an ungated rig: laser pulses are readouts
+# Every channel the rig has, in lane order, each with what it is *for*.
+# A rig may have several of a kind — two lasers at different wavelengths,
+# two microwave lines for two transitions, two counters — and the kind is
+# what the editor reasons about, never the name, so a drive called `mw2`
+# is a drive because it says so. Kinds: "laser", "mw", "gate", "other".
+#
+# Declare no gate and the rig is ungated: the laser pulses are then the
+# readouts, which is the model's own rule rather than a special case.
+CHANNELS = [
+    {"name": "laser", "kind": "laser"},
+    {"name": "mw", "kind": "mw"},
+    {"name": "gate", "kind": "gate"},
+]
+
 ANALOG_MW = True          # False gates an external source (PulseBlaster)
 
 
@@ -114,12 +125,14 @@ profile = RigProfile(
     laser_length=LASER_LENGTH,
     laser_delay=LASER_DELAY,
     wait_time=WAIT_TIME,
-    laser_channel=LASER_CHANNEL,
-    mw_channel=MW_CHANNEL,
-    gate_channel=GATE_CHANNEL,
+    channels=tuple(
+        RigChannel(str(entry["name"]), str(entry.get("kind", "other")))
+        for entry in CHANNELS
+        if entry.get("name")
+    ),
     analog_mw=ANALOG_MW,
 )
-channels = [name for name in (LASER_CHANNEL, MW_CHANNEL, GATE_CHANNEL) if name]
+channels = list(profile.lanes)
 
 # An empty canvas draws the chosen experiment, so a freshly loaded
 # workflow has something to run rather than an error. Anything drawn wins:
@@ -135,8 +148,8 @@ if not any(track.pulses for track in timeline.tracks):
 # here rather than by the hardware an hour later.
 sequence = timeline.to_sequence(
     SEQUENCE_NAME,
-    laser_channel=LASER_CHANNEL,
-    gate_channel=GATE_CHANNEL,
+    laser_channel=profile.laser_channel,
+    gate_channel=profile.gate_channel,
     alternating=alternating,
     description=f"Drawn in the pulse editor, starting from {START_FROM}.",
 )
