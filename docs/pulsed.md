@@ -60,8 +60,8 @@ instruments, so it opens and runs with everything disconnected.
 | `core/pulse/store.py` — saved sequence files | **Done.** `~/.labpilot/sequences/<name>.json`, listed with a reason when one will not play. |
 | `workflow_templates/pulse_sequence_editor.py` | **Done.** Binds nothing; writes a sequence file. Declares no `RESULT_UI` — the canvas is the timing diagram, so the window is the editor and nothing else. |
 | `core/pulse/tracks.py` — the timeline model | **Done.** Per-track intervals to time slices and back, by one rule: every edge on every track is a slice boundary. Qt-free, so the fiddly part is tested headless. |
-| `ui/desktop/components/pulse_timeline.py` — the canvas | **Done.** One lane per instrument, pulses dragged and resized on it, sweep regions shaded across it. |
-| `ui/desktop/components/pulse_editor.py` | **Done.** The canvas across the window, with the sequence, sweep and rig settings in a column beside it. |
+| `ui/desktop/components/pulse_timeline.py` — the canvas | **Done.** One lane per instrument, pulses dragged and resized on it, double-clicked onto it, and marked as swept from the inspector. |
+| `ui/desktop/components/pulse_editor.py` | **Done.** The canvas across the window; the sequence, the selected pulse and the rig profile in a column beside it. |
 | `core/device/` — `Action`, records, capabilities, `Constraints` | **Done.** The four framework gaps that blocked any of this. |
 | `instruments/pulser_mixin.py` — `PulserMixin` | **Done.** `upload_sequence` takes the abstract sequence and returns what the device really loaded. |
 | `instruments/gated_counter_mixin.py` — `GatedCounterMixin` | **Done.** `configure_gates` returns what it actually set; `get_trace()` is a 2-D `Dataset` with real axes. |
@@ -112,7 +112,9 @@ The canvas takes the whole window. The template declares no `RESULT_UI`,
 so nothing is plotted beside it — a second drawing of the same sequence
 used to take half the space, and it was the half you could not edit.
 Everything that is not the canvas lives in a column on the right: the
-name and starting point, the sweep, and the rig profile.
+sequence's name and starting point, the selected pulse, and the rig
+profile. Nothing sits under the canvas any more — an inspector there cost
+it half its height for rows that are blank until something is selected.
 
 **One lane is the measurement**, and it is marked `⟵ measured`. That is
 the gate, or the laser on a rig with no gate — the same rule
@@ -156,19 +158,40 @@ Two things fall out of that rule and are easy to get wrong:
   would make the saved sequence claim a channel the pulser then has to
   have free.
 
-### The sweep is drawn, not configured elsewhere
+### The sweep belongs to a pulse
 
-A sweep region is a shaded span across every lane. Everything after it
-shifts as it grows, which is what a swept sequence physically does. One
-mechanism covers every case:
+Select a pulse, set **Sweep** to *its length*, and it grows point by
+point while everything after it shifts — which is what a swept sequence
+physically does. Mark several and they move together: a Ramsey's tau
+appears once per alternating arm and a Hahn echo's twice, and they are
+one axis, so marking each of them is the whole of saying so. A marked
+pulse is outlined in amber and its span shaded across every lane.
 
-- a Rabi marks the region over its microwave pulse;
-- a Ramsey marks a **gap** — which is not a drawn object at all, so a
-  per-pulse increment could not express it without a second gesture;
-- a Ramsey marks **two** regions and a Hahn echo **four**, because each
-  point's tau appears once per alternating arm. They are regions of one
-  axis, so dragging one resizes the others rather than leaving two sweeps
-  to be kept in step by hand.
+The axis itself — from, to, points, spacing, name — is edited from
+whichever marked pulse you have selected, and is shared by all of them. A
+pulse's drawn length *is* the first value, so there is one source of
+truth rather than two that can disagree.
+
+An earlier design floated the sweep free of the drawing, as shaded
+regions dragged over it. That was one mechanism too many. A region had to
+be lined up with a pulse by hand and could silently drift off it, and the
+one thing it bought — sweeping a **gap**, which is not a drawn object —
+is better bought by making the gap a drawn object.
+
+### A gap is a pulse that drives nothing
+
+Untick **Output** and a pulse becomes a *timing block*: it holds its span
+of the timeline, it takes a name, it can be swept, and its channel stays
+low across it. A Ramsey's free evolution and a T1's wait are then
+ordinary objects to click, name and mark — drawn on the readout lane,
+where a delay belongs.
+
+On that lane the same tick answers a second question: a driving pulse
+there opens the counter gate and counts as a readout, a non-driving one
+is a delay between readouts. One flag, because they are one question —
+does this pulse assert its channel? Untick the *only* gate and the rig is
+ungated, so the laser pulses become the readouts, which is the model's
+own rule rather than a special case.
 
 Linear spacing compiles to one block repeated `points` times with an
 `increment` — the model's own sweep primitive. Log spacing cannot be
@@ -184,16 +207,20 @@ lanes from one would tie a saved sequence to a single rig's wiring.
 
 ### …or the microwave frequency, which no pulse duration can encode
 
-The editor's **Sweep over** control offers three things: nothing, a time,
-or the microwave frequency.
+The same **Sweep** control offers a second thing on a microwave pulse:
+*the MW frequency*. The drawn pattern then never changes — the pi pulse,
+the laser and the gate stay where they are — and what moves between
+passes is a setting on a bound source. That is a pulsed ODMR, and it is
+one more entry in one combo box rather than a second editor, because
+nothing else about the two differs: same tracks, same measurement lane,
+same extraction, same analysis.
 
-A **time** sweep is the above — regions on the canvas that the pulser
-stretches, one pass playing every point. A **frequency** sweep leaves the
-drawn pattern completely alone: the pi pulse, the laser and the gate stay
-where they are, and what moves between passes is a setting on a bound
-instrument. That is a pulsed ODMR, and it is one combo box rather than a
-second editor because nothing else about the two differs — same tracks,
-same measurement lane, same extraction, same analysis.
+The two are not offered symmetrically, and the asymmetry is the physics.
+A *length* is a property of any drawn interval, so every pulse is offered
+one — a drive, a gate, a gap. A *carrier* is a property of a drive, so
+the frequency is offered only on a microwave lane; a laser line and a
+counter gate are on/off, with nothing to tune. The model enforces the
+same rule, so a hand-written timeline cannot slip past it.
 
 What makes it work across the whole stack is one field on the sequence:
 

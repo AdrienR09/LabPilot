@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -50,10 +51,10 @@ from labpilot.core.pulse.library import (  # noqa: E402
     build,
 )
 from labpilot.core.pulse.tracks import (  # noqa: E402
+    DURATION,
     FREQUENCY,
+    LINEAR,
     LOG,
-    TIME,
-    Region,
     SweepAxis,
     Timeline,
     timeline_from_sequence,
@@ -122,7 +123,7 @@ def rabi_timeline(points: int = 12) -> Timeline:
 
 def main() -> int:
     from components.pulse_editor import PulseEditorControlWidget
-    from components.pulse_timeline import PulseTimelineWidget
+    from components.pulse_timeline import PulseItem, PulseTimelineWidget
     from components.workflow_result import PulseSequenceResultView
 
     app = QApplication.instance() or QApplication([])
@@ -132,12 +133,16 @@ def main() -> int:
     dock = PulseEditorControlWidget(params, generators=sorted(GENERATORS))
     app.processEvents()
     check("it holds no client", not hasattr(dock, "client"))
-    check("the sweep settings are the first tab", dock.tabs.tabText(0) == "Sweep")
-    check("the rig profile is the second", dock.tabs.tabText(1) == "Rig")
     check(
-        "there is no generator tab and no block table",
-        dock.tabs.count() == 2,
+        "two tabs: the selected pulse, and the rig profile",
+        [dock.tabs.tabText(i) for i in range(dock.tabs.count())]
+        == ["Pulse", "Rig profile"],
         f"{[dock.tabs.tabText(i) for i in range(dock.tabs.count())]}",
+    )
+    check(
+        "and the folder the file lands in is spelled out",
+        "sequences" in dock.path_label.text() and "rabi.json" in dock.path_label.text(),
+        dock.path_label.text(),
     )
     check(
         "the canvas is not in a tab at all — it is the window",
@@ -235,12 +240,11 @@ def main() -> int:
     )
 
     print("\n8. Pulses can be added to a track and deleted from it")
-    canvas.track_combo.setCurrentIndex(canvas.track_combo.findData("gate"))
     before = len(canvas.timeline.track("gate").pulses)
-    canvas.add_pulse()
+    canvas.add_pulse("gate")
     app.processEvents()
     check("a pulse was added", len(canvas.timeline.track("gate").pulses) == before + 1)
-    check("it went on the chosen track", canvas.track_combo.currentData() == "gate")
+    check("it went on the chosen track", canvas.timeline.track("gate").pulses)
 
     added = canvas.timeline.track("gate").pulses[-1]
     canvas._item_clicked(next(i for i in canvas._items if i.pulse == added))
@@ -274,8 +278,7 @@ def main() -> int:
     )
 
     print("\n10. A digital pulse becomes analog by naming a shape")
-    canvas.track_combo.setCurrentIndex(canvas.track_combo.findData("gate"))
-    canvas.add_pulse()
+    canvas.add_pulse("gate")
     app.processEvents()
     fresh = canvas.timeline.track("gate").pulses[-1]
     check("a new pulse is digital", fresh.value is True)
@@ -288,106 +291,159 @@ def main() -> int:
     )
     canvas.remove_selected()
 
-    print("\n11. The sweep is drawn across every lane")
-    check("a region item per marked region", len(canvas._regions) == 1,
+    print("\n11. The sweep is a property of a pulse, drawn on that pulse")
+    marked = [p for t in canvas.timeline.tracks for p in t.pulses if p.sweep]
+    check("the Rabi's drive is what is marked", len(marked) == 1, f"{len(marked)}")
+    check("and it is the microwave pulse", marked[0] in canvas.timeline.track("mw").pulses)
+    check("its span is shaded across every lane", len(canvas._regions) == 1,
           f"{len(canvas._regions)}")
-    canvas.add_sweep_region()
-    app.processEvents()
-    check("another can be added", len(canvas.timeline.sweep.regions) == 2)
-    check("and it is drawn too", len(canvas._regions) == 2)
-
-    print("\n12. Regions of one axis stay the same length")
-    region = canvas._regions[0]
-    region.setRegion((0.0, 500 * NS))
-    region.sigRegionChangeFinished.emit(region)
-    app.processEvents()
-    lengths = [r.length for r in canvas.timeline.sweep.regions]
+    item = next(i for i in canvas._items if i.pulse.sweep)
     check(
-        "moving one edge resizes the others",
+        "and the pulse itself is outlined as swept",
+        item.currentPen.color().name() == PulseItem.SWEPT,
+        item.currentPen.color().name(),
+    )
+
+    print("\n12. Marking a second pulse puts it on the same axis")
+    other = next(
+        i for i in canvas._items
+        if canvas.timeline.tracks[i.lane].channel == "gate"
+    )
+    canvas._item_clicked(other)
+    app.processEvents()
+    canvas.sweep_combo.setCurrentIndex(canvas.sweep_combo.findData(DURATION))
+    app.processEvents()
+    lengths = [p.duration for p in canvas.timeline.swept]
+    check("both are marked", len(lengths) == 2, f"{lengths}")
+    check(
+        "and they were made the same length — they are one axis",
         max(lengths) - min(lengths) < 1e-15,
         f"{lengths}",
     )
-    check("to the length that was dragged", close(lengths[0], 500 * NS),
-          f"{lengths[0]}")
+    canvas.sweep_combo.setCurrentIndex(canvas.sweep_combo.findData(""))
+    app.processEvents()
+    check("unmarking one leaves the other", len(canvas.timeline.swept) == 1)
 
-    print("\n13. The sweep panel and the canvas agree")
+    print("\n13. The axis is edited from the pulse that carries it")
     fresh = PulseEditorControlWidget(
         dict(DEFAULTS, TIMELINE=rabi_timeline().to_dict()),
         generators=sorted(GENERATORS),
     )
     app.processEvents()
-    fresh.sweep_points.setValue(31)
+    canvas = fresh.timeline
+    drive = next(i for i in canvas._items if i.pulse.sweep == DURATION)
+    canvas._item_clicked(drive)
     app.processEvents()
-    check("points reach the timeline", fresh.timeline.timeline.sweep.points == 31)
-    fresh.spacing_combo.setCurrentIndex(fresh.spacing_combo.findData(LOG))
-    app.processEvents()
-    check("so does the spacing", fresh.timeline.timeline.sweep.spacing == LOG)
+    check("its axis fields are shown", shown(canvas.axis_form))
     check(
-        "a constant step is hidden for a log sweep",
-        not shown(fresh.sweep_step) and shown(fresh.sweep_stop),
+        "the first value is the length that was drawn",
+        close(float(canvas.axis_start.value()), drive.pulse.duration),
+        f"{canvas.axis_start.value()} vs {drive.pulse.duration}",
     )
-    fresh.timeline.clear_sweep()
+    canvas.axis_points.setValue(31)
     app.processEvents()
-    check("and a sweep can be removed entirely", fresh.timeline.timeline.sweep is None)
+    check("points reach the timeline", canvas.timeline.sweep.points == 31)
+    canvas.axis_spacing.setCurrentIndex(canvas.axis_spacing.findData(LOG))
+    app.processEvents()
+    check("so does the spacing", canvas.timeline.sweep.spacing == LOG)
+    check(
+        "and the values the run will take",
+        len(canvas.timeline.sweep_values()) == 31,
+        f"{len(canvas.timeline.sweep_values())}",
+    )
 
-    print("\n13b. Switching to a frequency sweep leaves the drawing alone")
-    swept = PulseEditorControlWidget(
-        dict(DEFAULTS, TIMELINE=rabi_timeline().to_dict()),
-        generators=sorted(GENERATORS),
+    print("\n13b. A pulse that drives nothing is a gap you can sweep")
+    canvas.axis_spacing.setCurrentIndex(canvas.axis_spacing.findData(LINEAR))
+    app.processEvents()
+    gate = next(
+        i for i in canvas._items
+        if canvas.timeline.tracks[i.lane].channel == "gate"
     )
+    canvas._item_clicked(gate)
     app.processEvents()
+    check(
+        "the readout lane labels it as a measurement",
+        "Measurement" in canvas.drives_check.text(),
+        canvas.drives_check.text(),
+    )
+    canvas.drives_check.setChecked(False)
+    app.processEvents()
+    sequence = canvas.timeline.to_sequence("after", validate=False)
+    check(
+        "unchecking it stops gating the counter at all",
+        "gate" not in sequence.channels,
+        f"{sorted(sequence.channels)}",
+    )
+    check(
+        "so the rig is ungated and the laser pulses are the readouts",
+        sequence.readout_channel == "laser",
+        sequence.readout_channel,
+    )
+    check("but the block still holds its time",
+          close(canvas.timeline.end, fresh.timeline.timeline.end))
+    check(
+        "and it is drawn hollow rather than filled",
+        next(i for i in canvas._items if not i.pulse.drives).brush.color()
+        != next(i for i in canvas._items if i.pulse.drives).brush.color(),
+    )
+
+    print("\n13c. Only a drive is offered the frequency sweep")
+    modes = [canvas.sweep_combo.itemData(i) for i in range(canvas.sweep_combo.count())]
+    check("not on the readout lane", modes == ["", DURATION], f"{modes}")
+    laser = next(
+        i for i in canvas._items
+        if canvas.timeline.tracks[i.lane].channel == "laser"
+    )
+    canvas._item_clicked(laser)
+    app.processEvents()
+    modes = [canvas.sweep_combo.itemData(i) for i in range(canvas.sweep_combo.count())]
+    check("nor on the laser lane", modes == ["", DURATION], f"{modes}")
+    mw = next(
+        i for i in canvas._items
+        if canvas.timeline.tracks[i.lane].channel == "mw"
+    )
+    canvas._item_clicked(mw)
+    app.processEvents()
+    modes = [canvas.sweep_combo.itemData(i) for i in range(canvas.sweep_combo.count())]
+    check("but it is on the microwave lane", modes == ["", DURATION, FREQUENCY],
+          f"{modes}")
+
+    print("\n13d. Sweeping the frequency leaves the drawing alone")
     before = [
-        (p.start, p.stop) for track in swept.timeline.timeline.tracks
-        for p in track.sorted()
+        (p.start, p.stop) for t in canvas.timeline.tracks for p in t.sorted()
     ]
-    swept.quantity_combo.setCurrentIndex(swept.quantity_combo.findData(FREQUENCY))
+    canvas.sweep_combo.setCurrentIndex(canvas.sweep_combo.findData(FREQUENCY))
     app.processEvents()
-    axis = swept.timeline.timeline.sweep
-    check("the axis becomes a frequency", axis is not None and axis.quantity == FREQUENCY)
-    check("in hertz, not seconds", axis.unit == "Hz" and axis.name == "frequency")
-    check("nothing is marked on the canvas", axis.regions == ())
+    check("the axis becomes a frequency", canvas.timeline.sweep_quantity == FREQUENCY)
+    values = canvas.timeline.sweep_values()
+    check("in hertz, not seconds", values.unit == "Hz" and values.name == "frequency")
+    check("with endpoints a rig would recognise", values.values[0] > 1e9,
+          f"{values.values[0]}")
     check(
         "and not one drawn pulse moved",
         before == [
-            (p.start, p.stop) for track in swept.timeline.timeline.tracks
-            for p in track.sorted()
+            (p.start, p.stop) for t in canvas.timeline.tracks for p in t.sorted()
         ],
     )
-    check(
-        "the region controls have nothing to do, so they are hidden",
-        not shown(swept.region_buttons) and shown(swept.sweep_start),
-    )
-    sequence = swept.timeline.timeline.to_sequence("odmr", alternating=False)
+    check("nothing is shaded, because nothing grows", canvas._regions == [])
+    sequence = canvas.timeline.to_sequence("odmr", validate=False)
     check(
         "the sequence says an instrument steps it",
         sequence.sweep.stepped and sequence.sweep.parameter == "frequency",
     )
-    check(
-        "one readout per pass, many points — and it validates",
-        sequence.readouts() == 1 and sequence.points == axis.points,
-        f"{sequence.readouts()} readout(s), {sequence.points} point(s)",
-    )
 
-    print("\n13c. Switching back restores a drawn sweep")
-    swept.quantity_combo.setCurrentIndex(swept.quantity_combo.findData(TIME))
+    print("\n13e. Double-clicking a lane puts a pulse on it")
+    lane_count = len(canvas.timeline.tracks)
+    counts = [len(t.pulses) for t in canvas.timeline.tracks]
+    added = canvas.add_pulse_at(lane_count - 1, canvas.timeline.end * 2)
     app.processEvents()
-    back = swept.timeline.timeline.sweep
-    check("time again", back is not None and back.quantity == TIME and back.unit == "s")
-    check("with a region to drag", len(back.regions) >= 1)
-    check("and the region controls are back", shown(swept.region_buttons))
-
-    print("\n13d. Double-clicking a lane puts a pulse on it")
-    lane_count = len(swept.timeline.timeline.tracks)
-    counts = [len(t.pulses) for t in swept.timeline.timeline.tracks]
-    added = swept.timeline.add_pulse_at(lane_count - 1, swept.timeline.timeline.end * 2)
-    app.processEvents()
-    now = [len(t.pulses) for t in swept.timeline.timeline.tracks]
+    now = [len(t.pulses) for t in canvas.timeline.tracks]
     check("it lands on the lane that was clicked", added and now[-1] == counts[-1] + 1)
     check("and on no other", now[:-1] == counts[:-1], f"{counts} -> {now}")
     check(
         "a pulse cannot be dropped on top of another",
-        not swept.timeline.add_pulse_at(
-            lane_count - 1, swept.timeline.timeline.tracks[-1].sorted()[0].start
+        not canvas.add_pulse_at(
+            lane_count - 1, canvas.timeline.tracks[-1].sorted()[0].start
         ),
     )
 
@@ -411,7 +467,7 @@ def main() -> int:
     print("\n15. What the dock emits is what a workflow stores")
     stored: list[tuple[str, object]] = []
     fresh.sigParamChanged.connect(lambda name, value: stored.append((name, value)))
-    fresh.timeline.add_pulse()
+    fresh.timeline.add_pulse("gate")
     app.processEvents()
     names = [name for name, _ in stored]
     check("the whole timeline is reported", "TIMELINE" in names, f"{names}")
@@ -427,17 +483,16 @@ def main() -> int:
     for channel, start, stop in (
         ("mw", 0.0, 20 * NS), ("laser", 20 * NS, 3020 * NS), ("gate", 20 * NS, 3020 * NS)
     ):
-        hand.track_combo.setCurrentIndex(hand.track_combo.findData(channel))
-        hand.add_pulse()
+        hand.add_pulse(channel)
         pulse = hand.timeline.track(channel).pulses[-1]
         hand._item_clicked(next(i for i in hand._items if i.pulse == pulse))
         hand.pulse_start.setValue(start)
         hand.pulse_length.setValue(stop - start)
         hand._edited()
     hand.timeline.duration = 4 * US
-    hand.timeline.sweep = SweepAxis(
-        regions=(Region(0.0, 20 * NS),), points=9, step=20 * NS
-    )
+    mark = hand.timeline.track("mw").pulses[0]
+    hand.timeline.track("mw").pulses[0] = replace(mark, sweep=DURATION)
+    hand.timeline.sweep = SweepAxis(points=9, stop=180 * NS)
     sequence = hand.timeline.to_sequence("hand")
     check("it plays", sequence.readouts() == 9, f"{sequence.readouts()}")
     check("with the drawn sweep", close(sequence.sweep.values[0], 20 * NS))

@@ -17,16 +17,25 @@ editing has to do it in their head.
 ## What is drawn and what is typed
 
 Dragging sets *when*: position and length, snapped to a grid so an edge
-lands on a round number rather than 19.87 ns. Everything that is not a
-time is typed, in the inspector under the canvas — a 2.87 GHz carrier is
-not something to find by dragging, and neither is a channel name.
+lands on a round number rather than 19.87 ns. Double-clicking an empty
+stretch of a lane adds a pulse there. Everything that is not a time is
+typed — a 2.87 GHz carrier is not something to find by dragging.
 
-## The sweep is drawn too
+The typing happens in `self.inspector`, which this widget **builds but
+does not place**: it is a per-pulse settings form, it belongs with the
+other settings, and stacking it under the canvas cost the canvas half its
+height for rows that are blank until something is selected. The editor
+puts it in its own column (`pulse_editor.py`).
 
-A sweep region is a shaded span across every lane. Everything after it
-shifts as it grows, which is what a swept sequence physically does. There
-can be several — a Ramsey's tau appears once per alternating arm and a
-Hahn echo's twice — and they move together because they are one axis.
+## Everything about a pulse is on the pulse
+
+Its name, its shape, whether it drives its channel at all, and whether
+the measurement sweeps it. That last one used to be a separate mechanism
+— shaded regions floated over the drawing and dragged into place — and
+the whole of it collapses into one field on the object you already have
+selected. A swept pulse is outlined in amber and its span shaded across
+every lane, because what it is about to do is push everything after it
+along, and that is the one thing a still picture cannot show.
 
 A dumb view, the same convention `axes_control.py` follows: it holds no
 client and makes no network call. It emits `sigTimelineChanged` with the
@@ -36,6 +45,7 @@ that stores the parameter.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, ClassVar
 
 import pyqtgraph as pg
@@ -43,23 +53,24 @@ from components.widgets import IconButton
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFontMetrics
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from labpilot.core.pulse.shapes import SHAPES
 from labpilot.core.pulse.tracks import (
+    DURATION,
     FREQUENCY,
     LINEAR,
-    TIME,
+    LOG,
     Pulse,
-    Region,
     SweepAxis,
     Timeline,
     Track,
@@ -95,11 +106,21 @@ class PulseItem(pg.ROI):
     something a stray vertical wobble should be able to do by accident.
     """
 
+    #: Drawn on a swept pulse, in the amber the old sweep regions used.
+    SWEPT = "#ffb300"
+
     def __init__(self, pulse: Pulse, lane: int, colour: str, snap: float) -> None:
         super().__init__(
             pos=(pulse.start, lane - 0.35),
             size=(max(pulse.duration, snap), 0.7),
-            pen=pg.mkPen(colour, width=2),
+            # A swept pulse is outlined in amber, because what it is about
+            # to do — grow, and push everything after it along — is the
+            # one thing about a drawing that a still picture cannot show.
+            pen=pg.mkPen(
+                self.SWEPT if pulse.sweep else colour,
+                width=3 if pulse.sweep else 2,
+                style=Qt.PenStyle.DashLine if pulse.sweep else Qt.PenStyle.SolidLine,
+            ),
             movable=True,
             rotatable=False,
             resizable=True,
@@ -110,7 +131,14 @@ class PulseItem(pg.ROI):
         self.lane = lane
         self.pulse = pulse
         self.snap = snap
-        self.brush = pg.mkBrush(pg.mkColor(colour).darker(160))
+        # A timing block asserts nothing, so it is drawn hollow: on the
+        # readout lane that is the difference between a gate the counter
+        # opens for and a delay it does not, and reading it off the canvas
+        # beats clicking each one to find out.
+        self.brush = (
+            pg.mkBrush(pg.mkColor(colour).darker(160)) if pulse.drives
+            else pg.mkBrush(pg.mkColor(colour).darker(300))
+        )
 
     def paint(self, painter: Any, *_args: Any) -> None:
         """A filled box, not an outline.
@@ -151,11 +179,25 @@ def _snap(value: float, grid: float) -> float:
     return round(value / grid) * grid if grid > 0 else value
 
 
-def _renamed(name: str | None, default_for: str, replacement: str) -> str:
-    """`replacement` when the axis still carries the other quantity's
-    default name, and `name` untouched when someone has named it
-    themselves — so switching quantity does not throw away "detuning"."""
-    return replacement if name in (None, "", default_for) else str(name)
+def _sized(box: pg.SpinBox) -> pg.SpinBox:
+    """Give a `pg.SpinBox` the height it actually needs.
+
+    Its `sizeHint()` is zero high, so a form layout hands it whatever is
+    left over and the text ends up clipped between the rows either side.
+    Every spin box in this file goes through this.
+    """
+    box.setMinimumHeight(box.minimumSizeHint().height())
+    return box
+
+
+def _pair(left: QWidget, right: QWidget) -> QWidget:
+    """Two controls on one form row, for the ones that are read together."""
+    holder = QWidget()
+    row = QHBoxLayout(holder)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.addWidget(left, 1)
+    row.addWidget(right, 1)
+    return holder
 
 
 class PulseTimelineWidget(QWidget):
@@ -173,12 +215,14 @@ class PulseTimelineWidget(QWidget):
         timeline: Timeline | None = None,
         channels: list[str] | None = None,
         readout: str = "",
+        laser: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.timeline = timeline or Timeline()
         self._channels = list(channels or [])
         self._readout = readout
+        self._laser = laser
         self._snap = 10e-9
         self._items: list[PulseItem] = []
         self._regions: list[pg.LinearRegionItem] = []
@@ -189,8 +233,13 @@ class PulseTimelineWidget(QWidget):
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
         layout.addWidget(self._toolbar())
-        layout.addWidget(self._canvas(), 3)
-        layout.addWidget(self._inspector())
+        layout.addWidget(self._canvas(), 1)
+        # The inspector is built but deliberately *not* placed here. It is
+        # a per-pulse settings form, it belongs with the other settings,
+        # and stacking it under the canvas cost the canvas half its height
+        # for rows that are blank until something is selected. The editor
+        # puts it in its own column — see pulse_editor.py.
+        self.inspector = self._inspector()
         # Through `set_channels` rather than straight to `rebuild`, so a
         # declared channel with nothing drawn on it still gets a lane —
         # otherwise a new sequence opens with nowhere to put the laser.
@@ -199,19 +248,24 @@ class PulseTimelineWidget(QWidget):
     # --- Chrome -----------------------------------------------------------
 
     def _toolbar(self) -> QWidget:
+        """Only what acts on the canvas as a whole.
+
+        No track picker and no Add button: a pulse is added by
+        double-clicking the lane and the moment you want it, which needs
+        neither — and picking a track from a list, on a canvas that is
+        already showing you the tracks, was the slower way to say the
+        same thing.
+        """
         bar = QWidget()
         row = QHBoxLayout(bar)
         row.setContentsMargins(0, 0, 0, 0)
 
-        self.track_combo = QComboBox()
-        row.addWidget(QLabel("Track"))
-        row.addWidget(self.track_combo)
-
-        add = IconButton("Add pulse", "list-add")
-        add.clicked.connect(self.add_pulse)
-        row.addWidget(add)
+        hint = QLabel("Double-click a lane to add a pulse")
+        hint.setStyleSheet("color: #888;")
+        row.addWidget(hint)
 
         remove = IconButton("Delete", "list-remove")
+        remove.setToolTip("Remove the selected pulse.")
         remove.clicked.connect(self.remove_selected)
         row.addWidget(remove)
 
@@ -230,10 +284,10 @@ class PulseTimelineWidget(QWidget):
 
         row.addSpacing(12)
         row.addWidget(QLabel("Length"))
-        self.duration = pg.SpinBox(
+        self.duration = _sized(pg.SpinBox(
             value=self.timeline.duration, bounds=(0.0, None), suffix="s",
             siPrefix=True, step=100e-9, dec=True, minStep=1e-12,
-        )
+        ))
         self.duration.setToolTip(
             "The timeline's own end. Longer than the last pulse is normal "
             "and load-bearing: the repolarisation wait is silence, and "
@@ -261,8 +315,12 @@ class PulseTimelineWidget(QWidget):
         return self.plot
 
     def _inspector(self) -> QWidget:
-        box = QGroupBox("Selected pulse")
+        # A plain widget, not a group box: it lives in a tab already
+        # labelled "Pulse", and a frame titled "Selected pulse" inside one
+        # titled "Pulse" is a box drawn around a box.
+        box = QWidget()
         form = QFormLayout(box)
+        form.setContentsMargins(8, 8, 8, 8)
 
         self.pulse_name = QLineEdit()
         self.pulse_name.setPlaceholderText("pi/2, readout, ...")
@@ -296,23 +354,102 @@ class PulseTimelineWidget(QWidget):
         self.shape_layout.setContentsMargins(0, 0, 0, 0)
         form.addRow(self.shape_form)
 
+        self.drives_check = QCheckBox("")
+        self.drives_check.toggled.connect(self._drives_changed)
+        form.addRow("Output", self.drives_check)
+
+        self.sweep_combo = QComboBox()
+        self.sweep_combo.setToolTip(
+            "What this pulse contributes to the measurement's x-axis.\n\n"
+            "Its length: the pulse grows point by point and everything "
+            "after it shifts — a Rabi's drive, a Ramsey's free evolution, "
+            "a gate held open longer. Any drawn interval has a length, so "
+            "this is offered on every pulse.\n\n"
+            "The MW frequency: the drawing never changes and the bound "
+            "microwave source steps between passes — a pulsed ODMR. Only a "
+            "microwave pulse can carry it, because only a drive has a "
+            "carrier; a laser line and a counter gate are on/off.\n\n"
+            "Mark several pulses to sweep them together — a Ramsey's tau "
+            "appears once per arm and they are one axis."
+        )
+        self.sweep_combo.currentIndexChanged.connect(self._sweep_changed)
+        form.addRow("Sweep", self.sweep_combo)
+
+        self.axis_form = QWidget()
+        self.axis_layout = QFormLayout(self.axis_form)
+        self.axis_layout.setContentsMargins(0, 0, 0, 0)
+        form.addRow(self.axis_form)
+        self._build_axis_form()
+
         self.hint = QLabel("Nothing selected — click a pulse, or add one.")
         self.hint.setStyleSheet("color: #888;")
+        self.hint.setWordWrap(True)
         form.addRow(self.hint)
 
-        box.setEnabled(True)
-        self._inspector_box = box
+        return box
+
+    def _build_axis_form(self) -> None:
+        """Where the shared axis is edited: from the pulse you marked.
+
+        The values live on the timeline, not on this pulse, because every
+        marked pulse follows the same axis — so typing a point count here
+        changes it for all of them, which is what the label says.
+
+        Paired onto two rows rather than five: from/to are read together
+        and so are points/spacing, and a settings column is short.
+        """
+        self.axis_start = self._value_box()
+        self.axis_stop = self._value_box()
+        self.axis_layout.addRow("From / to", _pair(self.axis_start, self.axis_stop))
+
+        self.axis_points = QSpinBox()
+        self.axis_points.setRange(1, 1_000_000)
+        self.axis_points.setValue(50)
+        self.axis_points.valueChanged.connect(lambda _: self._axis_edited())
+
+        self.axis_spacing = QComboBox()
+        self.axis_spacing.addItem("Linear", LINEAR)
+        self.axis_spacing.addItem("Logarithmic", LOG)
+        self.axis_spacing.setToolTip(
+            "A T1 decay spans decades, so linear spacing wastes almost "
+            "every point. Log spacing becomes one block per point, since "
+            "no constant increment produces a geometric series."
+        )
+        self.axis_spacing.currentIndexChanged.connect(lambda _: self._axis_edited())
+        self.axis_layout.addRow(
+            "Points", _pair(self.axis_points, self.axis_spacing)
+        )
+
+        self.axis_name = QLineEdit()
+        self.axis_name.setPlaceholderText("tau")
+        self.axis_name.setToolTip("What the measurement's x-axis is called.")
+        self.axis_name.editingFinished.connect(self._axis_edited)
+        self.axis_layout.addRow("Axis name", self.axis_name)
+
+    def _value_box(self) -> pg.SpinBox:
+        box = _sized(pg.SpinBox(value=0.0, bounds=(0.0, None), siPrefix=True,
+                                dec=True, minStep=1e-12))
+        box.sigValueChanged.connect(lambda _: self._axis_edited())
         return box
 
     def _time_box(self) -> pg.SpinBox:
-        box = pg.SpinBox(
+        box = _sized(pg.SpinBox(
             value=0.0, bounds=(0.0, None), suffix="s", siPrefix=True,
             step=self._snap, dec=True, minStep=1e-12,
-        )
+        ))
         box.sigValueChanged.connect(lambda _: self._edited())
         return box
 
     # --- Building the canvas ----------------------------------------------
+
+    def set_roles(self, laser: str, readout: str) -> None:
+        """Which lanes are the laser and the measurement.
+
+        Both, because both decide what the inspector offers: the frequency
+        sweep belongs to a drive, and neither of these two is one.
+        """
+        self._laser = laser
+        self.set_readout(readout)
 
     def set_readout(self, channel: str) -> None:
         """Which lane is the measurement — the gate, or the laser on a rig
@@ -379,23 +516,26 @@ class PulseTimelineWidget(QWidget):
         self._draw_sweep()
         end = self.timeline.end or 1e-6
         self.plot.setXRange(-0.02 * end, end * 1.02)
-        self._refresh_tracks_combo()
         self._show_selection()
 
     def _draw_sweep(self) -> None:
-        sweep = self.timeline.sweep
-        if sweep is None:
-            return
-        for number, region in enumerate(sweep.regions):
+        """Shade each swept pulse's span across every lane.
+
+        Not a control any more — the pulse itself is the control now — but
+        still worth drawing: what a swept pulse does is push everything
+        after it along, and a band down the whole canvas is what says the
+        rest of the sequence moves with it.
+        """
+        for pulse in self.timeline.swept:
+            if pulse.sweep != DURATION:
+                continue
             item = pg.LinearRegionItem(
-                values=(region.start, region.stop),
-                brush=pg.mkBrush(255, 193, 7, 45),
-                pen=pg.mkPen("#ffb300", width=1),
-                movable=True,
+                values=(pulse.start, pulse.stop),
+                brush=pg.mkBrush(255, 193, 7, 35),
+                pen=pg.mkPen(None),
+                movable=False,
             )
             item.setZValue(-10)
-            item.region_index = number
-            item.sigRegionChangeFinished.connect(self._region_moved)
             self.plot.addItem(item)
             self._regions.append(item)
 
@@ -406,30 +546,19 @@ class PulseTimelineWidget(QWidget):
         name = track.label or track.channel
         return f"{name} ⟵ measured" if track.channel == self._readout else name
 
-    def _refresh_tracks_combo(self) -> None:
-        current = self.track_combo.currentData()
-        self.track_combo.blockSignals(True)
-        self.track_combo.clear()
-        for track in self.timeline.tracks:
-            label = track.label or track.channel
-            if track.channel == self._readout:
-                label = f"{label} (measurement)"
-            self.track_combo.addItem(label, track.channel)
-        index = self.track_combo.findData(current)
-        self.track_combo.setCurrentIndex(max(index, 0))
-        self.track_combo.blockSignals(False)
-
     # --- Edits -------------------------------------------------------------
 
-    def add_pulse(self) -> None:
-        """A new pulse on the selected track, after whatever is there."""
-        channel = self.track_combo.currentData()
-        if channel is None:
-            return
+    def add_pulse(self, channel: str) -> bool:
+        """A new pulse on `channel`, after whatever is already there.
+
+        The scripted form of the double-click. Kept because a test and a
+        console session need a way in that is not a mouse event, not
+        because the dock offers a button for it.
+        """
         track = self.timeline.track(channel)
-        start = _snap(track.end or 0.0, self._snap)
-        track.pulses.append(blank_pulse(start, max(self._snap * 10, 100e-9)))
-        self._changed()
+        return self.add_pulse_at(
+            self.timeline.channels.index(channel), _snap(track.end or 0.0, self._snap)
+        )
 
     def add_pulse_at(self, lane: int, start: float) -> bool:
         """A new pulse on lane `lane`, beginning at `start`.
@@ -475,93 +604,84 @@ class PulseTimelineWidget(QWidget):
             track.pulses.remove(self._selected.pulse)
         self._changed()
 
-    def add_sweep_region(self) -> None:
-        """Mark another interval that grows with the same axis.
-
-        A Ramsey's tau appears once per alternating arm; marking the
-        second is how the editor says the two grow together rather than
-        being two sweeps kept in step by hand.
-        """
-        sweep = self.timeline.sweep
-        if sweep is not None and sweep.stepped:
-            return
-        end = self.timeline.end or 1e-6
-        length = sweep.length if sweep else max(self._snap * 2, 20e-9)
-        start = _snap(end * 0.5, self._snap)
-        regions = (*(sweep.regions if sweep else ()), Region(start, start + length))
-        self.timeline.sweep = SweepAxis(
-            regions=regions,
-            points=sweep.points if sweep else 50,
-            step=sweep.step if sweep else 20e-9,
-            stop_value=sweep.stop_value if sweep else 0.0,
-            spacing=sweep.spacing if sweep else LINEAR,
-            name=sweep.name if sweep else "tau",
-            quantity=TIME,
-        )
-        self._changed()
-
-    def clear_sweep(self) -> None:
-        self.timeline.sweep = None
-        self._changed()
-
-    def set_sweep_quantity(self, quantity: str | None) -> None:
-        """Switch what this sequence sweeps — nothing, a drawn time, or
-        the microwave frequency.
-
-        The two sweeps are different enough to need this: a time sweep
-        lives on the canvas as marked regions the pulser stretches, and a
-        frequency sweep has nothing to mark because the drawn pattern
-        never changes. Everything else about the sequence is identical,
-        which is why this is one control rather than a second editor.
-        """
-        current = self.timeline.sweep.to_dict() if self.timeline.sweep else {}
-        if quantity is None:
-            self.timeline.sweep = None
-        elif quantity == FREQUENCY:
-            # A name and a unit carried over from a time sweep would label
-            # a gigahertz axis "tau" in seconds, and its endpoints would be
-            # nanoseconds — hence the rig defaults, and the `> 1e6` test,
-            # which asks whether the stored endpoint is already a frequency.
-            self.timeline.sweep = SweepAxis.from_dict({
-                **current,
-                "quantity": FREQUENCY,
-                "regions": [],
-                "name": _renamed(current.get("name"), "tau", FREQUENCY),
-                "unit": "Hz",
-                "start_value": current.get("start_value") or 2.82e9,
-                "stop_value": (
-                    current["stop_value"]
-                    if current.get("stop_value", 0.0) > 1e6 else 2.92e9
-                ),
-            })
-        else:
-            end = self.timeline.end or 1e-6
-            start = _snap(end * 0.5, self._snap)
-            regions = current.get("regions") or [
-                {"start": start, "stop": start + max(self._snap * 2, 20e-9)}
-            ]
-            self.timeline.sweep = SweepAxis.from_dict({
-                **current,
-                "quantity": TIME,
-                "regions": regions,
-                "name": _renamed(current.get("name"), FREQUENCY, "tau"),
-                "unit": "s",
-                "stop_value": (
-                    0.0 if current.get("stop_value", 0.0) > 1e6
-                    else current.get("stop_value", 0.0)
-                ),
-            })
-        self._changed()
-
     def set_sweep(self, **fields: Any) -> None:
-        """Replace the sweep axis's settings, keeping its regions."""
-        sweep = self.timeline.sweep
-        if sweep is None:
-            return
-        current = sweep.to_dict()
+        """Change the shared axis every marked pulse follows."""
+        current = (self.timeline.sweep or SweepAxis()).to_dict()
         current.update(fields)
         self.timeline.sweep = SweepAxis.from_dict(current)
         self._changed()
+
+    def sweep_selected(self, quantity: str) -> None:
+        """Mark or unmark the selected pulse as swept.
+
+        Switching quantity clears the other kind from every *other* pulse
+        as well: a measurement has one x-axis, so a drawing with one pulse
+        sweeping its length and another sweeping the frequency describes
+        nothing. Refusing it at save time and leaving it on screen would
+        be the worse half of that trade.
+        """
+        if self._selected is None:
+            return
+        chosen = self._selected.pulse
+        track = self.timeline.tracks[self._selected.lane]
+        if chosen not in track.pulses:
+            return
+
+        # Marked first, and by identity: clearing the others beforehand
+        # replaced the selected pulse too when it was the one changing
+        # quantity, and the mark then landed on an object no longer in
+        # the track.
+        self._update_selected(sweep=quantity)
+        if quantity:
+            length = self._selected.pulse.duration
+            for other in self.timeline.tracks:
+                for index, pulse in enumerate(other.pulses):
+                    if pulse is self._selected.pulse or not pulse.sweep:
+                        continue
+                    if pulse.sweep != quantity:
+                        other.pulses[index] = replace(pulse, sweep="")
+                    elif quantity == DURATION:
+                        # Siblings on one axis take the same value at each
+                        # point, so a newly marked pulse joins at the
+                        # length the axis already has rather than being
+                        # refused at save time.
+                        length = pulse.duration
+            if quantity == DURATION:
+                self._match_swept_lengths(length)
+        self._seed_axis(quantity)
+        self._changed()
+
+    def _seed_axis(self, quantity: str) -> None:
+        """Give a freshly marked axis endpoints worth showing.
+
+        A duration sweep's first value is the pulse someone drew, so only
+        the far end needs a guess — ten times the length, which is a
+        visible sweep rather than a flat line. A frequency sweep has
+        nothing drawn to read, so both ends come from the NV zero-field
+        splitting, the one number every such rig starts from.
+        """
+        axis = self.timeline.sweep
+        if quantity == DURATION:
+            first = self.timeline.swept[0].duration if self.timeline.swept else 0.0
+            if axis is None or axis.stop <= first:
+                self.timeline.sweep = replace(
+                    axis or SweepAxis(), start=0.0, stop=first * 10 or 1e-6,
+                )
+        elif quantity == FREQUENCY and (axis is None or axis.stop < 1e6):
+            self.timeline.sweep = replace(
+                axis or SweepAxis(), start=2.82e9, stop=2.92e9,
+            )
+
+    def _update_selected(self, **fields: Any) -> None:
+        """Replace the selected pulse with one differing in `fields`."""
+        if self._selected is None:
+            return
+        track = self.timeline.tracks[self._selected.lane]
+        if self._selected.pulse not in track.pulses:
+            return
+        position = track.pulses.index(self._selected.pulse)
+        track.pulses[position] = replace(track.pulses[position], **fields)
+        self._selected.pulse = track.pulses[position]
 
     def _snap_changed(self) -> None:
         self._snap = float(self.snap_combo.currentData())
@@ -586,86 +706,92 @@ class PulseTimelineWidget(QWidget):
         self._show_selection()
         self.sigSelectionChanged.emit(item.pulse)
 
-    def _region_moved(self, item: pg.LinearRegionItem) -> None:
-        sweep = self.timeline.sweep
-        if sweep is None:
-            return
-        start, stop = (_snap(v, self._snap) for v in item.getRegion())
-        if stop <= start:
-            stop = start + self._snap
-        regions = list(sweep.regions)
-        regions[item.region_index] = Region(start, stop)
-        # Every region takes the same value each point, so moving one edge
-        # resizes the others rather than producing an axis that sweeps two
-        # different things under one name.
-        length = stop - start
-        regions = [
-            region if index == item.region_index else Region(region.start, region.start + length)
-            for index, region in enumerate(regions)
-        ]
-        self.timeline.sweep = SweepAxis.from_dict(
-            {**sweep.to_dict(), "regions": [r.to_dict() for r in regions]}
-        )
-        self._changed()
-
     def _edited(self) -> None:
         """The inspector changed something about the selected pulse."""
         if self._silent or self._selected is None:
             return
-        track = self.timeline.tracks[self._selected.lane]
-        if self._selected.pulse not in track.pulses:
-            return
         start = float(self.pulse_start.value())
         length = max(float(self.pulse_length.value()), 0.0)
-        position = track.pulses.index(self._selected.pulse)
-        track.pulses[position] = Pulse(
-            start, start + length, self._selected.pulse.value, self.pulse_name.text()
+        self._update_selected(
+            start=start, stop=start + length, name=self.pulse_name.text()
         )
+        # Resizing a swept pulse moves the axis's first value with it, and
+        # its siblings have to follow: they all take the same value at each
+        # point, so leaving them behind would make the sequence unplayable
+        # the moment you dragged one edge.
+        if self._selected is not None and self._selected.pulse.sweep == DURATION:
+            self._match_swept_lengths(length)
         self._changed()
+
+    def _match_swept_lengths(self, length: float) -> None:
+        for track in self.timeline.tracks:
+            for index, pulse in enumerate(track.pulses):
+                if pulse.sweep == DURATION and abs(pulse.duration - length) > 1e-15:
+                    track.pulses[index] = replace(pulse, stop=pulse.start + length)
+                    # Resizing the pulse someone has selected leaves the
+                    # selection pointing at an object no longer in the
+                    # track, and the rebuild then finds nothing to
+                    # reselect — the inspector empties itself mid-edit.
+                    if self._selected is not None and self._selected.pulse is pulse:
+                        self._selected.pulse = track.pulses[index]
+
+    def _drives_changed(self, checked: bool) -> None:
+        if self._silent:
+            return
+        self._update_selected(drives=bool(checked))
+        self._changed()
+
+    def _sweep_changed(self) -> None:
+        if self._silent:
+            return
+        self.sweep_selected(self.sweep_combo.currentData() or "")
+
+    def _axis_edited(self) -> None:
+        if self._silent:
+            return
+        self.set_sweep(
+            points=int(self.axis_points.value()),
+            start=float(self.axis_start.value()),
+            stop=float(self.axis_stop.value()),
+            spacing=self.axis_spacing.currentData(),
+            name=self.axis_name.text().strip(),
+        )
 
     def _shape_changed(self) -> None:
         if self._silent or self._selected is None:
             return
         name = self.shape_combo.currentData() or ""
-        track = self.timeline.tracks[self._selected.lane]
-        if self._selected.pulse not in track.pulses:
-            return
-        position = track.pulses.index(self._selected.pulse)
-        current = track.pulses[position]
         # A shape's parameters belong to the shape: a Gauss inheriting a
         # Chirp's start_frequency would be a silent wrong answer.
-        value = SHAPES[name]() if name else True
-        track.pulses[position] = Pulse(current.start, current.stop, value, current.name)
+        self._update_selected(value=SHAPES[name]() if name else True)
         self._changed()
 
     def _shape_param_changed(self, parameter: str, value: float) -> None:
-        if self._selected is None:
+        if self._selected is None or not self._selected.pulse.analog:
             return
-        track = self.timeline.tracks[self._selected.lane]
-        if self._selected.pulse not in track.pulses:
-            return
-        position = track.pulses.index(self._selected.pulse)
-        current = track.pulses[position]
-        if not current.analog:
-            return
-        shape = type(current.value)
-        fields = {p.name: getattr(current.value, p.name) for p in shape.params}
+        # Through `_update_selected` rather than rebuilding the pulse from
+        # its positional fields: a rebuilt one silently loses every field
+        # the constructor call does not mention, which is how typing a
+        # carrier frequency used to unmark a swept pulse.
+        current = self._selected.pulse.value
+        shape = type(current)
+        fields = {p.name: getattr(current, p.name) for p in shape.params}
         fields[parameter] = float(value)
-        track.pulses[position] = Pulse(
-            current.start, current.stop, shape(**fields), current.name
-        )
+        self._update_selected(value=shape(**fields))
         self._changed(rebuild=False)
 
     # --- Selection ---------------------------------------------------------
 
     def _show_selection(self) -> None:
         pulse = self._selected.pulse if self._selected else None
+        lane = self._selected.lane if self._selected else -1
         self._silent = True
         try:
             for widget in (self.pulse_name, self.pulse_start, self.pulse_length,
-                           self.shape_combo):
+                           self.shape_combo, self.drives_check, self.sweep_combo):
                 widget.setEnabled(pulse is not None)
             self.hint.setVisible(pulse is None)
+            self.axis_form.setVisible(pulse is not None and bool(pulse.sweep))
             if pulse is None:
                 self.pulse_name.setText("")
                 self._build_shape_form(None)
@@ -676,8 +802,94 @@ class PulseTimelineWidget(QWidget):
             shape = type(pulse.value).__name__ if pulse.analog else ""
             self.shape_combo.setCurrentIndex(max(self.shape_combo.findData(shape), 0))
             self._build_shape_form(pulse)
+            self._show_drives(pulse, lane)
+            self._fill_sweep_combo(lane)
+            self.sweep_combo.setCurrentIndex(
+                max(self.sweep_combo.findData(pulse.sweep), 0)
+            )
+            self._show_axis(pulse)
         finally:
             self._silent = False
+
+    def _fill_sweep_combo(self, lane: int) -> None:
+        """Only what this pulse's lane can actually sweep.
+
+        A length is a property of any drawn interval, so every pulse is
+        offered one — a drive, a gate, a gap. A *carrier* is a property of
+        a drive, so the frequency is offered only on a microwave lane:
+        a laser line and a counter gate are on/off, with nothing to tune.
+        Offering it there and refusing it at save time would be the worse
+        half of that trade.
+        """
+        channel = (
+            self.timeline.tracks[lane].channel
+            if 0 <= lane < len(self.timeline.tracks) else ""
+        )
+        drive = channel not in (self._laser, self._readout) and bool(channel)
+        self.sweep_combo.clear()
+        self.sweep_combo.addItem("Fixed", "")
+        self.sweep_combo.addItem("Sweep its length", DURATION)
+        if drive:
+            self.sweep_combo.addItem("Sweep the MW frequency", FREQUENCY)
+
+    def _show_drives(self, pulse: Pulse, lane: int) -> None:
+        """One checkbox, labelled by what the lane it is on makes it mean.
+
+        On the readout lane it is "does this count as a measurement"; on
+        any other it is "does this drive the channel, or just hold time".
+        Two questions in the same field because they are the same
+        question, and a person reading the inspector should see the one
+        that applies to the pulse in front of them.
+        """
+        readout = (
+            0 <= lane < len(self.timeline.tracks)
+            and self.timeline.tracks[lane].channel == self._readout
+        )
+        self.drives_check.setText(
+            "Measurement — opens the counter gate" if readout
+            else "Drives this channel"
+        )
+        self.drives_check.setToolTip(
+            "Unchecked makes this a timing block: it holds its span of the "
+            "timeline and can be swept, but the channel stays low across "
+            "it. That is how a gap — a Ramsey's free evolution, a T1's "
+            "wait — becomes something you can click, name and sweep."
+            + (
+                "\n\nOn this lane, unchecked also means the run does not "
+                "count it as a readout."
+                if readout else ""
+            )
+        )
+        self.drives_check.setChecked(pulse.drives)
+
+    def _show_axis(self, pulse: Pulse) -> None:
+        """The shared axis, in the units the marked quantity is measured
+        in — seconds for a length, hertz for a carrier."""
+        if not pulse.sweep:
+            return
+        axis = self.timeline.sweep or SweepAxis()
+        frequency = pulse.sweep == FREQUENCY
+        for box in (self.axis_start, self.axis_stop):
+            box.setOpts(suffix="Hz" if frequency else "s")
+
+        self.axis_start.setValue(axis.start or (0.0 if frequency else pulse.duration))
+        self.axis_stop.setValue(axis.stop)
+        self.axis_points.setValue(axis.points)
+        self.axis_spacing.setCurrentIndex(
+            max(self.axis_spacing.findData(axis.spacing), 0)
+        )
+        self.axis_name.setText(axis.name)
+        self.axis_name.setPlaceholderText("frequency" if frequency else "tau")
+        self.axis_start.setToolTip(
+            "Where the sweep starts. Leave at zero for a length sweep to "
+            "take the pulse as you drew it."
+            if not frequency else "What the source emits at the first point."
+        )
+        marked = len(self.timeline.swept)
+        self.axis_form.setToolTip(
+            f"One axis, shared by {marked} marked pulse(s) — editing it "
+            f"here changes it for all of them."
+        )
 
     def _build_shape_form(self, pulse: Pulse | None) -> None:
         """One row per parameter the selected shape declares.
@@ -695,12 +907,12 @@ class PulseTimelineWidget(QWidget):
             return
 
         for parameter in type(pulse.value).params:
-            box = pg.SpinBox(
+            box = _sized(pg.SpinBox(
                 value=float(getattr(pulse.value, parameter.name)),
                 suffix=parameter.unit or None,
                 siPrefix=bool(parameter.unit),
                 dec=True, minStep=1e-12,
-            )
+            ))
             box.sigValueChanged.connect(
                 lambda widget, name=parameter.name: self._shape_param_changed(
                     name, float(widget.value())

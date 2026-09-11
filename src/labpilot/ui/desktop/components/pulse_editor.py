@@ -6,34 +6,42 @@ edits one of the workflow's own parameters, and running the workflow
 writes `~/.labpilot/sequences/<name>.json`.
 
 The editor **is** the timeline (`pulse_timeline.py`): one lane per
-instrument, pulses drawn on the lanes, sweep regions shaded across them.
-That template declares no `RESULT_UI`, so this dock is the whole window
-and the canvas gets nearly all of it — a second plot of the same picture
-beside it used to take half the space, and it was the half you could not
-edit. Everything here is chrome in a column to its right —
+instrument, pulses drawn on the lanes. That template declares no
+`RESULT_UI`, so this dock is the whole window and the canvas takes all
+the height — a second plot of the same picture used to sit beside it, and
+an inspector used to sit under it, and between them they left the canvas
+a third of the window.
 
-- **Sequence**: what the file will be called, and whether consecutive
-  readouts alternate signal and reference.
-- **Start from**: fill the canvas with one of `core/pulse/library.py`'s
-  experiments. A starting point to edit, not a mode: once filled, the
-  timeline is what gets saved, so a hand-moved gate stays moved.
-- **Sweep**: what this sequence varies — nothing, a drawn time, or the
-  microwave frequency — with its point count and spacing.
-- **Rig**: the profile a sequence is written against — Rabi period, laser
-  length and delay, wait time, the symbolic channel names, and whether
-  the microwave channel carries an analog shape or gates an external
-  source. Physics and naming conventions, not driver settings, which is
-  exactly why they are editable with nothing plugged in.
+So the layout is one canvas and one column, and the column holds three
+things:
 
-## Two kinds of sweep, one control
+- **Sequence** — the file's name, the folder it lands in, which
+  experiment **Start from** draws, and whether consecutive readouts
+  alternate signal and reference.
+- **Pulse** — everything about whatever is selected: name, time, shape,
+  whether it drives its channel, and whether the measurement sweeps it.
+- **Rig profile** — the physics a sequence is written against. Rabi
+  period, laser length and delay, wait time, the symbolic channel names.
+  Not driver settings, which is exactly why they are editable with
+  nothing plugged in.
 
-A **time** sweep marks regions on the canvas and the pulser stretches
-them: one pass plays every point. A **frequency** sweep leaves the drawn
-pattern completely alone and steps the microwave source between passes,
-because no pulse duration can encode a carrier frequency. Nothing else
-about the two differs — same tracks, same measurement lane, same
-extraction — so it is one combo box rather than a second editor, and the
-regions controls simply have nothing to do in frequency mode.
+## What is not here any more
+
+A track picker and an Add button (double-click the lane and the moment
+you want); a Sweep panel (a sweep is a property of a pulse, so it is
+edited from the pulse); a "No sweep" button and an "Add region" button
+(marking a second pulse is what adds a second place tau appears). Each of
+them was a second way to say something the canvas already says.
+
+## Two kinds of sweep, both on the pulse
+
+**Its length**: the pulse grows point by point and everything after it
+shifts, and the pulser plays the whole sweep in one pass. Offered on
+every pulse, because any drawn interval has a length.
+
+**The microwave frequency**: the drawing never changes and the bound
+source steps between passes. Offered only on a drive — a laser line and a
+counter gate are on/off, with no carrier to move.
 
 ## Where the lanes come from
 
@@ -64,14 +72,23 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QScrollArea,
-    QSpinBox,
     QSplitter,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from labpilot.core.pulse.tracks import FREQUENCY, LINEAR, LOG, TIME, Timeline
+from labpilot.core.config.paths import sequence_dir
+from labpilot.core.pulse.sequence import SequenceError
+from labpilot.core.pulse.store import slug
+from labpilot.core.pulse.tracks import Timeline
+
+
+def sequence_folder() -> str:
+    """Where saving puts the file. Named in the dock rather than left to
+    be discovered, because "where did it go" is the first question after
+    pressing Save."""
+    return str(sequence_dir())
 
 __all__ = ["PulseEditorControlWidget"]
 
@@ -149,6 +166,7 @@ class PulseEditorControlWidget(QWidget):
             Timeline.from_dict(self._params.get("TIMELINE") or {}),
             self.channels_from(self._params),
             readout=self.readout_from(self._params),
+            laser=str(self._params.get("LASER_CHANNEL") or ""),
         )
         self.timeline.sigTimelineChanged.connect(self._on_timeline_changed)
         self.timeline.sigSelectionChanged.connect(lambda _pulse: self._describe())
@@ -180,14 +198,15 @@ class PulseEditorControlWidget(QWidget):
         column.addWidget(self._sequence_group())
 
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._sweep_group(), "Sweep")
-        self.tabs.addTab(self._build_rig_tab(), "Rig")
+        # The pulse first: it is what you edit, and the rig profile is
+        # what you set once.
+        self.tabs.addTab(self.timeline.inspector, "Pulse")
+        self.tabs.addTab(self._build_rig_tab(), "Rig profile")
         column.addWidget(self.tabs, 1)
 
         self.generate_button = IconButton("Save sequence", "document-save")
         self.generate_button.setToolTip(
-            "Validate what is drawn and write it to "
-            "~/.labpilot/sequences/<name>.json"
+            f"Validate what is drawn and write it to {sequence_folder()}"
         )
         self.generate_button.clicked.connect(lambda _checked=False: self.sigGenerate.emit())
         column.addWidget(self.generate_button)
@@ -208,11 +227,24 @@ class PulseEditorControlWidget(QWidget):
         form = QFormLayout(box)
 
         self.name_edit = QLineEdit(str(self._params.get("SEQUENCE_NAME", "")))
-        self.name_edit.setPlaceholderText("Saved as ~/.labpilot/sequences/<name>.json")
-        self.name_edit.editingFinished.connect(
-            lambda: self.sigParamChanged.emit("SEQUENCE_NAME", self.name_edit.text())
+        self.name_edit.setPlaceholderText("rabi")
+        self.name_edit.editingFinished.connect(self._on_name_changed)
+        form.addRow("Name:", self.name_edit)
+
+        # The folder, spelled out. Saving writes one abstract JSON file
+        # named after the sequence, and where it lands is the first thing
+        # you need in order to find it again, copy it or share it.
+        self.path_label = QLabel("")
+        self.path_label.setWordWrap(True)
+        self.path_label.setStyleSheet("color: #888;")
+        self.path_label.setToolTip(
+            "Device-independent: symbolic channels, seconds and volts, no "
+            "sample rate and no channel numbers. Whichever pulser the "
+            "measurement binds compiles it — that is what lets one file "
+            "run on any rig."
         )
-        form.addRow("Save as:", self.name_edit)
+        form.addRow("File:", self.path_label)
+        self._update_path()
 
         start = QWidget()
         row = QHBoxLayout(start)
@@ -253,186 +285,68 @@ class PulseEditorControlWidget(QWidget):
         form.addRow(self.alternating_check)
         return box
 
-    # --- The Sweep tab ----------------------------------------------------
+    # --- Where the file goes ----------------------------------------------
 
-    def _sweep_group(self) -> QWidget:
-        page = QWidget()
-        # The form in its own widget above a stretch, so the rows keep
-        # their natural heights instead of being spread down the tab.
-        column = QVBoxLayout(page)
-        column.setContentsMargins(0, 0, 0, 0)
-        box = QWidget()
-        column.addWidget(box)
-        column.addStretch(1)
-        form = QFormLayout(box)
+    def _on_name_changed(self) -> None:
+        self.sigParamChanged.emit("SEQUENCE_NAME", self.name_edit.text())
+        self._params["SEQUENCE_NAME"] = self.name_edit.text()
+        self._update_path()
 
-        self.quantity_combo = QComboBox()
-        self.quantity_combo.addItem("Nothing — one fixed point", None)
-        self.quantity_combo.addItem("Time — the shaded regions grow", TIME)
-        self.quantity_combo.addItem("Microwave frequency", FREQUENCY)
-        self.quantity_combo.setToolTip(
-            "Time: the marked regions on the canvas stretch point by point "
-            "and the pulser plays the whole sweep in one pass — Rabi, "
-            "Ramsey, Hahn echo, T1.\n\n"
-            "Microwave frequency: the drawn pattern never changes and the "
-            "bound source steps between passes, because no pulse duration "
-            "can encode a carrier. That is a pulsed ODMR, and it needs a "
-            "'microwave' role bound when the measurement runs."
-        )
-        index = self.quantity_combo.findData(self._current_quantity())
-        self.quantity_combo.setCurrentIndex(max(index, 0))
-        self.quantity_combo.currentIndexChanged.connect(self._on_quantity_changed)
-        form.addRow("Sweep over:", self.quantity_combo)
-
-        self.sweep_name = QLineEdit(self._sweep_field("name", "tau"))
-        self.sweep_name.editingFinished.connect(
-            lambda: self.timeline.set_sweep(name=self.sweep_name.text() or "tau")
-        )
-        form.addRow("Name:", self.sweep_name)
-
-        self.sweep_points = QSpinBox()
-        self.sweep_points.setRange(1, 1_000_000)
-        self.sweep_points.setValue(int(self._sweep_field("points", 50)))
-        self.sweep_points.valueChanged.connect(
-            lambda value: self.timeline.set_sweep(points=int(value))
-        )
-        form.addRow("Points:", self.sweep_points)
-
-        self.spacing_combo = QComboBox()
-        self.spacing_combo.addItem("Linear (constant step)", LINEAR)
-        self.spacing_combo.addItem("Logarithmic (spans decades)", LOG)
-        index = self.spacing_combo.findData(self._sweep_field("spacing", LINEAR))
-        self.spacing_combo.setCurrentIndex(max(index, 0))
-        self.spacing_combo.setToolTip(
-            "A T1 decay spans decades, so linear spacing wastes almost every "
-            "point. Log spacing becomes one block per point, since no "
-            "constant increment produces a geometric series."
-        )
-        self.spacing_combo.currentIndexChanged.connect(self._on_spacing_changed)
-        form.addRow("Spacing:", self.spacing_combo)
-
-        self.sweep_step = _time_spinbox(self._sweep_field("step", 20e-9))
-        self.sweep_step.sigValueChanged.connect(
-            lambda box: self.timeline.set_sweep(step=float(box.value()))
-        )
-        self.step_row = _row(form, "Step:", self.sweep_step)
-
-        self.sweep_start = _sized(pg.SpinBox(
-            value=float(self._sweep_field("start_value", 2.82e9)),
-            bounds=(0.0, None), suffix="Hz", siPrefix=True, step=1e6, dec=True,
-        ))
-        self.sweep_start.setToolTip("What the source emits at the first point.")
-        self.sweep_start.sigValueChanged.connect(
-            lambda box: self.timeline.set_sweep(start_value=float(box.value()))
-        )
-        self.start_row = _row(form, "First value:", self.sweep_start)
-
-        self.sweep_stop = _time_spinbox(self._sweep_field("stop_value", 0.0))
-        self.sweep_stop.sigValueChanged.connect(
-            lambda box: self.timeline.set_sweep(stop_value=float(box.value()))
-        )
-        self.stop_row = _row(form, "Last value:", self.sweep_stop)
-
-        self.sweep_stop_hz = _sized(pg.SpinBox(
-            value=float(self._sweep_field("stop_value", 2.92e9)),
-            bounds=(0.0, None), suffix="Hz", siPrefix=True, step=1e6, dec=True,
-        ))
-        self.sweep_stop_hz.sigValueChanged.connect(
-            lambda box: self.timeline.set_sweep(stop_value=float(box.value()))
-        )
-        self.stop_hz_row = _row(form, "Last value:", self.sweep_stop_hz)
-
-        self.region_buttons = QWidget()
-        row = QHBoxLayout(self.region_buttons)
-        row.setContentsMargins(0, 0, 0, 0)
-        add = IconButton("Add region", "list-add")
-        add.setToolTip(
-            "Mark another interval that takes the same value. A Ramsey's "
-            "tau appears once per alternating arm and a Hahn echo's twice, "
-            "and they all grow together."
-        )
-        add.clicked.connect(lambda _checked=False: self.timeline.add_sweep_region())
-        row.addWidget(add)
-        form.addRow(self.region_buttons)
-
-        self.sweep_hint = QLabel("")
-        self.sweep_hint.setWordWrap(True)
-        self.sweep_hint.setStyleSheet("color: #888;")
-        form.addRow(self.sweep_hint)
-
-        self._update_sweep_fields()
-        return page
-
-    def _sweep_field(self, key: str, default: Any) -> Any:
-        sweep = (self._params.get("TIMELINE") or {}).get("sweep") or {}
-        return sweep.get(key, default)
-
-    def _current_quantity(self) -> str | None:
-        sweep = (self._params.get("TIMELINE") or {}).get("sweep")
-        return sweep.get("quantity", TIME) if sweep else None
-
-    def _on_quantity_changed(self) -> None:
-        self.timeline.set_sweep_quantity(self.quantity_combo.currentData())
-        self._sync_sweep_fields()
-
-    def _on_spacing_changed(self) -> None:
-        self.timeline.set_sweep(spacing=self.spacing_combo.currentData())
-        self._update_sweep_fields()
-
-    def _update_sweep_fields(self) -> None:
-        """Show only the fields this kind of sweep actually reads.
-
-        A constant step and a last value are alternatives, not both, and a
-        frequency sweep reads neither the step nor any region — showing a
-        field that does nothing is how someone spends an afternoon tuning
-        one that is never read.
-        """
-        quantity = self.quantity_combo.currentData()
-        logarithmic = self.spacing_combo.currentData() == LOG
-        frequency = quantity == FREQUENCY
-        swept = quantity is not None
-
-        for widget in (self.sweep_name, self.sweep_points, self.spacing_combo):
-            widget.setEnabled(swept)
-        _show(self.step_row, swept and not frequency and not logarithmic)
-        _show(self.stop_row, swept and not frequency and logarithmic)
-        _show(self.start_row, frequency)
-        _show(self.stop_hz_row, frequency)
-        self.region_buttons.setVisible(swept and not frequency)
-
-        if not swept:
-            self.sweep_hint.setText(
-                "The sequence plays once, unchanged. One point, no axis."
-            )
-        elif frequency:
-            self.sweep_hint.setText(
-                "Nothing is marked on the canvas: the pattern plays unchanged "
-                "and the bound microwave source steps between passes. The "
-                "measurement needs a 'microwave' role bound."
-            )
-        else:
-            self.sweep_hint.setText(
-                "The shaded regions take this value; everything after them "
-                "shifts as they grow."
-            )
+    def _update_path(self) -> None:
+        name = self.name_edit.text().strip() or "rabi"
+        try:
+            filename = f"{slug(name)}.json"
+        except Exception:
+            filename = "<not a usable filename>"
+        self.path_label.setText(f"{sequence_folder()}/{filename}")
 
     # --- The Rig tab ------------------------------------------------------
 
     def _build_rig_tab(self) -> QWidget:
+        """Your rig's numbers — what **Start from** draws with.
+
+        Not driver settings, and that is the point: every value here is
+        physics or naming, so it is editable with nothing plugged in,
+        which is what lets a sequence be designed away from the lab. A
+        pulser's sample rate, memory granularity and channel numbers are
+        deliberately absent — they belong to whichever device eventually
+        plays the file, and the editor does not know which that is.
+        """
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(8, 8, 8, 8)
 
+        preamble = QLabel(
+            "Your rig's own numbers. <b>Start from</b> draws the standard "
+            "experiments with these, and a hand-drawn sequence is written "
+            "against them.<br><br>Nothing here is a driver setting — no "
+            "sample rate, no channel numbers — so it is all editable with "
+            "nothing connected, and the saved file runs on any pulser."
+        )
+        preamble.setWordWrap(True)
+        preamble.setStyleSheet("color: #888;")
+        layout.addWidget(preamble)
+
         timing = QGroupBox("Timing")
         timing_form = QFormLayout(timing)
         self._rig_spins: dict[str, pg.SpinBox] = {}
-        for label, name, default in (
-            ("Rabi period:", "RABI_PERIOD", 200e-9),
-            ("Laser length:", "LASER_LENGTH", 3e-6),
-            ("Laser delay:", "LASER_DELAY", 700e-9),
-            ("Wait time:", "WAIT_TIME", 1e-6),
+        for label, name, default, tip in (
+            ("Rabi period:", "RABI_PERIOD", 200e-9,
+             "One full Rabi oscillation. A pi pulse is half of it and a "
+             "pi/2 pulse a quarter, so every experiment's drive lengths "
+             "come from this one number — calibrate it with a Rabi."),
+            ("Laser length:", "LASER_LENGTH", 3e-6,
+             "How long the readout laser stays on. Long enough to collect "
+             "photons, short enough not to repolarise before you have."),
+            ("Laser delay:", "LASER_DELAY", 700e-9,
+             "Between the readout window closing and the laser actually "
+             "being off: cable length, AOM rise time, photon travel."),
+            ("Wait time:", "WAIT_TIME", 1e-6,
+             "Repolarisation before the next repetition, so each point "
+             "starts from the same spin state."),
         ):
             spin = _time_spinbox(self._params.get(name, default))
+            spin.setToolTip(tip)
             spin.sigValueChanged.connect(
                 lambda sb, key=name: self.sigParamChanged.emit(key, sb.value())
             )
@@ -520,7 +434,10 @@ class PulseEditorControlWidget(QWidget):
         # Clearing the gate makes the laser lane the measurement, which is
         # the rule the sequence itself applies — so the mark has to move
         # with it rather than stay on a lane that no longer gates anything.
-        self.timeline.set_readout(self.readout_from(self._params))
+        self.timeline.set_roles(
+            str(self._params.get("LASER_CHANNEL") or ""),
+            self.readout_from(self._params),
+        )
 
     def _on_analog_toggled(self, analog: bool) -> None:
         self.sigParamChanged.emit("ANALOG_MW", analog)
@@ -537,66 +454,40 @@ class PulseEditorControlWidget(QWidget):
 
     def _on_timeline_changed(self, data: Any) -> None:
         self.sigParamChanged.emit("TIMELINE", data)
-        self._sync_sweep_fields()
         self._describe()
-
-    def _sync_sweep_fields(self) -> None:
-        """Dragging a region's edge changes its length, and the sweep's
-        first value with it — so the fields follow the canvas rather than
-        showing what was typed before the drag."""
-        sweep = self.timeline.timeline.sweep
-        widgets = (
-            self.quantity_combo, self.sweep_name, self.sweep_points,
-            self.spacing_combo, self.sweep_step, self.sweep_stop,
-            self.sweep_start, self.sweep_stop_hz,
-        )
-        for widget in widgets:
-            widget.blockSignals(True)
-        try:
-            quantity = sweep.quantity if sweep is not None else None
-            self.quantity_combo.setCurrentIndex(
-                max(self.quantity_combo.findData(quantity), 0)
-            )
-            if sweep is not None:
-                self.sweep_name.setText(sweep.name)
-                self.sweep_points.setValue(sweep.points)
-                self.spacing_combo.setCurrentIndex(
-                    max(self.spacing_combo.findData(sweep.spacing), 0)
-                )
-                if sweep.stepped:
-                    self.sweep_start.setValue(sweep.start_value)
-                    self.sweep_stop_hz.setValue(sweep.stop_value)
-                else:
-                    self.sweep_step.setValue(sweep.step)
-                    self.sweep_stop.setValue(sweep.stop_value)
-        finally:
-            for widget in widgets:
-                widget.blockSignals(False)
-        self._update_sweep_fields()
 
     def _describe(self) -> None:
         """What is drawn, in one line — the count a person checks before
         pressing Save."""
         line = self.timeline.timeline
-        sweep = line.sweep
         pulses = sum(len(track.pulses) for track in line.tracks)
+        readouts = sum(
+            len(track.driving) for track in line.tracks
+            if track.channel == self.readout_from(self._params)
+        )
         parts = [
             f"{len(line.tracks)} track(s)",
             f"{pulses} pulse(s)",
+            f"{readouts} readout(s)",
             f"{pg.siFormat(line.end, suffix='s')} long",
         ]
-        if sweep is None:
-            parts.append("no sweep")
-        elif sweep.stepped:
-            parts.append(
-                f"{sweep.name}: {sweep.points} points, "
-                f"{pg.siFormat(sweep.start_value, suffix='Hz')} to "
-                f"{pg.siFormat(sweep.stop_value, suffix='Hz')} (stepped)"
-            )
+        try:
+            values = line.sweep_values()
+        except SequenceError as error:
+            parts.append(str(error))
+            self.status.setText(" · ".join(parts))
+            return
+
+        if values is None:
+            parts.append("no sweep — mark a pulse to sweep it")
         else:
+            marked = len(line.swept)
+            unit = values.unit
             parts.append(
-                f"{sweep.name}: {sweep.points} points over "
-                f"{len(sweep.regions)} region(s)"
+                f"{values.name}: {len(values)} points, "
+                f"{pg.siFormat(values.values[0], suffix=unit)} to "
+                f"{pg.siFormat(values.values[-1], suffix=unit)} "
+                f"over {marked} pulse(s)"
             )
         self.status.setText(" · ".join(parts))
 

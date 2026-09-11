@@ -14,17 +14,18 @@ region cut in half by another track.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from labpilot.core.pulse import SequenceError, Sin
 from labpilot.core.pulse.library import RigProfile, build
 from labpilot.core.pulse.tracks import (
+    DURATION,
     FREQUENCY,
     LINEAR,
     LOG,
-    TIME,
     Pulse,
-    Region,
     SweepAxis,
     Timeline,
     Track,
@@ -51,8 +52,28 @@ def simple(sweep: SweepAxis | None = None, duration: float = 5 * US) -> Timeline
     )
 
 
-def tau(start: float, stop: float, **kwargs) -> SweepAxis:
-    return SweepAxis(regions=(Region(start, stop),), **kwargs)
+def swept(line: Timeline, *spans: tuple[float, float], **axis) -> Timeline:
+    """Mark the pulses covering `spans` as swept, and set the axis.
+
+    The sweep is per-pulse now, so a test marks the pulse rather than
+    dragging a region over it — and a span with no pulse under it becomes
+    a timing block, which is how a *gap* is swept.
+    """
+    for start, stop in spans:
+        for track in line.tracks:
+            for index, pulse in enumerate(track.pulses):
+                if abs(pulse.start - start) < 1e-15 and abs(pulse.stop - stop) < 1e-15:
+                    track.pulses[index] = replace(pulse, sweep=DURATION)
+                    break
+            else:
+                continue
+            break
+        else:
+            line.tracks[-1].pulses.append(
+                Pulse(start, stop, True, "tau", sweep=DURATION, drives=False)
+            )
+    line.sweep = SweepAxis(**axis)
+    return line
 
 
 # --- Every edge is an element boundary --------------------------------------
@@ -152,99 +173,157 @@ def test_a_pulse_cannot_start_before_zero():
         Pulse(-US, US)
 
 
-# --- The sweep is a set of regions ------------------------------------------
+# --- The sweep belongs to a pulse -------------------------------------------
 
 
-def test_a_region_becomes_an_increment_and_a_repetition_count():
+def test_a_swept_pulse_becomes_an_increment_and_a_repetition_count():
     """The model's own sweep primitive: one block, played `points` times,
-    one element growing by `step` each pass."""
-    sequence = simple(tau(0.0, 20 * NS, points=50, step=20 * NS)).to_sequence("rabi")
+    one element growing each pass."""
+    line = swept(simple(), (0.0, 20 * NS), points=50, stop=1000 * NS)
+    sequence = line.to_sequence("rabi")
     block = sequence.blocks[0]
     assert block.repetitions == 50
     assert [e.increment for e in block.elements] == pytest.approx([20 * NS, 0.0, 0.0])
     assert sequence.points == 50
 
 
-def test_the_region_may_be_a_gap_rather_than_a_pulse():
-    """Ramsey's tau is idle time between two pulses. A gap is not a drawn
-    object, so a per-pulse increment could not express it at all."""
+def test_the_swept_pulse_may_be_a_gap_that_drives_nothing():
+    """Ramsey's tau is idle time between two pulses. Drawing it as a
+    timing block is what makes it an object you can click and mark — the
+    whole reason the sweep stopped being a free-floating region."""
     line = Timeline(
         tracks=[
             Track("mw", [Pulse(0.0, 50 * NS, Sin()), Pulse(100 * NS, 150 * NS, Sin())]),
-            Track("gate", [Pulse(150 * NS, 3150 * NS)]),
+            Track("gate", [
+                Pulse(150 * NS, 3150 * NS),
+                Pulse(50 * NS, 100 * NS, True, "tau", sweep=DURATION, drives=False),
+            ]),
             Track("laser", [Pulse(150 * NS, 3150 * NS)]),
         ],
         duration=4 * US,
-        sweep=tau(50 * NS, 100 * NS, points=20, step=50 * NS),
+        sweep=SweepAxis(points=20, stop=1000 * NS),
     )
     sequence = line.to_sequence("ramsey")
-    swept = [e for e in sequence.blocks[0].elements if e.increment]
-    assert len(swept) == 1
-    assert swept[0].channels["mw"] is False  # it is the gap, not the pulse
+    marked = [e for e in sequence.blocks[0].elements if e.increment]
+    assert len(marked) == 1
+    # The timing block drives nothing, so the gate is low across it — it
+    # is the gap, not a readout.
+    assert marked[0].channels["gate"] is False
+    assert marked[0].channels["mw"] is False
     assert sequence.sweep.values[:3] == pytest.approx([50 * NS, 100 * NS, 150 * NS])
 
 
-def test_several_regions_grow_together_under_one_axis():
-    """A Ramsey's tau appears once per alternating arm and a Hahn echo's
-    twice. They are the same tau, so they are regions of one axis rather
-    than two sweeps that have to be kept in step by hand."""
-    line = simple(
-        SweepAxis(
-            regions=(Region(0.0, 20 * NS), Region(3020 * NS, 3040 * NS)),
-            points=10, step=20 * NS,
-        ),
-        duration=5 * US,
-    )
-    swept = [e for e in line.to_sequence("two", validate=False).blocks[0].elements if e.increment]
-    assert len(swept) == 2
-    assert all(e.increment == pytest.approx(20 * NS) for e in swept)
-
-
-def test_regions_of_different_lengths_are_refused():
-    """They take the same value each point, so starting different lengths
-    means the axis is sweeping two different things under one name."""
-    with pytest.raises(SequenceError, match="different lengths"):
-        SweepAxis(regions=(Region(0.0, 20 * NS), Region(1 * US, 1.1 * US)))
-
-
-def test_an_empty_region_says_to_drag_its_edges_apart():
-    with pytest.raises(SequenceError, match="empty"):
-        Region(US, US)
-
-
-def test_a_sweep_with_no_region_is_refused():
-    with pytest.raises(SequenceError, match="at least one"):
-        SweepAxis(regions=())
-
-
-def test_a_region_past_the_end_of_the_timeline_says_where_to_move_it():
-    """Marking a sweep out past everything drawn is a slip, and silently
-    extending the sequence to reach it would produce a run whose tau
-    measures dead air."""
-    with pytest.raises(SequenceError, match="past the end"):
-        simple(tau(8 * US, 9 * US), duration=5 * US).to_sequence("lost", validate=False)
-
-
-def test_a_region_cut_in_half_grows_only_its_second_part():
-    """Another track's edge inside the region splits it. The edge has to
-    stay where it was drawn, so the part after it is what grows — and the
-    region as a whole still measures the sweep's value."""
+def test_a_timing_block_on_the_readout_lane_is_not_a_readout():
+    """The same flag, read the way the readout lane makes it mean: a
+    driving pulse there opens the counter gate and a non-driving one is a
+    delay between readouts."""
     line = Timeline(
         tracks=[
-            Track("mw", [Pulse(0.0, 100 * NS, Sin())]),
-            Track("trigger", [Pulse(40 * NS, 60 * NS)]),  # cuts the region
+            Track("laser", [Pulse(0.0, 3 * US)]),
+            Track("gate", [
+                Pulse(0.0, 3 * US, name="readout"),
+                Pulse(4 * US, 5 * US, True, "wait", drives=False),
+            ]),
+        ],
+        duration=6 * US,
+    )
+    sequence = line.to_sequence("one")
+    assert sequence.readouts() == 1
+    # It still holds its time, which is the point of drawing it.
+    assert sequence.duration == pytest.approx(6 * US)
+
+
+def test_a_lane_holding_only_timing_blocks_is_not_a_channel():
+    """Writing it into every element as `False` would make the sequence
+    claim a channel the pulser then has to have free."""
+    line = Timeline(
+        tracks=[
+            Track("laser", [Pulse(0.0, 3 * US)]),
+            Track("gate", [Pulse(0.0, 3 * US)]),
+            Track("mw", [Pulse(4 * US, 5 * US, True, "tau", drives=False)]),
+        ],
+        duration=6 * US,
+    )
+    assert line.to_sequence("t1ish").channels == frozenset({"laser", "gate"})
+
+
+def test_several_marked_pulses_grow_together_under_one_axis():
+    """A Ramsey's tau appears once per alternating arm and a Hahn echo's
+    twice. Marking each of them is what says they are one axis rather than
+    two sweeps kept in step by hand."""
+    line = swept(
+        simple(), (0.0, 20 * NS), (3020 * NS, 3040 * NS),
+        points=10, stop=200 * NS,
+    )
+    block = line.to_sequence("two", validate=False).blocks[0]
+    marked = [e for e in block.elements if e.increment]
+    assert len(marked) == 2
+    assert all(e.increment == pytest.approx(20 * NS) for e in marked)
+
+
+def test_marked_pulses_of_different_lengths_are_refused():
+    """They take the same value at each point, so starting different
+    lengths means the axis sweeps two different things under one name."""
+    line = simple()
+    line.tracks[1].pulses[0] = replace(line.tracks[1].pulses[0], sweep=DURATION)
+    line.tracks[2].pulses[0] = replace(line.tracks[2].pulses[0], sweep=DURATION)
+    line.sweep = SweepAxis(points=5, stop=US)
+    with pytest.raises(SequenceError, match="different lengths"):
+        line.to_sequence("mismatched", validate=False)
+
+
+def test_a_pulse_cannot_sweep_two_things_at_once():
+    line = simple()
+    line.tracks[1].pulses[0] = replace(line.tracks[1].pulses[0], sweep=DURATION)
+    line.tracks[2].pulses[0] = replace(line.tracks[2].pulses[0], sweep=FREQUENCY)
+    with pytest.raises(SequenceError, match="one x-axis"):
+        line.to_sequence("confused", validate=False)
+
+
+def test_an_unknown_sweep_on_a_pulse_is_refused_by_name():
+    with pytest.raises(SequenceError, match="use 'duration'"):
+        Pulse(0.0, US, sweep="voltage")
+
+
+def test_a_marked_pulse_with_no_length_says_to_drag_its_edges_apart():
+    line = simple()
+    line.tracks[1].pulses[0] = Pulse(US, US, True, "flat", sweep=DURATION)
+    line.sweep = SweepAxis(points=5, stop=2 * US)
+    with pytest.raises(SequenceError, match="no length to grow"):
+        line.to_sequence("flat", validate=False)
+
+
+def test_a_marked_pulse_cut_in_half_grows_only_its_second_part():
+    """Another track's edge inside the pulse splits it. The edge has to
+    stay where it was drawn, so the part after it is what grows — and the
+    pulse as a whole still measures the sweep's value."""
+    line = Timeline(
+        tracks=[
+            Track("mw", [Pulse(0.0, 100 * NS, Sin(), sweep=DURATION)]),
+            Track("trigger", [Pulse(40 * NS, 60 * NS)]),  # cuts the pulse
             Track("gate", [Pulse(100 * NS, 3100 * NS)]),
             Track("laser", [Pulse(100 * NS, 3100 * NS)]),
         ],
         duration=4 * US,
-        sweep=tau(0.0, 100 * NS, points=5, step=100 * NS),
+        sweep=SweepAxis(points=5, stop=500 * NS),
     )
     block = line.to_sequence("split", validate=False).blocks[0]
-    swept = [e for e in block.elements if e.increment]
-    assert len(swept) == 1
-    # First pass: the region still measures 100 ns in total.
-    within = [e.duration for e in block.elements[:3]]
-    assert sum(within) == pytest.approx(100 * NS)
+    marked = [e for e in block.elements if e.increment]
+    assert len(marked) == 1
+    # First pass: the pulse still measures 100 ns in total.
+    assert sum(e.duration for e in block.elements[:3]) == pytest.approx(100 * NS)
+
+
+def test_the_first_value_is_the_length_that_was_drawn():
+    """One source of truth. A start typed separately could disagree with
+    the canvas, and then the drawing would be lying about point one."""
+    line = swept(simple(), (0.0, 20 * NS), points=5, stop=100 * NS)
+    assert line.sweep_values().values[0] == pytest.approx(20 * NS)
+
+
+def test_a_stated_start_wins_over_the_drawing():
+    line = swept(simple(), (0.0, 20 * NS), points=5, start=US, stop=5 * US)
+    assert line.sweep_values().values[0] == pytest.approx(US)
 
 
 # --- Log spacing ------------------------------------------------------------
@@ -256,13 +335,13 @@ def test_log_spacing_becomes_one_block_per_point():
     line = Timeline(
         tracks=[
             Track("laser", [Pulse(0.0, 3 * US), Pulse(5 * US, 8 * US)]),
-            Track("gate", [Pulse(5 * US, 8 * US)]),
+            Track("gate", [
+                Pulse(5 * US, 8 * US),
+                Pulse(3 * US, 5 * US, True, "tau", sweep=DURATION, drives=False),
+            ]),
         ],
         duration=9 * US,
-        sweep=SweepAxis(
-            regions=(Region(3 * US, 5 * US),), points=6,
-            stop_value=100 * US, spacing=LOG,
-        ),
+        sweep=SweepAxis(points=6, stop=100 * US, spacing=LOG),
     )
     sequence = line.to_sequence("t1")
     assert len(sequence.blocks) == 6
@@ -274,9 +353,9 @@ def test_log_spacing_becomes_one_block_per_point():
 
 def test_both_spacings_produce_the_same_kind_of_sweep():
     """So nothing downstream has to know which was used."""
-    line = simple(tau(0.0, 20 * NS, points=5, step=20 * NS))
+    line = swept(simple(), (0.0, 20 * NS), points=5, stop=200 * NS)
     linear = line.to_sequence("a")
-    line.sweep = tau(0.0, 20 * NS, points=5, stop_value=200 * NS, spacing=LOG)
+    line.sweep = SweepAxis(points=5, stop=200 * NS, spacing=LOG)
     logarithmic = line.to_sequence("b")
 
     assert linear.sweep.name == logarithmic.sweep.name == "tau"
@@ -286,7 +365,7 @@ def test_both_spacings_produce_the_same_kind_of_sweep():
 
 def test_an_unknown_spacing_lists_the_real_ones():
     with pytest.raises(SequenceError, match="linear"):
-        tau(0.0, 20 * NS, spacing="fibonacci")
+        SweepAxis(spacing="fibonacci")
 
 
 # --- Back to tracks ---------------------------------------------------------
@@ -347,26 +426,51 @@ def test_a_generated_sequence_round_trips_through_the_timeline(name):
 
 
 @pytest.mark.parametrize("name", ["rabi", "ramsey", "hahn_echo"])
-def test_the_recovered_sweep_marks_every_place_tau_appears(name):
-    """A Ramsey has one region per alternating arm and a Hahn echo two,
-    and losing any of them would sweep half the sequence."""
-    sequence = build(name, RigProfile(), points=6)
-    axis = timeline_from_sequence(sequence, CHANNELS).sweep
+def test_the_recovered_sweep_marks_every_pulse_tau_appears_on(name):
+    """A Ramsey's tau appears once per alternating arm and a Hahn echo's
+    twice; losing any of them would sweep half the sequence."""
+    line = timeline_from_sequence(build(name, RigProfile(), points=6), CHANNELS)
     expected = {"rabi": 1, "ramsey": 2, "hahn_echo": 4}[name]
-    assert len(axis.regions) == expected
-    assert axis.spacing == LINEAR
+    assert len(line.swept) == expected
+    assert line.sweep_quantity == DURATION
+    assert line.sweep.spacing == LINEAR
+
+
+@pytest.mark.parametrize("name", ["ramsey", "hahn_echo", "t1"])
+def test_a_swept_gap_comes_back_as_a_timing_block(name):
+    """Round-tripping a saved sequence has to give back a drawing whose
+    every swept interval is an object you can click — otherwise "start
+    from a Ramsey, then edit it" stops halfway."""
+    line = timeline_from_sequence(build(name, RigProfile(), points=6), CHANNELS)
+    gaps = [pulse for pulse in line.swept if not pulse.drives]
+    assert gaps, f"{name}: its tau is a gap and came back as nothing"
+    assert all(pulse.name == "tau" for pulse in gaps)
+    # On the readout lane, where a delay belongs and where it counts as no
+    # readout at all.
+    assert all(
+        pulse in line.track("gate").pulses for pulse in gaps
+    )
+
+
+def test_a_rabi_marks_the_drive_itself_rather_than_inventing_a_gap():
+    """Its tau *is* a drawn pulse, so there is nothing to invent."""
+    line = timeline_from_sequence(build("rabi", RigProfile(), points=6), CHANNELS)
+    assert [pulse.drives for pulse in line.swept] == [True]
+    assert line.swept[0] in line.track("mw").pulses
 
 
 def test_a_log_sweep_comes_back_as_a_log_sweep():
-    axis = timeline_from_sequence(build("t1", RigProfile(), points=6), CHANNELS).sweep
-    assert axis.spacing == LOG
-    assert axis.stop_value > axis.length
+    line = timeline_from_sequence(build("t1", RigProfile(), points=6), CHANNELS)
+    assert line.sweep.spacing == LOG
+    assert line.sweep.stop > line.sweep.start
 
 
-def test_a_sequence_with_no_sweep_has_no_region():
+def test_a_sequence_with_no_sweep_marks_nothing():
     line = simple()
     revived = timeline_from_sequence(line.to_sequence("flat", validate=False), CHANNELS)
-    assert revived.sweep is None
+    assert revived.swept == []
+    assert revived.sweep_quantity == ""
+    assert revived.sweep_values() is None
 
 
 # --- Storage ----------------------------------------------------------------
@@ -377,14 +481,28 @@ def test_a_timeline_stores_as_plain_data():
     objects, no pickle."""
     import json
 
-    line = simple(tau(0.0, 20 * NS, points=8, step=20 * NS))
+    line = swept(simple(), (0.0, 20 * NS), points=8, stop=200 * NS)
     revived = Timeline.from_dict(json.loads(json.dumps(line.to_dict())))
 
     assert revived.duration == pytest.approx(line.duration)
     assert revived.channels == line.channels
     assert isinstance(revived.track("mw").pulses[0].value, Sin)
     assert revived.sweep.points == 8
-    assert len(revived.sweep.regions) == 1
+    # Which pulse is swept is stored on the pulse, so it survives too.
+    assert len(revived.swept) == 1
+    assert revived.swept[0].sweep == DURATION
+
+
+def test_a_timing_block_survives_storage_as_one():
+    """A gap that came back driving its channel would turn a Ramsey into
+    a sequence that gates the counter through its free evolution."""
+    line = Timeline(
+        tracks=[Track("gate", [Pulse(0.0, US, True, "tau", drives=False)])],
+        duration=2 * US,
+    )
+    revived = Timeline.from_dict(line.to_dict())
+    assert revived.track("gate").pulses[0].drives is False
+    assert revived.track("gate").driving == []
 
 
 def test_an_analog_pulse_keeps_its_shape_parameters_through_storage():
@@ -416,7 +534,9 @@ def test_asking_for_a_track_that_is_not_there_lists_the_ones_that_are():
 
 
 def test_a_hand_drawn_timeline_becomes_a_playable_sequence():
-    sequence = simple(tau(0.0, 20 * NS, points=10, step=20 * NS)).to_sequence("hand")
+    sequence = swept(
+        simple(), (0.0, 20 * NS), points=10, stop=200 * NS
+    ).to_sequence("hand")
     assert sequence.readouts() == 10
     assert sequence.readout_window() == pytest.approx(3 * US)
 
@@ -467,104 +587,133 @@ def test_a_half_drawn_timeline_can_still_be_rendered():
 
 # --- A sweep the pulser does not play ---------------------------------------
 #
-# Time and frequency are the same editor, one field apart, and these pin
-# the seam. A frequency sweep marks nothing on the timeline because there
-# is nothing to mark: the drawn pattern plays unchanged and something else
-# moves between passes.
+# A duration and a frequency are the same editor, one field apart, and
+# these pin the seam. A frequency sweep changes no element at all: the
+# drawn pattern plays unchanged and the source moves between passes.
+#
+# Which pulse can carry which is not symmetric, and that asymmetry is the
+# physics: a length is a property of any drawn interval, so a gate, a gap
+# or a drive can all be swept in time; a *carrier* is a property of a
+# drive alone, so only a microwave pulse can be swept in frequency.
 
 
-def frequency_axis(**fields) -> SweepAxis:
-    return SweepAxis(**{
-        "quantity": FREQUENCY, "start_value": 2.82e9,
-        "stop_value": 2.92e9, "points": 11, **fields,
-    })
+def odmr(**axis) -> Timeline:
+    """The simple drawing, with its microwave pulse swept in frequency."""
+    line = simple()
+    line.tracks[1].pulses[0] = replace(line.tracks[1].pulses[0], sweep=FREQUENCY)
+    line.sweep = SweepAxis(**{"start": 2.82e9, "stop": 2.92e9, "points": 11, **axis})
+    return line
 
 
-def test_a_frequency_sweep_needs_no_region():
-    """The rule a time sweep depends on — at least one marked region —
-    would refuse every pulsed ODMR, because a carrier frequency is not an
-    interval of the timeline."""
-    axis = frequency_axis()
-    assert axis.regions == ()
-    assert axis.stepped
-    assert axis.length == 0.0
+def test_a_frequency_sweep_marks_a_pulse_but_stretches_nothing():
+    line = odmr()
+    assert line.sweep_quantity == FREQUENCY
+    assert line.swept[0] is line.track("mw").pulses[0]
 
 
-def test_a_time_sweep_still_needs_one():
-    with pytest.raises(SequenceError, match="at least one marked region"):
-        SweepAxis(points=10)
+def test_a_frequency_axis_is_named_and_labelled_in_hertz():
+    """Carried over from a duration sweep, the defaults would label a
+    2.87 GHz axis "tau" in seconds."""
+    values = odmr().sweep_values()
+    assert values.name == "frequency"
+    assert values.unit == "Hz"
+    assert values.values[0] == pytest.approx(2.82e9)
+    assert values.values[-1] == pytest.approx(2.92e9)
 
 
-def test_a_frequency_sweep_is_named_and_labelled_in_hertz():
-    """Carried over from a time sweep, the defaults would label a 2.87 GHz
-    axis "tau" in seconds."""
-    axis = frequency_axis()
-    assert axis.name == "frequency"
-    assert axis.unit == "Hz"
-    assert axis.sweep().unit == "Hz"
+def test_a_duration_axis_is_named_and_labelled_in_seconds():
+    values = swept(simple(), (0.0, 20 * NS), points=5, stop=100 * NS).sweep_values()
+    assert values.name == "tau"
+    assert values.unit == "s"
+    assert not values.stepped
 
 
-def test_a_name_someone_chose_survives_the_switch():
-    assert frequency_axis(name="detuning").name == "detuning"
-
-
-def test_endpoints_are_required_for_a_frequency_sweep():
-    with pytest.raises(SequenceError, match="positive start and stop"):
-        SweepAxis(quantity=FREQUENCY, points=10)
+def test_a_name_someone_chose_survives_either_quantity():
+    assert odmr(name="detuning").sweep_values().name == "detuning"
 
 
 def test_the_sequence_carries_who_steps_it():
     """`parameter` is the whole mechanism: it is what tells the run to
     write each value to an instrument rather than expect the pulser to
     have played them."""
-    line = simple(frequency_axis())
-    sequence = line.to_sequence("odmr")
+    sequence = odmr().to_sequence("odmr")
     assert sequence.sweep.parameter == "frequency"
     assert sequence.sweep.stepped
     assert len(sequence.sweep) == 11
 
 
 def test_the_drawn_pattern_is_untouched_by_a_frequency_sweep():
-    """One block, played once, with no increment anywhere — a time sweep's
-    whole mechanism is absent because there is nothing to vary."""
-    sequence = simple(frequency_axis()).to_sequence("odmr")
+    """One block, played once, with no increment anywhere — a duration
+    sweep's whole mechanism is absent because there is nothing to vary."""
+    sequence = odmr().to_sequence("odmr")
     assert len(sequence.blocks) == 1
     assert sequence.blocks[0].repetitions == 1
     assert all(e.increment == 0.0 for e in sequence.blocks[0].elements)
     assert sequence.readouts() == 1
 
 
+def test_only_a_drive_can_carry_a_frequency_sweep():
+    """A laser pulse and a counter gate are on/off lines with no carrier
+    to move, so marking one would name a setting no source has."""
+    line = simple()
+    line.tracks[2].pulses[0] = replace(line.tracks[2].pulses[0], sweep=FREQUENCY)
+    with pytest.raises(SequenceError, match="readout gate"):
+        line.to_sequence("wrong", validate=False)
+
+    line = simple()
+    line.tracks[0].pulses[0] = replace(line.tracks[0].pulses[0], sweep=FREQUENCY)
+    with pytest.raises(SequenceError, match="the laser"):
+        line.to_sequence("wrong", validate=False)
+
+
+def test_the_gate_can_still_be_swept_in_length():
+    """The other half of that rule: a length is a property of any drawn
+    interval, so a gate, a gap and a drive can all take one."""
+    line = simple()
+    line.tracks[2].pulses[0] = replace(line.tracks[2].pulses[0], sweep=DURATION)
+    line.sweep = SweepAxis(points=5, stop=6 * US)
+    sequence = line.to_sequence("longer_gate", validate=False)
+    assert sequence.sweep.unit == "s"
+    assert len([e for e in sequence.blocks[0].elements if e.increment]) == 1
+
+
+def test_only_one_pulse_can_carry_the_frequency():
+    line = odmr()
+    line.tracks[1].pulses.append(
+        Pulse(4 * US, 4.1 * US, Sin(), "second", sweep=FREQUENCY)
+    )
+    with pytest.raises(SequenceError, match="two frequencies at once"):
+        line.to_sequence("two", validate=False)
+
+
 def test_a_stepped_sweep_survives_a_round_trip_through_the_editor():
-    """Load a saved pulsed ODMR back into the canvas and the axis comes
-    back — from the sweep's own values, since the elements hold no trace
-    of it."""
-    original = simple(frequency_axis(points=7)).to_sequence("odmr")
+    """Load a saved pulsed ODMR back into the canvas and both the axis and
+    the pulse carrying it come back — from the sweep's own values, since
+    the elements hold no trace of it."""
+    original = odmr(points=7).to_sequence("odmr")
     line = timeline_from_sequence(original, CHANNELS)
 
-    assert line.sweep is not None
-    assert line.sweep.quantity == FREQUENCY
+    assert line.sweep_quantity == FREQUENCY
+    assert line.swept[0] in line.track("mw").pulses
     assert line.sweep.points == 7
-    assert line.sweep.start_value == pytest.approx(2.82e9)
-    assert line.sweep.stop_value == pytest.approx(2.92e9)
+    assert line.sweep.start == pytest.approx(2.82e9)
+    assert line.sweep.stop == pytest.approx(2.92e9)
     assert line.to_sequence("odmr").sweep.values == original.sweep.values
 
 
 def test_switching_quantity_keeps_every_drawn_pulse_where_it_was():
     """The editor's gesture: a Rabi drawing becomes a pulsed ODMR by
-    changing one field, and nothing on the canvas moves."""
-    line = simple(SweepAxis(regions=(Region(0.0, 20 * NS),), points=10))
+    changing one field on one pulse, and nothing on the canvas moves."""
+    line = swept(simple(), (0.0, 20 * NS), points=10, stop=200 * NS)
     before = [(p.start, p.stop) for t in line.tracks for p in t.sorted()]
-    line.sweep = frequency_axis()
+    line.tracks[1].pulses[0] = replace(line.tracks[1].pulses[0], sweep=FREQUENCY)
+    line.sweep = SweepAxis(start=2.82e9, stop=2.92e9, points=10)
+    assert line.sweep_quantity == FREQUENCY
     assert [(p.start, p.stop) for t in line.tracks for p in t.sorted()] == before
 
 
-def test_an_unknown_quantity_is_refused_by_name():
-    with pytest.raises(SequenceError, match="Unknown sweep quantity"):
-        SweepAxis(regions=(Region(0.0, 20 * NS),), quantity="voltage")
-
-
-def test_time_is_still_the_default():
-    axis = SweepAxis(regions=(Region(0.0, 20 * NS),), points=5)
-    assert axis.quantity == TIME
-    assert not axis.stepped
-    assert not axis.sweep().stepped
+def test_duration_is_what_an_unmarked_drawing_has_none_of():
+    line = simple()
+    assert line.sweep_quantity == ""
+    assert line.sweep_values() is None
+    assert line.to_sequence("flat").sweep is None

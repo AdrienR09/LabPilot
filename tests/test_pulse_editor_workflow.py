@@ -19,6 +19,7 @@ the timeline is what gets saved, so a hand-moved gate stays moved.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -27,10 +28,10 @@ import labpilot.core.workflow_templates as templates
 from labpilot.core.pulse import PulseSequence, list_sequences, load_sequence
 from labpilot.core.pulse.library import RigProfile, build
 from labpilot.core.pulse.tracks import (
+    DURATION,
     FREQUENCY,
     LOG,
     Pulse,
-    Region,
     SweepAxis,
     Timeline,
     Track,
@@ -195,26 +196,27 @@ async def test_the_timeline_is_what_gets_compiled(sequences):
     assert result["timeline"]["tracks"]
 
 
-async def test_the_point_count_comes_from_the_drawn_sweep(sequences):
-    """Where a generator parameter used to be: the sweep panel sets the
-    points, and the region sets where tau starts."""
+async def test_the_point_count_comes_from_the_marked_pulse_axis(sequences):
+    """Where a generator parameter used to be: the inspector sets the
+    axis, and the pulse someone drew sets where tau starts."""
     line = Timeline.from_dict(drawn("rabi", points=8))
-    line.sweep = SweepAxis(
-        regions=line.sweep.regions, points=25, step=40 * NS, name="tau"
-    )
+    line.sweep = SweepAxis(points=25, stop=980 * NS, name="tau")
     result = await edit(TIMELINE=line.to_dict())
 
     assert result["points"] == 25
-    assert result["sweep"]["stop"] == pytest.approx(
-        line.sweep.length + 24 * 40 * NS
-    )
+    assert result["sweep"]["stop"] == pytest.approx(980 * NS)
 
 
-async def test_dragging_the_region_wider_moves_where_the_sweep_starts(sequences):
+async def test_resizing_the_marked_pulse_moves_where_the_sweep_starts(sequences):
+    """The drawing is the first value. That is one source of truth rather
+    than two that can disagree — the pulse you can see is point one."""
     line = Timeline.from_dict(drawn("rabi", points=8))
-    line.sweep = SweepAxis(
-        regions=(Region(0.0, 100 * NS),), points=5, step=20 * NS, name="tau"
+    marked = line.swept[0]
+    track = line.track(line.track_of(marked))
+    track.pulses[track.pulses.index(marked)] = replace(
+        marked, stop=marked.start + 100 * NS
     )
+    line.sweep = SweepAxis(points=5, stop=500 * NS, name="tau")
     result = await edit(TIMELINE=line.to_dict())
     assert result["sweep"]["start"] == pytest.approx(100 * NS)
 
@@ -228,11 +230,11 @@ async def test_a_log_sweep_is_drawn_the_same_way(sequences):
     assert result["sweep"]["stop"] > result["sweep"]["start"] * 10
 
 
-async def test_several_regions_grow_together(sequences):
+async def test_several_marked_pulses_grow_together(sequences):
     """A Ramsey's tau appears once per alternating arm, and both have to
     grow or half the sequence is not swept at all."""
     line = Timeline.from_dict(drawn("ramsey", points=6))
-    assert len(line.sweep.regions) == 2
+    assert len(line.swept) == 2
     result = await edit(TIMELINE=line.to_dict(), ALTERNATING=True,
                         SEQUENCE_NAME="ramsey")
     assert result["alternating"] is True
@@ -247,8 +249,9 @@ async def test_a_hand_drawn_timeline_becomes_a_playable_sequence(sequences):
             Track("gate", [Pulse(20 * NS, 3020 * NS)]),
         ],
         duration=4 * US,
-        sweep=SweepAxis(regions=(Region(0.0, 20 * NS),), points=8, step=20 * NS),
+        sweep=SweepAxis(points=8, stop=160 * NS),
     )
+    line.tracks[0].pulses[0] = replace(line.tracks[0].pulses[0], sweep=DURATION)
     result = await edit(TIMELINE=line.to_dict(), SEQUENCE_NAME="hand_rabi")
 
     assert result["readouts"] == 8
@@ -277,7 +280,7 @@ async def test_the_result_carries_the_timeline_back_for_the_editor(sequences):
 
     assert [t.channel for t in line.tracks][:3] == list(CHANNELS)
     assert len(line.track("mw").pulses) == 6  # 3 pulses per alternating arm
-    assert len(line.sweep.regions) == 4
+    assert len(line.swept) == 4
 
 
 async def test_the_timeline_round_trips_through_the_workflow(sequences):
@@ -319,9 +322,7 @@ async def test_the_result_is_json_serialisable_for_the_wire(sequences):
 
 async def test_the_sweep_is_reported_so_a_measurement_knows_its_axis(sequences):
     line = Timeline.from_dict(drawn("rabi", points=10))
-    line.sweep = SweepAxis(
-        regions=(Region(0.0, 20 * NS),), points=10, step=20 * NS, name="tau"
-    )
+    line.sweep = SweepAxis(points=10, stop=200 * NS, name="tau")
     result = await edit(TIMELINE=line.to_dict())
 
     assert result["sweep"]["name"] == "tau"
@@ -355,9 +356,12 @@ async def test_a_drawn_sequence_can_be_switched_to_a_frequency_sweep(sequences):
     swept, and the pulses stay exactly where they were put."""
     line = Timeline.from_dict(drawn("rabi", points=10))
     before = [(p.start, p.stop) for t in line.tracks for p in t.sorted()]
-    line.sweep = SweepAxis(
-        quantity=FREQUENCY, start_value=2.8e9, stop_value=2.94e9, points=71
-    )
+    marked = line.swept[0]
+    track = line.track(line.track_of(marked))
+    track.pulses[track.pulses.index(marked)] = replace(marked, sweep="")
+    mw = line.track("mw")
+    mw.pulses[0] = replace(mw.pulses[0], sweep=FREQUENCY)
+    line.sweep = SweepAxis(start=2.8e9, stop=2.94e9, points=71)
     result = await edit(TIMELINE=line.to_dict(), SEQUENCE_NAME="odmr_from_rabi")
 
     assert result["points"] == 71
