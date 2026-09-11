@@ -41,6 +41,7 @@ from typing import Any, ClassVar
 import pyqtgraph as pg
 from components.widgets import IconButton
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QFontMetrics
 from PyQt6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -54,7 +55,9 @@ from PyQt6.QtWidgets import (
 
 from labpilot.core.pulse.shapes import SHAPES
 from labpilot.core.pulse.tracks import (
+    FREQUENCY,
     LINEAR,
+    TIME,
     Pulse,
     Region,
     SweepAxis,
@@ -148,6 +151,13 @@ def _snap(value: float, grid: float) -> float:
     return round(value / grid) * grid if grid > 0 else value
 
 
+def _renamed(name: str | None, default_for: str, replacement: str) -> str:
+    """`replacement` when the axis still carries the other quantity's
+    default name, and `name` untouched when someone has named it
+    themselves — so switching quantity does not throw away "detuning"."""
+    return replacement if name in (None, "", default_for) else str(name)
+
+
 class PulseTimelineWidget(QWidget):
     """The editor canvas plus its inspector."""
 
@@ -162,11 +172,13 @@ class PulseTimelineWidget(QWidget):
         self,
         timeline: Timeline | None = None,
         channels: list[str] | None = None,
+        readout: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.timeline = timeline or Timeline()
         self._channels = list(channels or [])
+        self._readout = readout
         self._snap = 10e-9
         self._items: list[PulseItem] = []
         self._regions: list[pg.LinearRegionItem] = []
@@ -240,6 +252,12 @@ class PulseTimelineWidget(QWidget):
         self.plot.getPlotItem().hideButtons()
         self.plot.setMenuEnabled(False)
         self._axis = self.plot.getAxis("left")
+        # Double-click a lane to put a pulse there. The toolbar's Add
+        # button drops one after whatever is on the *selected* track,
+        # which is the right gesture when the track is chosen from a list
+        # and the wrong one when a full-window canvas is showing you the
+        # track and the moment you want at the same time.
+        self.plot.scene().sigMouseClicked.connect(self._canvas_clicked)
         return self.plot
 
     def _inspector(self) -> QWidget:
@@ -296,6 +314,16 @@ class PulseTimelineWidget(QWidget):
 
     # --- Building the canvas ----------------------------------------------
 
+    def set_readout(self, channel: str) -> None:
+        """Which lane is the measurement — the gate, or the laser on a rig
+        with no gate. Marked on the canvas rather than left to be inferred
+        from the channel's name: which readouts a run records, how many
+        gates the counter is armed for and what a point *is* all come from
+        this one track, and on an ungated rig it is the laser lane, which
+        nothing about the word "laser" would tell you."""
+        self._readout = channel
+        self.rebuild()
+
     def set_channels(self, channels: list[str]) -> None:
         """The rig's declared channels — one lane each, whether or not
         anything is drawn on them yet."""
@@ -324,7 +352,16 @@ class PulseTimelineWidget(QWidget):
         self._selected = None
 
         tracks = self.timeline.tracks
-        self._axis.setTicks([[(index, _lane_label(track)) for index, track in enumerate(tracks)]])
+        labels = [self._lane_label(track) for track in tracks]
+        self._axis.setTicks([list(enumerate(labels))])
+        # Widened by hand: `pg.AxisItem` drops a tick label that does not
+        # fit the space it allocated, silently, so the measurement lane —
+        # the one lane with a longer label than the rest — was the one
+        # that ended up with no name on it at all.
+        metrics = QFontMetrics(self._axis.font())
+        self._axis.setWidth(
+            max((metrics.horizontalAdvance(label) for label in labels), default=40) + 16
+        )
         self.plot.setYRange(-0.8, max(len(tracks) - 0.2, 0.8))
 
         for index, track in enumerate(tracks):
@@ -362,12 +399,22 @@ class PulseTimelineWidget(QWidget):
             self.plot.addItem(item)
             self._regions.append(item)
 
+    def _lane_label(self, track: Track) -> str:
+        """One line, not two: `pg.AxisItem` renders a tick label as a
+        single line and a newline in one silently loses the whole label,
+        which is how the measurement lane ended up with no name at all."""
+        name = track.label or track.channel
+        return f"{name} ⟵ measured" if track.channel == self._readout else name
+
     def _refresh_tracks_combo(self) -> None:
         current = self.track_combo.currentData()
         self.track_combo.blockSignals(True)
         self.track_combo.clear()
         for track in self.timeline.tracks:
-            self.track_combo.addItem(_lane_label(track), track.channel)
+            label = track.label or track.channel
+            if track.channel == self._readout:
+                label = f"{label} (measurement)"
+            self.track_combo.addItem(label, track.channel)
         index = self.track_combo.findData(current)
         self.track_combo.setCurrentIndex(max(index, 0))
         self.track_combo.blockSignals(False)
@@ -383,6 +430,42 @@ class PulseTimelineWidget(QWidget):
         start = _snap(track.end or 0.0, self._snap)
         track.pulses.append(blank_pulse(start, max(self._snap * 10, 100e-9)))
         self._changed()
+
+    def add_pulse_at(self, lane: int, start: float) -> bool:
+        """A new pulse on lane `lane`, beginning at `start`.
+
+        Returns False without changing anything when that would overlap a
+        pulse already on the lane — a channel has one level at a time, so
+        the sequence would be refused at save time, and refusing the
+        gesture instead is the version that says so immediately.
+        """
+        if not 0 <= lane < len(self.timeline.tracks):
+            return False
+        track = self.timeline.tracks[lane]
+        start = max(_snap(start, self._snap), 0.0)
+        length = max(self._snap * 10, 100e-9)
+        if any(
+            pulse.start < start + length and start < pulse.stop
+            for pulse in track.pulses
+        ):
+            return False
+        track.pulses.append(blank_pulse(start, length))
+        self._changed()
+        self._reselect(track.pulses[-1])
+        return True
+
+    def _canvas_clicked(self, event: Any) -> None:
+        """Double-click on empty canvas: add a pulse on the lane clicked.
+
+        Single clicks are left entirely alone — pulses handle their own,
+        and a region drag must not turn into a stray pulse.
+        """
+        if not event.double() or not self.timeline.tracks:
+            return
+        point = self.plot.getPlotItem().vb.mapSceneToView(event.scenePos())
+        lane = round(float(point.y()))
+        if self.add_pulse_at(lane, float(point.x())):
+            event.accept()
 
     def remove_selected(self) -> None:
         if self._selected is None:
@@ -400,6 +483,8 @@ class PulseTimelineWidget(QWidget):
         being two sweeps kept in step by hand.
         """
         sweep = self.timeline.sweep
+        if sweep is not None and sweep.stepped:
+            return
         end = self.timeline.end or 1e-6
         length = sweep.length if sweep else max(self._snap * 2, 20e-9)
         start = _snap(end * 0.5, self._snap)
@@ -411,11 +496,61 @@ class PulseTimelineWidget(QWidget):
             stop_value=sweep.stop_value if sweep else 0.0,
             spacing=sweep.spacing if sweep else LINEAR,
             name=sweep.name if sweep else "tau",
+            quantity=TIME,
         )
         self._changed()
 
     def clear_sweep(self) -> None:
         self.timeline.sweep = None
+        self._changed()
+
+    def set_sweep_quantity(self, quantity: str | None) -> None:
+        """Switch what this sequence sweeps — nothing, a drawn time, or
+        the microwave frequency.
+
+        The two sweeps are different enough to need this: a time sweep
+        lives on the canvas as marked regions the pulser stretches, and a
+        frequency sweep has nothing to mark because the drawn pattern
+        never changes. Everything else about the sequence is identical,
+        which is why this is one control rather than a second editor.
+        """
+        current = self.timeline.sweep.to_dict() if self.timeline.sweep else {}
+        if quantity is None:
+            self.timeline.sweep = None
+        elif quantity == FREQUENCY:
+            # A name and a unit carried over from a time sweep would label
+            # a gigahertz axis "tau" in seconds, and its endpoints would be
+            # nanoseconds — hence the rig defaults, and the `> 1e6` test,
+            # which asks whether the stored endpoint is already a frequency.
+            self.timeline.sweep = SweepAxis.from_dict({
+                **current,
+                "quantity": FREQUENCY,
+                "regions": [],
+                "name": _renamed(current.get("name"), "tau", FREQUENCY),
+                "unit": "Hz",
+                "start_value": current.get("start_value") or 2.82e9,
+                "stop_value": (
+                    current["stop_value"]
+                    if current.get("stop_value", 0.0) > 1e6 else 2.92e9
+                ),
+            })
+        else:
+            end = self.timeline.end or 1e-6
+            start = _snap(end * 0.5, self._snap)
+            regions = current.get("regions") or [
+                {"start": start, "stop": start + max(self._snap * 2, 20e-9)}
+            ]
+            self.timeline.sweep = SweepAxis.from_dict({
+                **current,
+                "quantity": TIME,
+                "regions": regions,
+                "name": _renamed(current.get("name"), FREQUENCY, "tau"),
+                "unit": "s",
+                "stop_value": (
+                    0.0 if current.get("stop_value", 0.0) > 1e6
+                    else current.get("stop_value", 0.0)
+                ),
+            })
         self._changed()
 
     def set_sweep(self, **fields: Any) -> None:
@@ -592,5 +727,3 @@ class PulseTimelineWidget(QWidget):
                 return
 
 
-def _lane_label(track: Track) -> str:
-    return track.label or track.channel

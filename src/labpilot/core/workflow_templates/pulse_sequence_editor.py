@@ -57,19 +57,20 @@ The four starting points are otherwise identical, which is the whole
 point of the flag.
 """
 
-from labpilot.core.pulse import save_sequence, timing_diagram
+from labpilot.core.pulse import save_sequence
 from labpilot.core.pulse.library import RigProfile, build
 from labpilot.core.pulse.tracks import Timeline, timeline_from_sequence
 
 # Binds nothing. That is the feature, not an omission.
 REQUIRED_INSTRUMENTS: dict = {}
 
-RESULT_UI = {
-    "type": "pulse_sequence",
-    "segments_key": "segments",
-    "channels_key": "channels",
-    "duration_key": "point_duration",
-}
+# No RESULT_UI, deliberately. The editor's canvas *is* the timing diagram:
+# one lane per instrument, pulses drawn on the lanes, the sweep shaded
+# across them. A second plot of the same picture beside it was a duplicate
+# that cost the canvas half the window, and the canvas is the half you can
+# actually edit. So this workflow's window is the editor and nothing else,
+# and the result below carries no arrays for `core/workflow/view.py` to
+# infer a view from.
 
 # --- What is drawn ----------------------------------------------------------
 
@@ -104,10 +105,6 @@ LASER_CHANNEL = "laser"
 MW_CHANNEL = "mw"
 GATE_CHANNEL = "gate"     # None on an ungated rig: laser pulses are readouts
 ANALOG_MW = True          # False gates an external source (PulseBlaster)
-
-# Which point of the sweep the timing diagram shows. A whole 50-point Rabi
-# drawn at once is a solid block; one shot is the picture worth looking at.
-PREVIEW_POINT = 0
 
 
 profile = RigProfile(
@@ -145,7 +142,6 @@ sequence = timeline.to_sequence(
 )
 
 path = save_sequence(sequence)
-segments = timing_diagram(sequence, PREVIEW_POINT)
 
 RESULT = {
     "sequence": SEQUENCE_NAME,
@@ -159,15 +155,18 @@ RESULT = {
     "points": sequence.points,
     "readouts": sequence.readouts(),
     "duration": sequence.duration,
-    "channels": sorted(sequence.channels),
+    # A string, not a list, and that is load-bearing rather than cosmetic:
+    # a result carrying no array is a result `pick_view` infers nothing
+    # from, which is what keeps this window the editor alone.
+    "channels": ", ".join(sorted(sequence.channels)),
     "alternating": sequence.alternating,
     "sweep": {
         "name": sequence.sweep.name,
         "unit": sequence.sweep.unit,
         "start": sequence.sweep.values[0],
         "stop": sequence.sweep.values[-1],
+        # Empty for a sweep the pulser plays; "frequency" for one an
+        # instrument steps — see core/pulse/sequence.py's Sweep.parameter.
+        "stepped_by": sequence.sweep.parameter,
     } if sequence.sweep else None,
-    "preview_point": PREVIEW_POINT,
-    "point_duration": max((s.stop for s in segments), default=0.0),
-    "segments": [s.to_dict() for s in segments],
 }

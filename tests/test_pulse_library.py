@@ -62,9 +62,38 @@ def test_centre_to_centre_subtracts_the_pulse_between():
 
 
 def test_every_generator_is_registered_and_builds():
-    assert set(GENERATORS) == {"rabi", "ramsey", "hahn_echo", "t1"}
+    assert set(GENERATORS) == {
+        "rabi", "ramsey", "hahn_echo", "t1", "pulsed_odmr",
+    }
     for name in GENERATORS:
         build(name, PROFILE).validate()
+
+
+def test_pulsed_odmr_sweeps_a_setting_rather_than_a_pulse():
+    """The one experiment here the pulser does not play point by point: a
+    carrier frequency is not a duration, so the pattern is fixed and the
+    source steps between passes."""
+    sequence = build("pulsed_odmr", PROFILE, start=2.85e9, stop=2.89e9, points=41)
+
+    assert sequence.points == 41
+    assert sequence.sweep.stepped
+    assert sequence.sweep.parameter == "frequency"
+    assert sequence.sweep.unit == "Hz"
+    assert sequence.sweep.values[0] == pytest.approx(2.85e9)
+    assert sequence.sweep.values[-1] == pytest.approx(2.89e9)
+    # One readout per pass — 41 points and 41 readouts would mean the
+    # sequence contained the sweep, which it cannot.
+    assert sequence.readouts() == 1
+    assert all(element.increment == 0.0 for element in sequence.blocks[0].elements)
+
+
+def test_a_pulsed_odmr_drives_for_exactly_a_pi_pulse():
+    """Fixed-length, unlike every other experiment here — the pulse is the
+    thing held constant while the frequency moves."""
+    elements = build("pulsed_odmr", PROFILE).blocks[0].elements
+    driving = [e for e in elements if isinstance(e.channels.get("mw"), Sin)]
+    assert len(driving) == 1
+    assert driving[0].duration == pytest.approx(PROFILE.pi)
 
 
 def test_rabi_sweeps_the_drive_and_reads_out_once_per_point():

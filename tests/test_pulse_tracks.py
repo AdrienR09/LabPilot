@@ -19,8 +19,10 @@ import pytest
 from labpilot.core.pulse import SequenceError, Sin
 from labpilot.core.pulse.library import RigProfile, build
 from labpilot.core.pulse.tracks import (
+    FREQUENCY,
     LINEAR,
     LOG,
+    TIME,
     Pulse,
     Region,
     SweepAxis,
@@ -461,3 +463,108 @@ def test_a_half_drawn_timeline_can_still_be_rendered():
     make the editor unusable."""
     line = Timeline(tracks=[Track("mw", [Pulse(0.0, 20 * NS, Sin())])], duration=US)
     assert len(line.to_sequence("wip", validate=False).blocks[0].elements) == 2
+
+
+# --- A sweep the pulser does not play ---------------------------------------
+#
+# Time and frequency are the same editor, one field apart, and these pin
+# the seam. A frequency sweep marks nothing on the timeline because there
+# is nothing to mark: the drawn pattern plays unchanged and something else
+# moves between passes.
+
+
+def frequency_axis(**fields) -> SweepAxis:
+    return SweepAxis(**{
+        "quantity": FREQUENCY, "start_value": 2.82e9,
+        "stop_value": 2.92e9, "points": 11, **fields,
+    })
+
+
+def test_a_frequency_sweep_needs_no_region():
+    """The rule a time sweep depends on — at least one marked region —
+    would refuse every pulsed ODMR, because a carrier frequency is not an
+    interval of the timeline."""
+    axis = frequency_axis()
+    assert axis.regions == ()
+    assert axis.stepped
+    assert axis.length == 0.0
+
+
+def test_a_time_sweep_still_needs_one():
+    with pytest.raises(SequenceError, match="at least one marked region"):
+        SweepAxis(points=10)
+
+
+def test_a_frequency_sweep_is_named_and_labelled_in_hertz():
+    """Carried over from a time sweep, the defaults would label a 2.87 GHz
+    axis "tau" in seconds."""
+    axis = frequency_axis()
+    assert axis.name == "frequency"
+    assert axis.unit == "Hz"
+    assert axis.sweep().unit == "Hz"
+
+
+def test_a_name_someone_chose_survives_the_switch():
+    assert frequency_axis(name="detuning").name == "detuning"
+
+
+def test_endpoints_are_required_for_a_frequency_sweep():
+    with pytest.raises(SequenceError, match="positive start and stop"):
+        SweepAxis(quantity=FREQUENCY, points=10)
+
+
+def test_the_sequence_carries_who_steps_it():
+    """`parameter` is the whole mechanism: it is what tells the run to
+    write each value to an instrument rather than expect the pulser to
+    have played them."""
+    line = simple(frequency_axis())
+    sequence = line.to_sequence("odmr")
+    assert sequence.sweep.parameter == "frequency"
+    assert sequence.sweep.stepped
+    assert len(sequence.sweep) == 11
+
+
+def test_the_drawn_pattern_is_untouched_by_a_frequency_sweep():
+    """One block, played once, with no increment anywhere — a time sweep's
+    whole mechanism is absent because there is nothing to vary."""
+    sequence = simple(frequency_axis()).to_sequence("odmr")
+    assert len(sequence.blocks) == 1
+    assert sequence.blocks[0].repetitions == 1
+    assert all(e.increment == 0.0 for e in sequence.blocks[0].elements)
+    assert sequence.readouts() == 1
+
+
+def test_a_stepped_sweep_survives_a_round_trip_through_the_editor():
+    """Load a saved pulsed ODMR back into the canvas and the axis comes
+    back — from the sweep's own values, since the elements hold no trace
+    of it."""
+    original = simple(frequency_axis(points=7)).to_sequence("odmr")
+    line = timeline_from_sequence(original, CHANNELS)
+
+    assert line.sweep is not None
+    assert line.sweep.quantity == FREQUENCY
+    assert line.sweep.points == 7
+    assert line.sweep.start_value == pytest.approx(2.82e9)
+    assert line.sweep.stop_value == pytest.approx(2.92e9)
+    assert line.to_sequence("odmr").sweep.values == original.sweep.values
+
+
+def test_switching_quantity_keeps_every_drawn_pulse_where_it_was():
+    """The editor's gesture: a Rabi drawing becomes a pulsed ODMR by
+    changing one field, and nothing on the canvas moves."""
+    line = simple(SweepAxis(regions=(Region(0.0, 20 * NS),), points=10))
+    before = [(p.start, p.stop) for t in line.tracks for p in t.sorted()]
+    line.sweep = frequency_axis()
+    assert [(p.start, p.stop) for t in line.tracks for p in t.sorted()] == before
+
+
+def test_an_unknown_quantity_is_refused_by_name():
+    with pytest.raises(SequenceError, match="Unknown sweep quantity"):
+        SweepAxis(regions=(Region(0.0, 20 * NS),), quantity="voltage")
+
+
+def test_time_is_still_the_default():
+    axis = SweepAxis(regions=(Region(0.0, 20 * NS),), points=5)
+    assert axis.quantity == TIME
+    assert not axis.stepped
+    assert not axis.sweep().stepped

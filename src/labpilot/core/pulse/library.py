@@ -30,6 +30,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -39,6 +41,7 @@ from labpilot.core.pulse.sequence import (
     PulseElement,
     PulseSequence,
     SequenceError,
+    Sweep,
     linear_sweep,
     log_sweep,
 )
@@ -51,6 +54,7 @@ __all__ = [
     "generator",
     "generator_parameters",
     "hahn_echo",
+    "pulsed_odmr",
     "rabi",
     "ramsey",
     "t1",
@@ -353,6 +357,71 @@ def t1(
         laser_channel=profile.laser_channel,
         gate_channel=profile.gate_channel,
         description="T1 relaxation — logarithmically spaced.",
+    )
+
+
+def _frequency(name: str, description: str = "") -> Parameter:
+    return Parameter(
+        name, unit="Hz", role=ParamRole.SETTING, settable=True, readable=False,
+        limits=(0.0, None), description=description,
+    )
+
+
+@generator(
+    _frequency("start", "Microwave frequency at the first point"),
+    _frequency("stop", "Microwave frequency at the last point"),
+    _points(),
+)
+def pulsed_odmr(
+    profile: RigProfile,
+    start: float = 2.82e9,
+    stop: float = 2.92e9,
+    points: int = 51,
+) -> PulseSequence:
+    """A pi pulse at a varying frequency, then read out.
+
+    The one experiment here whose sweep the pulser does **not** play. The
+    pattern is fixed — polarise, drive for a pi pulse, read out — and what
+    changes between passes is the microwave source's frequency, which no
+    pulse duration can encode. So the sequence declares
+    `Sweep(parameter="frequency")` and `PulsedMeasurementPlan` steps a
+    bound source through the values, one pass per point.
+
+    That also makes it the reason `Sweep.parameter` exists at all: without
+    it, "sweep 51 points" and "produce one readout per pass" look like a
+    contradiction, and validation would refuse every pulsed ODMR.
+
+    Pulsed rather than continuous-wave: a pi pulse at fixed power gives a
+    linewidth set by the pulse, not by the drive strength, so the dip is
+    narrow and its centre is the transition frequency rather than a
+    power-broadened approximation of it.
+    """
+    if points < 1:
+        raise SequenceError(f"A sweep needs at least one point, got {points}")
+    block = PulseBlock(
+        "pulsed_odmr",
+        (
+            profile.polarise(),
+            profile.idle(profile.wait_time, name="settle"),
+            profile.drive(profile.pi, name="pi"),
+            *profile.readout(),
+        ),
+    )
+    return PulseSequence(
+        "pulsed_odmr", (block,),
+        sweep=Sweep(
+            "frequency",
+            tuple(float(v) for v in np.linspace(start, stop, int(points))),
+            unit="Hz",
+            parameter="frequency",
+        ),
+        rotating_frame=False,
+        laser_channel=profile.laser_channel,
+        gate_channel=profile.gate_channel,
+        description=(
+            "Pulsed ODMR — a pi pulse swept in frequency. The source steps; "
+            "the sequence does not change."
+        ),
     )
 
 

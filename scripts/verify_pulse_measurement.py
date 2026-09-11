@@ -202,7 +202,11 @@ def main() -> int:
 
     print("\n7. The fit is named rather than inferred")
     fits = [dock.fit.itemData(i) for i in range(dock.fit.count())]
-    check("none, rabi and decay are offered", fits == ["none", "rabi", "decay"], f"{fits}")
+    check(
+        "every model the template implements is offered",
+        fits == ["none", "rabi", "decay", "dip"],
+        f"{fits}",
+    )
     seen.clear()
     dock.fit.setCurrentIndex(1)
     app.processEvents()

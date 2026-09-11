@@ -1070,6 +1070,7 @@ class WorkflowWindow(QMainWindow):
                     "name": entry.name, "valid": entry.valid,
                     "problem": entry.problem, "points": entry.points,
                     "readouts": entry.readouts, "duration": entry.duration,
+                    "stepped_by": entry.stepped_by,
                 }
                 for entry in list_sequences()
             ]

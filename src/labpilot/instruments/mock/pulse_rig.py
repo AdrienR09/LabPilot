@@ -84,13 +84,29 @@ class _Bench:
     def __init__(self) -> None:
         self.sequence: PulseSequence | None = None
         self.playing = False
+        self.frequency = 2.87e9
+        """What the microwave source on this bench is emitting, in Hz.
+
+        The counter needs it for the same reason it needs the sequence: a
+        pulsed ODMR's contrast depends on how far the drive is from
+        resonance, and on a real bench that dependence travels through the
+        sample rather than through software. `mock_microwave_source`
+        publishes here when its frequency is set.
+        """
 
     def clear(self) -> None:
         self.sequence = None
         self.playing = False
+        self.frequency = 2.87e9
 
 
 _BENCH = _Bench()
+
+
+def bench() -> _Bench:
+    """The shared mock bench. Public so the mock microwave source can
+    publish its frequency onto it — see `_Bench.frequency`."""
+    return _BENCH
 
 
 # --- The pulser -------------------------------------------------------------
@@ -266,6 +282,12 @@ class MockGatedCounter(GatedCounterMixin, AdapterBase):
         self.contrast = 0.25
         """Fraction by which ms=+/-1 is darker than ms=0. 0.2-0.3 is what
         a decent single NV gives at room temperature."""
+        self.resonance = 2.87e9
+        """Where the spin transition sits, in Hz — the NV zero-field
+        splitting unless a field has been applied. What a pulsed ODMR
+        measures, and so what a test injects and asserts a fit recovers."""
+        self.linewidth = 6e6
+        """Full width at half maximum of that dip, in Hz."""
         self.bright_rate = 4e6
         """Photons per second at the start of the readout window."""
         self.dark_fraction = 0.35
@@ -312,6 +334,8 @@ class MockGatedCounter(GatedCounterMixin, AdapterBase):
                 sample("coherence_time", "s", "T2* / T2 / T1, per experiment"),
                 sample("contrast", "", "ms=+/-1 darkness, 0-1"),
                 sample("bright_rate", "Hz", "Photon rate at readout start"),
+                sample("resonance", "Hz", "Spin transition, for a frequency sweep"),
+                sample("linewidth", "Hz", "FWHM of that resonance"),
             ),
             tags=["Mock", "GatedCounter", "TimeTagger", "Photon", "ODMR", "Pulsed"],
             actions=["start_counting", "stop_counting"],
@@ -346,6 +370,8 @@ class MockGatedCounter(GatedCounterMixin, AdapterBase):
             "coherence_time": self.coherence_time,
             "contrast": self.contrast,
             "bright_rate": self.bright_rate,
+            "resonance": self.resonance,
+            "linewidth": self.linewidth,
         }
 
     # --- Settables ---------------------------------------------------------
@@ -364,6 +390,12 @@ class MockGatedCounter(GatedCounterMixin, AdapterBase):
 
     async def set_bright_rate(self, value: float) -> None:
         self.bright_rate = float(value)
+
+    async def set_resonance(self, value: float) -> None:
+        self.resonance = float(value)
+
+    async def set_linewidth(self, value: float) -> None:
+        self.linewidth = float(value)
 
     # --- The contract ------------------------------------------------------
 
@@ -527,6 +559,13 @@ class MockGatedCounter(GatedCounterMixin, AdapterBase):
         if sequence is None or sequence.sweep is None or not len(sequence.sweep):
             return 1.0
 
+        if sequence.sweep.stepped:
+            # A stepped sweep's points are not readouts: the pattern plays
+            # unchanged and the *source* moves between passes. So every
+            # gate in this trace was taken at one frequency, and how dark
+            # it is depends on that frequency alone.
+            return self._resonance(_BENCH.frequency)
+
         values = sequence.sweep.values
         if sequence.alternating:
             # Signal and reference alternate, so two readouts share a tau
@@ -540,6 +579,18 @@ class MockGatedCounter(GatedCounterMixin, AdapterBase):
         if arm:
             population = 1.0 - population
         return 1.0 - self.contrast * (1.0 - population)
+
+    def _resonance(self, frequency: float) -> float:
+        """Relative fluorescence when driving at `frequency`.
+
+        A Lorentzian dip: full brightness far off resonance, `1 - contrast`
+        at the centre. The pulsed-ODMR counterpart of `_population`, and
+        the shape `fit_dip` in `core/analysis/fits.py` already fits — so a
+        frequency sweep against this counter recovers the injected
+        resonance the same way a Rabi recovers the injected pi pulse.
+        """
+        detuning = (frequency - self.resonance) / max(self.linewidth / 2, 1.0)
+        return 1.0 - self.contrast / (1.0 + detuning * detuning)
 
     def _population(self, tau: float) -> float:
         """ms=0 population after evolving for `tau`, in `[0, 1]`."""

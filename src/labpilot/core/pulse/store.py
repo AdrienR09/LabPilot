@@ -78,6 +78,12 @@ class SavedSequence:
     readouts: int = 0
     duration: float = 0.0
     channels: tuple[str, ...] = ()
+    stepped_by: str = ""
+    """The instrument setting stepped between passes, for a sweep the
+    pulser does not play — "frequency" for a pulsed ODMR, empty for
+    everything else. Listed because it changes what the other numbers
+    mean: such a sequence has many points and one readout, which reads
+    as a broken file until you know why."""
     valid: bool = True
     problem: str = ""
     """Why this file will not load or will not play. A broken sequence is
@@ -100,12 +106,12 @@ def save_sequence(sequence: PulseSequence, directory: Path | None = None) -> Pat
 
 
 #: The experiments a fresh install can run without authoring anything.
-#: Names match the four presets of `pulsed_measurement`.
-DEFAULTS = ("rabi", "ramsey", "hahn_echo", "t1")
+#: Names match the presets of `pulsed_measurement`.
+DEFAULTS = ("rabi", "ramsey", "hahn_echo", "t1", "pulsed_odmr")
 
 
 def ensure_default_sequences(directory: Path | None = None) -> list[Path]:
-    """Write the four standard experiments, if they are not there already.
+    """Write the standard experiments, if they are not there already.
 
     A fresh install has an empty sequence library, so the Rabi preset
     would fail on a missing file before it ever reached hardware. These
@@ -193,6 +199,7 @@ def _summarise(path: Path) -> SavedSequence:
         readouts=sequence.readouts(),
         duration=sequence.duration,
         channels=tuple(sorted(sequence.channels)),
+        stepped_by=sequence.sweep.parameter if sequence.sweep else "",
         valid=not problem,
         problem=problem,
     )

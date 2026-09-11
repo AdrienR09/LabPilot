@@ -715,6 +715,20 @@ class PulsedMeasurementPlan:
     last row, and a saved file that shows whether the measurement had
     converged or was still drifting when it stopped.
 
+    ## The one sweep the pulser cannot play
+
+    A pulsed ODMR's points are a microwave frequency, and no pulse
+    duration encodes one. Such a sequence says so — `Sweep.parameter`
+    names the instrument setting that moves — and then `_stepped` walks
+    the values, writing each to the bound source and accumulating at it.
+
+    The shape is the same on purpose: rows are complete passes over the
+    values, and row `k` is the running mean of passes 0 to `k`. Repeating
+    a sweep and averaging is what makes a slow ODMR immune to drift, and
+    keeping the shape means the last row is the answer either way, with
+    the same streaming, the same abort and the same file. Two loops, one
+    plan — not a second engine.
+
     ## Why describe() knows everything already
 
     The sequence carries its own sweep (`core/pulse/sequence.py`), so the
@@ -827,6 +841,22 @@ class PulsedMeasurementPlan:
         window = float(self.sequence.readout_window() or 0.0)
         return float(self.record_length) or (window * 1.5 or 3e-6)
 
+    @property
+    def stepped(self) -> bool:
+        """Whether an instrument steps this sweep between passes rather
+        than the pulser playing every point in one — see
+        `core/pulse/sequence.py`'s `Sweep.parameter`."""
+        sweep = self.sequence.sweep
+        return sweep is not None and sweep.stepped
+
+    @property
+    def passes(self) -> int:
+        """Complete walks over a stepped sweep's values. Rows of the
+        result, and the run's progress steps — the stepped analogue of
+        `checkpoint_sweeps`, except that each row is the running mean of
+        every pass so far rather than a longer accumulation of one."""
+        return max(int(self.checkpoints), 1)
+
     async def describe(self, session: Session) -> RunDescriptor:
         from labpilot.core.pulse.analyse import analysis_units
 
@@ -834,12 +864,35 @@ class PulsedMeasurementPlan:
         sequence.validate()
         label, unit = analysis_units(self.method)
 
-        rows = self.checkpoint_sweeps
         sweep = sequence.sweep
+        if self.stepped:
+            # Every point is visited once per pass, so a row is a complete
+            # walk rather than a deeper accumulation of a single one — and
+            # row k is the mean of passes 0..k, which is what averaging a
+            # repeated sweep actually means.
+            rows: tuple[int, ...] = tuple(range(1, self.passes + 1))
+            row_axis = Axis("passes", np.asarray(rows, dtype=float), kind="repeat")
+        else:
+            rows = self.checkpoint_sweeps
+            row_axis = Axis("sweeps", np.asarray(rows, dtype=float), kind="index")
+
         if sweep is not None:
+            # A stepped axis is genuinely driven: the run writes each value
+            # to a bound instrument, which is the definition of an actuator
+            # axis and is what lets a view say what it is showing.
+            driven = self.stepped and bool(self.microwave) and session.has(self.microwave)
             swept = Axis(
                 name=sweep.name, values=sweep.array, unit=sweep.unit,
-                kind="time" if sweep.unit == "s" else "index",
+                kind=(
+                    "actuator" if driven
+                    else "time" if sweep.unit == "s"
+                    else "index"
+                ),
+                device=self.microwave if driven else None,
+                param=(
+                    _stepped_parameter(session.get(self.microwave), sweep.parameter)
+                    if driven else None
+                ),
             )
         else:
             # A hand-written sequence need not declare a sweep. Then the
@@ -854,10 +907,7 @@ class PulsedMeasurementPlan:
         descriptor = RunDescriptor(
             run_uid=str(uuid.uuid4()),
             plan_name=self.name,
-            axes=(
-                Axis("sweeps", np.asarray(rows, dtype=float), kind="index"),
-                swept,
-            ),
+            axes=(row_axis, swept),
             scan_axis_count=1,
             value_name=label,
             value_unit=unit,
@@ -873,6 +923,8 @@ class PulsedMeasurementPlan:
                 "sequence_duration": sequence.duration,
                 "alternating": sequence.alternating,
                 "sweeps": int(self.sweeps),
+                "stepped": self.stepped,
+                "stepped_parameter": sweep.parameter if sweep is not None else "",
                 "extract": self.extract,
                 "analyse": self.method,
                 **dict(self.params),
@@ -907,6 +959,10 @@ class PulsedMeasurementPlan:
         await pulser.pulser_on()
         per_point = max(1, descriptor.per_point)
         try:
+            if self.stepped:
+                async for patch in self._stepped(session, counter, descriptor):
+                    yield patch
+                return
             for index, target in enumerate(self.checkpoint_sweeps):
                 await self._accumulate(counter, target)
                 values = await self._measure(counter)
@@ -924,6 +980,73 @@ class PulsedMeasurementPlan:
             await pulser.pulser_off()
             await counter.stop_counting()
             await self._switch(session, on=False)
+
+    async def _stepped(
+        self, session: Session, counter: Any, descriptor: RunDescriptor
+    ) -> AsyncIterator[DatasetPatch]:
+        """Walk a sweep the pulser cannot play, setting it point by point.
+
+        The pulser keeps playing one fixed pattern throughout; what moves
+        is a setting on a bound instrument — the microwave frequency, for
+        a pulsed ODMR. So each point is: set the value, re-arm the
+        counter, accumulate `sweeps` repetitions, read one number out.
+
+        Re-arming between points is what keeps a point's counts its own:
+        `configure_gates` clears the accumulation, so the trace analysed
+        at 2.85 GHz holds nothing counted at 2.84. The value is set while
+        the counter is stopped, so no readout straddles a change.
+
+        Rows are complete passes, and row `k` is the **mean** of passes 0
+        to `k` rather than pass `k` alone. Repeating a sweep and averaging
+        is what makes a slow ODMR immune to drift, and it means the last
+        row is the answer and the ones above it show it converging —
+        exactly what the played path's rows mean.
+        """
+        sweep = self.sequence.sweep
+        source, parameter = self._stepped_target(session)
+        values = sweep.array
+        per_point = max(1, descriptor.per_point)
+        totals = np.zeros(len(values), dtype=float)
+
+        for index in range(self.passes):
+            for point, value in enumerate(values):
+                await source.write({parameter: float(value)})
+                self.config = await counter.configure_gates(
+                    self.bin_width, self.record_length_s, self.sequence.readouts()
+                )
+                await counter.start_counting()
+                await self._accumulate(counter, max(int(self.sweeps), 1))
+                await counter.stop_counting()
+                measured = await self._measure(counter)
+                totals[point] += float(np.asarray(measured, dtype=float).ravel()[0])
+
+            yield DatasetPatch(
+                array=descriptor.value_name,
+                index=index * per_point,
+                values=_fit_to(totals / (index + 1), per_point),
+                run_uid=descriptor.run_uid,
+                seq=index + 1,
+            )
+
+    def _stepped_target(self, session: Session) -> tuple[Any, str]:
+        """The instrument this sweep steps, and the setting it writes.
+
+        Found by tag, not by name: a source calls its frequency
+        `cw_frequency`, `freq` or `frequency` depending on the vendor, and
+        the `Parameter` that carries the `frequency` tag is the one that
+        says which — the same lookup `odmr_sweep` uses, and the reason it
+        stopped guessing "the first settable without 'power' in its name".
+        """
+        sweep = self.sequence.sweep
+        if not self.microwave or not session.has(self.microwave):
+            raise ValueError(
+                f"Sequence {self.sequence.name!r} sweeps {sweep.name!r} by "
+                f"stepping an instrument's {sweep.parameter!r}, so this "
+                f"measurement needs a 'microwave' role bound. Bind one, or "
+                f"edit the sequence to sweep a pulse time instead."
+            )
+        device = session.get(self.microwave)
+        return device, _stepped_parameter(device, sweep.parameter)
 
     # --- Internals --------------------------------------------------------
 
@@ -1028,6 +1151,34 @@ class PulsedMeasurementPlan:
             ),
             "analysis": self.analysis.to_dict() if self.analysis is not None else None,
         }
+
+
+def _stepped_parameter(device: Any, tag: str) -> str:
+    """The settable on `device` that carries `tag`.
+
+    By tag rather than by name, because vendors disagree: the same
+    quantity is `cw_frequency` on one source, `frequency` on the next and
+    `freq` on a third. A `Parameter` that declares the `frequency` tag
+    says which without anyone maintaining a list of spellings — and a
+    device that declares none says so here, by name, rather than failing
+    on the first write with a KeyError.
+
+    Falls back to a settable *named* the tag, so a source that predates
+    tagging still works.
+    """
+    schema = device.schema
+    found = schema.find(settable=True, tags={tag})
+    if found:
+        return found[0].name
+    if tag in schema.settable:
+        return tag
+    raise ValueError(
+        f"{schema.name} declares no settable tagged {tag!r}, so this sweep "
+        f"has nothing to step. It offers "
+        f"{', '.join(sorted(schema.settable)) or 'no settables at all'}. Tag "
+        f"the right one in that adapter's schema, or bind a source that "
+        f"declares it."
+    )
 
 
 def _fit_to(values: np.ndarray, width: int) -> np.ndarray:

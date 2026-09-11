@@ -27,6 +27,7 @@ import labpilot.core.workflow_templates as templates
 from labpilot.core.pulse import PulseSequence, list_sequences, load_sequence
 from labpilot.core.pulse.library import RigProfile, build
 from labpilot.core.pulse.tracks import (
+    FREQUENCY,
     LOG,
     Pulse,
     Region,
@@ -190,7 +191,7 @@ async def test_the_timeline_is_what_gets_compiled(sequences):
     """One track per instrument, edges everywhere anything changes."""
     result = await edit(TIMELINE=drawn("rabi", points=12), SEQUENCE_NAME="rabi")
     assert result["points"] == 12
-    assert set(result["channels"]) == set(CHANNELS)
+    assert set(result["channels"].split(", ")) == set(CHANNELS)
     assert result["timeline"]["tracks"]
 
 
@@ -291,54 +292,29 @@ async def test_the_timeline_round_trips_through_the_workflow(sequences):
     assert again["duration"] == pytest.approx(first["duration"])
 
 
-# --- The result view -------------------------------------------------------
+# --- The window is the editor, and nothing else ----------------------------
 
 
-async def test_the_result_carries_a_timing_diagram_of_one_point(sequences):
-    """One shot, not the whole sweep: a 50-point Rabi drawn at once is a
-    solid block, and boxes rather than samples because a 2.87 GHz carrier
-    in a 100 ns pulse cannot be drawn any other way."""
-    result = await edit(START_FROM="ramsey", SEQUENCE_NAME="ramsey")
-
-    segments = result["segments"]
-    assert segments
-    assert {s["channel"] for s in segments} == set(CHANNELS)
-    assert all(s["stop"] > s["start"] for s in segments)
-    assert max(s["stop"] for s in segments) == pytest.approx(result["point_duration"])
+async def test_the_editor_declares_no_result_view(sequences):
+    """The canvas *is* the timing diagram. A second plot of the same
+    picture beside it cost the editor half the window, and the half it
+    cost was the one you can edit."""
+    assert read_result_ui(EDITOR.read_text()) == {}
 
 
-async def test_a_later_point_of_the_sweep_is_longer_than_the_first(sequences):
-    """What the preview control is for — seeing the sequence at the end of
-    the sweep, where an element may have grown past what the pulser holds."""
-    line = drawn("rabi", points=30)
-    first = await edit(TIMELINE=line, PREVIEW_POINT=0)
-    last = await edit(TIMELINE=line, PREVIEW_POINT=29)
-    assert last["point_duration"] > first["point_duration"]
+async def test_no_result_view_is_inferred_from_what_it_returns_either(sequences):
+    """Declaring no `RESULT_UI` is only half of it: `pick_view` builds one
+    from the data when a template declares none, so the result has to
+    carry no arrays for it to find — which is why `channels` is a string
+    and the timing diagram is gone entirely."""
+    from labpilot.core.workflow.view import pick_view
 
-
-async def test_asking_for_a_point_that_does_not_exist_says_how_many_there_are(
-    sequences,
-):
-    from labpilot.core.pulse import SamplingError
-
-    with pytest.raises(SamplingError, match="5 point"):
-        await edit(TIMELINE=drawn("rabi", points=5), PREVIEW_POINT=99)
+    assert pick_view(await edit(TIMELINE=drawn("rabi", points=5))) is None
 
 
 async def test_the_result_is_json_serialisable_for_the_wire(sequences):
     """It crosses REST and a WebSocket to reach the workflow window."""
     json.dumps(await edit(TIMELINE=drawn("rabi", points=5)))
-
-
-async def test_every_key_the_result_view_names_is_produced(sequences):
-    """The same invariant the smoke harness applies to every template — a
-    typo here renders a blank panel with no error anywhere."""
-    result = await edit(TIMELINE=drawn("rabi", points=5))
-    declared = {
-        value for key, value in read_result_ui(EDITOR.read_text()).items()
-        if key.endswith("_key")
-    }
-    assert declared <= set(result)
 
 
 async def test_the_sweep_is_reported_so_a_measurement_knows_its_axis(sequences):
@@ -351,3 +327,44 @@ async def test_the_sweep_is_reported_so_a_measurement_knows_its_axis(sequences):
     assert result["sweep"]["name"] == "tau"
     assert result["sweep"]["unit"] == "s"
     assert result["sweep"]["stop"] == pytest.approx(200 * NS)
+    assert result["sweep"]["stepped_by"] == ""
+
+
+# --- Sweeping the microwave frequency instead of a drawn time --------------
+
+
+async def test_a_frequency_sweep_leaves_the_drawing_alone(sequences):
+    """The sweep no pulse duration can encode. The pattern is fixed and
+    the source steps between passes, so there is nothing to mark on the
+    canvas — which is exactly why it needed a second `quantity` rather
+    than another region."""
+    line = Timeline.from_dict(drawn("pulsed_odmr"))
+    result = await edit(TIMELINE=line.to_dict(), SEQUENCE_NAME="odmr")
+
+    assert result["sweep"]["name"] == "frequency"
+    assert result["sweep"]["unit"] == "Hz"
+    assert result["sweep"]["stepped_by"] == "frequency"
+    # Many points, one readout per pass: the points are not in the
+    # sequence at all.
+    assert result["points"] > 1
+    assert result["readouts"] == 1
+
+
+async def test_a_drawn_sequence_can_be_switched_to_a_frequency_sweep(sequences):
+    """The editor's own gesture: take a Rabi drawing, change what is
+    swept, and the pulses stay exactly where they were put."""
+    line = Timeline.from_dict(drawn("rabi", points=10))
+    before = [(p.start, p.stop) for t in line.tracks for p in t.sorted()]
+    line.sweep = SweepAxis(
+        quantity=FREQUENCY, start_value=2.8e9, stop_value=2.94e9, points=71
+    )
+    result = await edit(TIMELINE=line.to_dict(), SEQUENCE_NAME="odmr_from_rabi")
+
+    assert result["points"] == 71
+    assert result["sweep"]["start"] == pytest.approx(2.8e9)
+    assert result["sweep"]["stop"] == pytest.approx(2.94e9)
+    after = [
+        (p["start"], p["stop"])
+        for t in result["timeline"]["tracks"] for p in t["pulses"]
+    ]
+    assert after == before

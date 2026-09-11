@@ -80,6 +80,23 @@ class Sweep:
     values: tuple[float, ...] = ()
     unit: str = "s"
     label: str = ""
+    parameter: str = ""
+    """The *instrument* setting stepped between points, when the pulser
+    does not play them.
+
+    Empty — the default — means the sequence itself contains every point:
+    the pulser plays the whole sweep in one pass and the counter records
+    one readout per point. That is what an `increment` expresses, and it
+    covers Rabi, Ramsey, Hahn echo and T1.
+
+    A pulsed ODMR sweeps the microwave *frequency*, which no pulse
+    duration can encode: the sequence is one fixed pattern played over
+    and over while something else changes between passes. Naming the
+    setting here says which, and `PulsedMeasurementPlan` steps it. Only
+    the tag matters to the plan — `"frequency"` finds whichever settable
+    that source declares as its frequency, so a source calling it
+    `cw_frequency` needs no special case.
+    """
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "values", tuple(float(v) for v in self.values))
@@ -92,6 +109,12 @@ class Sweep:
     @property
     def array(self) -> np.ndarray:
         return np.asarray(self.values, dtype=np.float64)
+
+    @property
+    def stepped(self) -> bool:
+        """Whether an instrument steps this sweep rather than the pulser
+        playing it — see `parameter`."""
+        return bool(self.parameter)
 
 
 def linear_sweep(name: str, start: float, step: float, points: int, unit: str = "s") -> Sweep:
@@ -357,13 +380,24 @@ class PulseSequence:
             )
 
         if self.sweep is not None:
-            expected = len(self.sweep)
             produced = windows // 2 if self.alternating else windows
+            # A stepped sweep's points are not in the sequence at all: the
+            # pattern is played unchanged at each setting, so one pass is
+            # one point and the run visits it once per value. Checking it
+            # against `len(sweep)` would refuse every pulsed ODMR.
+            expected = 1 if self.sweep.stepped else len(self.sweep)
             if expected != produced:
                 raise SequenceError(
                     f"Sequence {self.name!r} sweeps {expected} point(s) but "
-                    f"produces {produced} readout(s) — the sweep and the "
-                    f"block repetitions disagree"
+                    f"produces {produced} readout(s) — "
+                    + (
+                        f"a sequence whose {self.sweep.name} is stepped by an "
+                        f"instrument plays one point per pass, so it must "
+                        f"produce exactly "
+                        f"{'two readouts (signal and reference)' if self.alternating else 'one readout'}"
+                        if self.sweep.stepped
+                        else "the sweep and the block repetitions disagree"
+                    )
                 )
 
         for index in self.ignore_lasers:
@@ -391,6 +425,7 @@ class PulseSequence:
                     "values": list(self.sweep.values),
                     "unit": self.sweep.unit,
                     "label": self.sweep.label,
+                    "parameter": self.sweep.parameter,
                 }
             ),
             "blocks": [
@@ -426,6 +461,7 @@ class PulseSequence:
                 values=tuple(sweep_data.get("values") or ()),
                 unit=sweep_data.get("unit", "s"),
                 label=sweep_data.get("label", ""),
+                parameter=sweep_data.get("parameter", ""),
             )
             if sweep_data else None
         )

@@ -50,7 +50,9 @@ from labpilot.core.pulse.library import (  # noqa: E402
     build,
 )
 from labpilot.core.pulse.tracks import (  # noqa: E402
+    FREQUENCY,
     LOG,
+    TIME,
     Region,
     SweepAxis,
     Timeline,
@@ -67,6 +69,25 @@ def close(value: float, expected: float, tolerance: float = 1e-15) -> bool:
     """Times are floats and 250 * 1e-9 is not 2.5e-7 exactly, so every
     comparison here is a tolerance rather than an equality."""
     return abs(value - expected) <= tolerance
+
+
+#: How the canvas marks the lane a run actually measures.
+MEASURED = "measured"
+
+
+def _lane(label: str) -> str:
+    """A lane's channel name, without the mark the readout lane carries."""
+    return label.split("\u27f5")[0].strip()
+
+
+def shown(widget: object) -> bool:
+    """Whether a widget would be visible once its window is.
+
+    `isVisible()` is False for every widget here — nothing is ever shown
+    in an offscreen harness — so the question to ask is whether it was
+    explicitly hidden.
+    """
+    return not widget.isHidden()
 
 
 def check(label: str, ok: bool, detail: str = "") -> None:
@@ -90,7 +111,6 @@ DEFAULTS = {
     "MW_CHANNEL": "mw",
     "GATE_CHANNEL": "gate",
     "ANALOG_MW": True,
-    "PREVIEW_POINT": 0,
 }
 
 
@@ -112,17 +132,22 @@ def main() -> int:
     dock = PulseEditorControlWidget(params, generators=sorted(GENERATORS))
     app.processEvents()
     check("it holds no client", not hasattr(dock, "client"))
-    check("the timeline canvas is the first tab", dock.tabs.tabText(0) == "Timeline")
+    check("the sweep settings are the first tab", dock.tabs.tabText(0) == "Sweep")
     check("the rig profile is the second", dock.tabs.tabText(1) == "Rig")
     check(
         "there is no generator tab and no block table",
         dock.tabs.count() == 2,
         f"{[dock.tabs.tabText(i) for i in range(dock.tabs.count())]}",
     )
+    check(
+        "the canvas is not in a tab at all — it is the window",
+        dock.timeline.parent() is not dock.tabs
+        and dock.tabs.indexOf(dock.timeline) == -1,
+    )
 
     print("\n2. One lane per instrument, including the APD readout")
     canvas = dock.timeline
-    lanes = [label for _, label in canvas._axis._tickLevels[0]]
+    lanes = [_lane(label) for _, label in canvas._axis._tickLevels[0]]
     check("a lane per declared channel", lanes == ["laser", "mw", "gate"], f"{lanes}")
     check("in reading order, laser first", lanes[0] == "laser")
     check(
@@ -131,13 +156,34 @@ def main() -> int:
         f"{lanes}",
     )
 
+    print("\n2b. One lane is the measurement, and it says so")
+    marked = [label for _, label in canvas._axis._tickLevels[0] if MEASURED in label]
+    check(
+        "the gate lane is marked as the measurement",
+        [_lane(label) for label in marked] == ["gate"],
+        f"{marked}",
+    )
+    ungated = PulseEditorControlWidget(
+        dict(DEFAULTS, GATE_CHANNEL=None), generators=sorted(GENERATORS)
+    )
+    app.processEvents()
+    ungated_marked = [
+        _lane(label) for _, label in ungated.timeline._axis._tickLevels[0]
+        if MEASURED in label
+    ]
+    check(
+        "with no gate, the laser lane is the measurement",
+        ungated_marked == ["laser"],
+        f"{ungated_marked}",
+    )
+
     print("\n3. The lanes come from the rig profile, not from a pulser")
     renamed = dict(DEFAULTS, GATE_CHANNEL="apd_gate", MW_CHANNEL="microwave")
     other = PulseEditorControlWidget(renamed, generators=sorted(GENERATORS))
     app.processEvents()
     check(
         "a renamed channel is a renamed lane",
-        [label for _, label in other.timeline._axis._tickLevels[0]]
+        [_lane(label) for _, label in other.timeline._axis._tickLevels[0]]
         == ["laser", "microwave", "apd_gate"],
         f"{[label for _, label in other.timeline._axis._tickLevels[0]]}",
     )
@@ -278,11 +324,72 @@ def main() -> int:
     check("so does the spacing", fresh.timeline.timeline.sweep.spacing == LOG)
     check(
         "a constant step is hidden for a log sweep",
-        not fresh.sweep_step.isEnabled() and fresh.sweep_stop.isEnabled(),
+        not shown(fresh.sweep_step) and shown(fresh.sweep_stop),
     )
     fresh.timeline.clear_sweep()
     app.processEvents()
     check("and a sweep can be removed entirely", fresh.timeline.timeline.sweep is None)
+
+    print("\n13b. Switching to a frequency sweep leaves the drawing alone")
+    swept = PulseEditorControlWidget(
+        dict(DEFAULTS, TIMELINE=rabi_timeline().to_dict()),
+        generators=sorted(GENERATORS),
+    )
+    app.processEvents()
+    before = [
+        (p.start, p.stop) for track in swept.timeline.timeline.tracks
+        for p in track.sorted()
+    ]
+    swept.quantity_combo.setCurrentIndex(swept.quantity_combo.findData(FREQUENCY))
+    app.processEvents()
+    axis = swept.timeline.timeline.sweep
+    check("the axis becomes a frequency", axis is not None and axis.quantity == FREQUENCY)
+    check("in hertz, not seconds", axis.unit == "Hz" and axis.name == "frequency")
+    check("nothing is marked on the canvas", axis.regions == ())
+    check(
+        "and not one drawn pulse moved",
+        before == [
+            (p.start, p.stop) for track in swept.timeline.timeline.tracks
+            for p in track.sorted()
+        ],
+    )
+    check(
+        "the region controls have nothing to do, so they are hidden",
+        not shown(swept.region_buttons) and shown(swept.sweep_start),
+    )
+    sequence = swept.timeline.timeline.to_sequence("odmr", alternating=False)
+    check(
+        "the sequence says an instrument steps it",
+        sequence.sweep.stepped and sequence.sweep.parameter == "frequency",
+    )
+    check(
+        "one readout per pass, many points — and it validates",
+        sequence.readouts() == 1 and sequence.points == axis.points,
+        f"{sequence.readouts()} readout(s), {sequence.points} point(s)",
+    )
+
+    print("\n13c. Switching back restores a drawn sweep")
+    swept.quantity_combo.setCurrentIndex(swept.quantity_combo.findData(TIME))
+    app.processEvents()
+    back = swept.timeline.timeline.sweep
+    check("time again", back is not None and back.quantity == TIME and back.unit == "s")
+    check("with a region to drag", len(back.regions) >= 1)
+    check("and the region controls are back", shown(swept.region_buttons))
+
+    print("\n13d. Double-clicking a lane puts a pulse on it")
+    lane_count = len(swept.timeline.timeline.tracks)
+    counts = [len(t.pulses) for t in swept.timeline.timeline.tracks]
+    added = swept.timeline.add_pulse_at(lane_count - 1, swept.timeline.timeline.end * 2)
+    app.processEvents()
+    now = [len(t.pulses) for t in swept.timeline.timeline.tracks]
+    check("it lands on the lane that was clicked", added and now[-1] == counts[-1] + 1)
+    check("and on no other", now[:-1] == counts[:-1], f"{counts} -> {now}")
+    check(
+        "a pulse cannot be dropped on top of another",
+        not swept.timeline.add_pulse_at(
+            lane_count - 1, swept.timeline.timeline.tracks[-1].sorted()[0].start
+        ),
+    )
 
     print("\n14. Filling from an experiment draws it, and editing survives")
     for name in sorted(GENERATORS):

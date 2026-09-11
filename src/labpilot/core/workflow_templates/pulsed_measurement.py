@@ -38,12 +38,23 @@ microseconds and every point improves together. So the axis the run
 iterates is *accumulation*, and row `k` is the analysed curve after that
 many complete passes. The last row is the answer; the others show whether
 it had converged or was still drifting when it stopped.
+
+## Except for a pulsed ODMR, where something does move
+
+A carrier frequency is not a pulse duration, so such a sequence declares
+that an *instrument* steps its axis and the plan walks the values,
+writing each to the bound `microwave` source. Same rows, same streaming,
+same file — rows are complete passes and row `k` is their running mean.
+Nothing in this file changes for it: pick `pulsed_odmr` as the SEQUENCE,
+bind a microwave source, and set `FIT = "dip"`.
 """
 
 from labpilot.core.analysis.fits import (
     evaluate_decay,
+    evaluate_dip,
     evaluate_rabi,
     fit_decay,
+    fit_dip,
     fit_rabi,
 )
 from labpilot.core.pulse import ensure_default_sequences, load_sequence
@@ -100,9 +111,10 @@ EXTRACT_PARAMS: dict = {}
 ANALYSE = "auto"
 ANALYSE_PARAMS: dict = {}
 
-# "rabi" (decaying cosine), "decay" (exponential), or "none". Named
-# rather than inferred: a sequence's name says nothing about the physics
-# it measures, and a hand-edited one may measure something else entirely.
+# "rabi" (decaying cosine), "decay" (exponential), "dip" (Lorentzian, for
+# a pulsed ODMR) or "none". Named rather than inferred: a sequence's name
+# says nothing about the physics it measures, and a hand-edited one may
+# measure something else entirely.
 FIT = "none"
 
 # The source's own on/off actions. `Source` has no generic
@@ -151,6 +163,9 @@ measured = execute(plan)
 # not worth fitting.
 points = sequence.points
 curve = list(measured["data"][-points:])
+# The swept values, whatever they are: a pulse time for the experiments
+# the pulser plays, a microwave frequency for a pulsed ODMR. Kept under
+# the name `tau` for the views and scripts that already read it.
 tau = measured["axis_positions"][1]
 
 fit = None
@@ -162,6 +177,10 @@ elif FIT == "decay":
     fit = fit_decay(tau, curve)
     if fit is not None:
         fit["curve"] = evaluate_decay(fit, tau)
+elif FIT == "dip":
+    fit = fit_dip(tau, curve)
+    if fit is not None:
+        fit["curve"] = evaluate_dip(fit, tau)
 
 RESULT = {
     **measured,

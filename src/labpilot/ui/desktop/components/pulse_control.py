@@ -56,7 +56,12 @@ __all__ = ["PulseMeasurementControlWidget"]
 #: Fit models the template understands. Named rather than inferred: a
 #: sequence's name says nothing about the physics it measures, and a
 #: hand-edited one may measure something else entirely.
-_FITS = (("none", "No fit"), ("rabi", "Rabi (decaying cosine)"), ("decay", "Exponential decay"))
+_FITS = (
+    ("none", "No fit"),
+    ("rabi", "Rabi (decaying cosine)"),
+    ("decay", "Exponential decay"),
+    ("dip", "Resonance dip (Lorentzian)"),
+)
 
 
 def _time_spinbox(value: float, step: float = 1e-9) -> pg.SpinBox:
@@ -173,10 +178,19 @@ class PulseMeasurementControlWidget(QWidget):
             return "Not in the library yet — it is written on the first run."
         if not entry.get("valid", True):
             return f"Will not play: {entry.get('problem', 'unknown problem')}"
-        return (
+        line = (
             f"{entry.get('points', '?')} points, {entry.get('readouts', '?')} readouts, "
             f"{float(entry.get('duration', 0.0)) * 1e6:.1f} us per sweep"
         )
+        stepped = entry.get("stepped_by")
+        if stepped:
+            # Many points and one readout reads as a broken file until you
+            # know the points are not in the sequence at all.
+            line += (
+                f" — the {stepped} is stepped by the bound source, one pass "
+                f"per point, so a 'microwave' role must be bound"
+            )
+        return line
 
     def _channels_text(self) -> str:
         mapping = self._params.get("CHANNELS") or {}

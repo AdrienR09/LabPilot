@@ -55,13 +55,13 @@ instruments, so it opens and runs with everything disconnected.
 |---|---|
 | `core/pulse/sequence.py` — the object model | **Done.** `PulseElement` → `PulseBlock` → `PulseSequence`, symbolic channels, JSON round trip. |
 | `core/pulse/shapes.py` — `Idle`, `DC`, `Sin`, `Gauss`, `Chirp` | **Done.** Parameters are `Parameter` objects, so the settings tree renders a shape editor with no new code. |
-| `core/pulse/library.py` — `rabi`, `ramsey`, `hahn_echo`, `t1` | **Done.** Plus `RigProfile`, the physics a sequence is written against. |
+| `core/pulse/library.py` — `rabi`, `ramsey`, `hahn_echo`, `t1`, `pulsed_odmr` | **Done.** Plus `RigProfile`, the physics a sequence is written against. |
 | `core/pulse/sampling.py` — `expand`, `sample`, `timing_diagram` | **Done.** Two compilation paths; see below. |
 | `core/pulse/store.py` — saved sequence files | **Done.** `~/.labpilot/sequences/<name>.json`, listed with a reason when one will not play. |
-| `workflow_templates/pulse_sequence_editor.py` | **Done.** Binds nothing; writes a sequence file and returns its timing diagram. |
+| `workflow_templates/pulse_sequence_editor.py` | **Done.** Binds nothing; writes a sequence file. Declares no `RESULT_UI` — the canvas is the timing diagram, so the window is the editor and nothing else. |
 | `core/pulse/tracks.py` — the timeline model | **Done.** Per-track intervals to time slices and back, by one rule: every edge on every track is a slice boundary. Qt-free, so the fiddly part is tested headless. |
 | `ui/desktop/components/pulse_timeline.py` — the canvas | **Done.** One lane per instrument, pulses dragged and resized on it, sweep regions shaded across it. |
-| `ui/desktop/components/pulse_editor.py` + the `pulse_sequence` result view | **Done.** The canvas, the sweep panel and a Rig tab, plus a one-lane-per-channel diagram of the finished sequence. |
+| `ui/desktop/components/pulse_editor.py` | **Done.** The canvas across the window, with the sequence, sweep and rig settings in a column beside it. |
 | `core/device/` — `Action`, records, capabilities, `Constraints` | **Done.** The four framework gaps that blocked any of this. |
 | `instruments/pulser_mixin.py` — `PulserMixin` | **Done.** `upload_sequence` takes the abstract sequence and returns what the device really loaded. |
 | `instruments/gated_counter_mixin.py` — `GatedCounterMixin` | **Done.** `configure_gates` returns what it actually set; `get_trace()` is a 2-D `Dataset` with real axes. |
@@ -105,16 +105,31 @@ parameters, which ties a saved sequence to one wiring.
 One canvas, one lane per instrument — laser, microwave, APD readout,
 whatever the rig profile names. A pulse is a box on its lane: drag it
 along, drag its edges to resize, click it to type what dragging cannot
-set. There is no table and no separate generator form.
+set, double-click an empty stretch of a lane to put a new one there.
+There is no table and no separate generator form.
+
+The canvas takes the whole window. The template declares no `RESULT_UI`,
+so nothing is plotted beside it — a second drawing of the same sequence
+used to take half the space, and it was the half you could not edit.
+Everything that is not the canvas lives in a column on the right: the
+name and starting point, the sweep, and the rig profile.
+
+**One lane is the measurement**, and it is marked `⟵ measured`. That is
+the gate, or the laser on a rig with no gate — the same rule
+`PulseSequence.readout_channel` applies, because the run counts *that*
+track's rising edges. How many gates the counter is armed for, how many
+readouts a pass produces and what a point even is all come from that one
+lane, and on an ungated rig it is the laser, which nothing about the word
+"laser" would tell you.
 
 That is the shape a pulse sequence actually has. Every paper draws one,
 every oscilloscope shows one, and a person setting a rig up thinks "the
 gate opens 300 ns after the laser" rather than "element 4 has
 `gate=True`".
 
-**Start from** draws one of the four standard experiments onto the
-canvas. A starting point, not a mode: after that the timeline is what
-gets saved, so a hand-moved gate stays moved.
+**Start from** draws one of the standard experiments onto the canvas. A
+starting point, not a mode: after that the timeline is what gets saved,
+so a hand-moved gate stays moved.
 
 ### Editing is horizontal; the model is vertical
 
@@ -166,6 +181,54 @@ One deliberate difference from Qudi: the lanes come from the **rig
 profile's symbolic channels**, never from a connected pulser's
 `activation_config`. An offline editor has no pulser to ask, and taking
 lanes from one would tie a saved sequence to a single rig's wiring.
+
+### …or the microwave frequency, which no pulse duration can encode
+
+The editor's **Sweep over** control offers three things: nothing, a time,
+or the microwave frequency.
+
+A **time** sweep is the above — regions on the canvas that the pulser
+stretches, one pass playing every point. A **frequency** sweep leaves the
+drawn pattern completely alone: the pi pulse, the laser and the gate stay
+where they are, and what moves between passes is a setting on a bound
+instrument. That is a pulsed ODMR, and it is one combo box rather than a
+second editor because nothing else about the two differs — same tracks,
+same measurement lane, same extraction, same analysis.
+
+What makes it work across the whole stack is one field on the sequence:
+
+```python
+Sweep(name="frequency", values=(...), unit="Hz", parameter="frequency")
+```
+
+`parameter` names the instrument setting stepped between points, and
+empty — the default — means the pulser plays them all itself. Three
+things follow from it:
+
+- **Validation.** The rule that keeps a played sweep safe is that its
+  point count equals its readout count. A pulsed ODMR has 51 points and
+  *one* readout, because its points are not in the sequence at all, so
+  that check would refuse every one of them. `Sweep.stepped` is what
+  distinguishes "51 ≠ 1, a misaligned measurement" from "51 ≠ 1, by
+  construction".
+- **The run.** `PulsedMeasurementPlan` walks the values, writing each to
+  the bound source, re-arming the counter, accumulating, and reading one
+  number back. Rows are complete passes and row *k* is the mean of passes
+  0 to *k* — repeating a sweep and averaging is what makes a slow ODMR
+  immune to drift, and it keeps "the last row is the answer" true on both
+  paths.
+- **The axis.** A stepped axis is genuinely driven, so it is described as
+  `kind="actuator"` naming the instrument and the parameter — the setting
+  is found by its `frequency` **tag**, not by its name, so a source
+  calling it `cw_frequency` needs no special case and one calling it
+  `freq` works too. A source that tags nothing fails at `describe()`,
+  before the pulser is touched, naming what it does offer.
+
+`build("pulsed_odmr", rig, start=2.82e9, stop=2.92e9, points=51)` is the
+shipped generator, and `pulsed_odmr.json` is written alongside the other
+four on first run. Playing it needs a `microwave` role bound; the
+measurement dock says so on the sequence it describes, and the run says
+so by name if you skip it.
 
 ## Sampling is a library, not a pipeline stage
 
@@ -292,7 +355,7 @@ entirely, so `FIT` is `"rabi"`, `"decay"` or `"none"` rather than a guess
 from the file it was loaded from.
 
 A fresh install has an empty sequence library, so the workflow writes the
-four standard experiments out on its first run. It never overwrites: an
+standard experiments out on its first run. It never overwrites: an
 edited `rabi.json` is yours, and silently restoring the shipped one would
 undo an afternoon of calibration.
 

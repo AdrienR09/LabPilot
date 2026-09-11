@@ -116,6 +116,14 @@ class MockMicrowaveSource(AdapterBase):
 
     async def set_cw_frequency(self, value: float) -> None:
         self.cw_frequency = float(value)
+        # Published onto the shared mock bench so `MockGatedCounter` can
+        # show a resonance when a pulsed ODMR steps this source. On a real
+        # rig that dependence travels through the sample; here the bench
+        # stands in for it, exactly as it already does for the gate cable
+        # between the pulser and the counter (pulse_rig.py's `_Bench`).
+        from labpilot.instruments.mock.pulse_rig import bench
+
+        bench().frequency = self.cw_frequency
 
     async def set_cw_power(self, value: float) -> None:
         self.cw_power = float(value)

@@ -34,6 +34,7 @@ from labpilot.core.pulse import (
     shape_from_dict,
     shape_to_dict,
 )
+from labpilot.core.pulse.library import RigProfile, build
 
 MW = Sin(amplitude=0.25, frequency=2.87e9)
 
@@ -328,3 +329,54 @@ def test_a_sequence_file_is_small_enough_to_read_and_diff():
     """It is meant to be versioned and shared, so a 50-point Rabi must not
     serialise its expansion."""
     assert len(json.dumps(rabi().to_dict())) < 4000
+
+
+# --- Sweeps something else steps --------------------------------------------
+
+
+def stepped(points: int = 20, **fields) -> PulseSequence:
+    """One fixed pattern with a frequency axis — a pulsed ODMR."""
+    return build("pulsed_odmr", RigProfile(), points=points).evolve(**fields)
+
+
+def test_a_stepped_sweep_says_who_owns_its_axis():
+    sequence = stepped()
+    assert sequence.sweep.stepped
+    assert sequence.sweep.parameter == "frequency"
+    assert not rabi().sweep.stepped
+
+
+def test_many_points_and_one_readout_is_valid_when_something_else_steps():
+    """The rule that makes a played sweep safe — points must equal
+    readouts — is exactly wrong here: the points are not in the sequence,
+    so one pass is one point and checking against `len(sweep)` would
+    refuse every pulsed ODMR."""
+    sequence = stepped(points=101)
+    assert sequence.points == 101
+    assert sequence.readouts() == 1
+    sequence.validate()
+
+
+def test_a_stepped_sequence_that_reads_out_twice_is_still_refused():
+    """The rule is not dropped, only restated: one pass is one point, so
+    two readouts per pass means two points per setting and a curve that
+    pairs the wrong numbers with the wrong frequencies."""
+    doubled = stepped().evolve(
+        blocks=(stepped().blocks[0], stepped().blocks[0]),
+    )
+    with pytest.raises(SequenceError, match="one readout"):
+        doubled.validate()
+
+
+def test_an_alternating_stepped_sequence_wants_exactly_two_readouts():
+    with pytest.raises(SequenceError, match="signal and reference"):
+        stepped().evolve(alternating=True).validate()
+
+
+def test_who_steps_the_sweep_survives_the_round_trip():
+    """A saved pulsed ODMR that came back as a played sweep would be
+    refused on load, and the reason would be a missing JSON key."""
+    revived = PulseSequence.from_dict(json.loads(json.dumps(stepped().to_dict())))
+    assert revived.sweep.parameter == "frequency"
+    assert revived.sweep.unit == "Hz"
+    revived.validate()

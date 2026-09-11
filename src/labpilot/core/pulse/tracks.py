@@ -56,9 +56,11 @@ sequence, so nothing downstream has to know which was used.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any
+
+import numpy as np
 
 from labpilot.core.pulse.sequence import (
     PulseBlock,
@@ -75,8 +77,10 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
 __all__ = [
+    "FREQUENCY",
     "LINEAR",
     "LOG",
+    "TIME",
     "Pulse",
     "Region",
     "SweepAxis",
@@ -89,6 +93,12 @@ __all__ = [
 
 LINEAR = "linear"
 LOG = "log"
+
+#: What a sweep varies. `TIME` stretches the marked regions and the pulser
+#: plays every point in one pass; `FREQUENCY` leaves the drawn pattern
+#: alone and steps the microwave source between passes — see `SweepAxis`.
+TIME = "time"
+FREQUENCY = "frequency"
 
 #: Two edges closer together than this are the same edge. A pulse whose
 #: end was dragged onto another track's edge should produce one boundary,
@@ -246,38 +256,79 @@ class Region:
 
 @dataclass(frozen=True, slots=True)
 class SweepAxis:
-    """The swept parameter, and every interval on the timeline it sets.
+    """The swept parameter, and how each point is reached.
 
-    Several regions rather than one because a point's tau can appear more
-    than once in a single pass: Ramsey has one free-evolution gap per
-    alternating arm and Hahn echo has two, and all of them are the same
-    tau. They must therefore be the same length, which is checked here
-    rather than producing a sequence that sweeps two different things
-    under one axis name.
+    ## Two ways to sweep, and why both are here
+
+    **Time** stretches marked intervals of the timeline. Several regions
+    rather than one, because a point's tau can appear more than once in a
+    single pass: Ramsey has one free-evolution gap per alternating arm and
+    Hahn echo has two, and all of them are the same tau. They must
+    therefore be the same length, which is checked here rather than
+    producing a sequence that sweeps two different things under one axis
+    name. The pulser plays every point in one pass.
+
+    **Frequency** leaves the drawn pattern completely alone and steps the
+    microwave source between passes. No pulse duration can encode it, so
+    there is nothing to mark on the timeline; the sequence carries the
+    values and `PulsedMeasurementPlan` walks them. This is pulsed ODMR,
+    and it is one field rather than a second editor because everything
+    else about the two is identical — same tracks, same readout, same
+    extraction, same analysis.
+
+    `quantity` is what separates them, and it is what decides whether
+    `regions` are required.
     """
 
     regions: tuple[Region, ...] = ()
     points: int = 50
     step: float = 20e-9
-    """Added to each region's length per point. Linear spacing only."""
+    """Added to each region's length per point. Linear time sweeps only."""
     stop_value: float = 0.0
-    """Each region's length at the *last* point. Log spacing only, where a
-    constant step cannot express a geometric series."""
+    """The value at the *last* point. Used by a logarithmic time sweep,
+    where a constant step cannot express a geometric series, and by every
+    frequency sweep, which is naturally given as start-to-stop."""
     spacing: str = LINEAR
     name: str = "tau"
     unit: str = "s"
+    quantity: str = TIME
+    start_value: float = 0.0
+    """The value at the *first* point. Frequency sweeps only — a time
+    sweep's first value is a length someone drew, so reading it off the
+    regions is the only way the two cannot disagree."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "regions", tuple(self.regions))
-        if not self.regions:
+        if self.quantity not in (TIME, FREQUENCY):
             raise SequenceError(
-                "A sweep needs at least one marked region on the timeline"
+                f"Unknown sweep quantity {self.quantity!r} — use {TIME!r} or "
+                f"{FREQUENCY!r}"
             )
         if self.points < 1:
             raise SequenceError(f"A sweep needs at least one point, got {self.points}")
         if self.spacing not in (LINEAR, LOG):
             raise SequenceError(
                 f"Unknown sweep spacing {self.spacing!r} — use {LINEAR!r} or {LOG!r}"
+            )
+
+        if self.quantity == FREQUENCY:
+            # Defaults carried over from a time sweep would name the axis
+            # "tau" and label it in seconds, which is how a plot ends up
+            # claiming a 2.87 GHz resonance sits at 2.87 gigaseconds.
+            if self.name == "tau":
+                object.__setattr__(self, "name", FREQUENCY)
+            if self.unit == "s":
+                object.__setattr__(self, "unit", "Hz")
+            if self.start_value <= 0 or self.stop_value <= 0:
+                raise SequenceError(
+                    f"A {self.name} sweep needs a positive start and stop "
+                    f"(got {self.start_value} and {self.stop_value} {self.unit})"
+                )
+            return
+
+        if not self.regions:
+            raise SequenceError(
+                "A sweep needs at least one marked region on the timeline"
             )
         lengths = [region.length for region in self.regions]
         if max(lengths) - min(lengths) > EPSILON:
@@ -289,12 +340,37 @@ class SweepAxis:
             )
 
     @property
+    def stepped(self) -> bool:
+        """Whether an instrument steps this sweep rather than the pulser
+        playing it. The timeline is untouched by such a sweep, which is
+        why nothing is marked on it."""
+        return self.quantity != TIME
+
+    @property
     def length(self) -> float:
-        """Each region's length at the first point — the sweep's first value."""
-        return self.regions[0].length
+        """Each region's length at the first point — a time sweep's first
+        value, and 0 for a sweep that marks no regions."""
+        return self.regions[0].length if self.regions else 0.0
 
     def sweep(self) -> Sweep:
         """The values this axis takes, as the sequence's own `Sweep`."""
+        if self.quantity == FREQUENCY:
+            base = (
+                log_sweep(self.name, self.start_value, self.stop_value,
+                          self.points, self.unit)
+                if self.spacing == LOG
+                else Sweep(
+                    self.name,
+                    tuple(
+                        float(v) for v in
+                        np.linspace(self.start_value, self.stop_value, self.points)
+                    ),
+                    self.unit,
+                )
+            )
+            # `parameter` is what tells the run to step a device between
+            # points instead of expecting the pulser to have played them.
+            return replace(base, parameter=FREQUENCY)
         if self.spacing == LOG:
             return log_sweep(
                 self.name, self.length, self.stop_value or self.length,
@@ -308,6 +384,7 @@ class SweepAxis:
             "points": self.points, "step": self.step,
             "stop_value": self.stop_value, "spacing": self.spacing,
             "name": self.name, "unit": self.unit,
+            "quantity": self.quantity, "start_value": self.start_value,
         }
 
     @classmethod
@@ -323,6 +400,8 @@ class SweepAxis:
             spacing=str(data.get("spacing", LINEAR)),
             name=str(data.get("name", "tau")),
             unit=str(data.get("unit", "s")),
+            quantity=str(data.get("quantity", TIME)),
+            start_value=float(data.get("start_value", 0.0)),
         )
 
 
@@ -488,10 +567,15 @@ class Timeline:
         element lengthened so the region measures that point's value. A
         geometric series has no constant increment, so there is nothing
         else it could be.
+
+        Stepped (frequency): one block played once, exactly as drawn. The
+        points are not in the sequence at all — something else changes
+        between passes — so there is nothing here to vary.
         """
         sweep = self.sweep
-        if sweep is None:
-            return [PulseBlock("block", tuple(elements), repetitions=1)]
+        if sweep is None or sweep.stepped:
+            name = sweep.name if sweep is not None else "block"
+            return [PulseBlock(name, tuple(elements), repetitions=1)]
 
         last = self._last_elements(boundaries)
         fixed = self._fixed_lengths(elements, boundaries, last)
@@ -688,6 +772,15 @@ def _axis_of(sequence: PulseSequence, block: PulseBlock) -> SweepAxis | None:
         return None
 
     values = sequence.sweep.array
+    if sequence.sweep.stepped:
+        # Nothing on the timeline moved, so there is nothing to find in the
+        # elements: the axis is entirely in the sweep's own values.
+        return SweepAxis(
+            points=len(values), spacing=LINEAR, quantity=FREQUENCY,
+            start_value=float(values[0]), stop_value=float(values[-1]),
+            name=sequence.sweep.name, unit=sequence.sweep.unit,
+        )
+
     swept = [
         position for position, element in enumerate(block.elements) if element.increment
     ]

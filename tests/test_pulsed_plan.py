@@ -13,6 +13,12 @@ improves together. So the axis this plan iterates is **accumulation**,
 and the result is a 2-D `(sweeps, tau)` history whose last row is the
 answer. These check that the history is real rather than the same curve
 written twenty times.
+
+The third is that a pulsed ODMR did not need a second engine. Its points
+are a microwave frequency, which no pulse duration encodes, so the plan
+steps a bound source instead of expecting the pulser to have played them
+— a second *loop*, keeping the same rows, the same patches, the same
+abort and the same file. The last group of tests pins that seam.
 """
 
 from __future__ import annotations
@@ -380,3 +386,162 @@ async def test_a_role_that_is_not_bound_is_simply_not_driven():
 
     patches = [p async for p in measurement.points(session, descriptor)]
     assert len(patches) == 1
+
+
+# --- The sweep the pulser does not play -------------------------------------
+#
+# A pulsed ODMR's points are a carrier frequency, which no pulse duration
+# can encode. So the sequence is one fixed pattern and something else
+# moves between passes — `Sweep.parameter` names what, and this plan steps
+# it. These pin that the second loop is a second *loop*, not a second
+# engine: the descriptor, the patches, the abort and the file all come
+# from the same `Run`.
+
+
+def odmr(points: int = 9, start: float = 2.85e9, stop: float = 2.89e9) -> object:
+    return build("pulsed_odmr", RigProfile(), start=start, stop=stop, points=points)
+
+
+async def test_a_stepped_sweep_describes_a_driven_axis():
+    """`kind="actuator"` with a device is not decoration: it is the
+    difference between an axis a view can say something about and a bare
+    index. The run really does write each value to that instrument."""
+    session = await source(await rig())
+    measurement = plan(odmr(9), microwave="microwave", sweeps=20, checkpoints=3)
+    descriptor = await measurement.describe(session)
+
+    passes, frequency = descriptor.axes
+    assert passes.name == "passes"
+    assert frequency.name == "frequency"
+    assert frequency.unit == "Hz"
+    assert frequency.kind == "actuator"
+    assert frequency.device == "microwave"
+    # Found by tag, not by name — the mock source calls it `cw_frequency`.
+    assert frequency.param == "cw_frequency"
+    assert descriptor.shape == (3, 9)
+
+
+async def test_each_point_is_written_to_the_source_in_order():
+    session = await source(await rig(bright_rate=4e8))
+    measurement = plan(odmr(5), microwave="microwave", sweeps=10, checkpoints=1)
+    descriptor = await measurement.describe(session)
+
+    written: list[float] = []
+    device = session.get("microwave")
+    original = device.write
+
+    async def record(values: dict) -> None:
+        written.extend(float(v) for v in values.values())
+        await original(values)
+
+    device.write = record
+    async for _ in measurement.points(session, descriptor):
+        pass
+
+    assert written == pytest.approx(list(descriptor.axes[1].values))
+
+
+async def test_a_stepped_row_is_the_mean_of_every_pass_so_far():
+    """Repeating a sweep and averaging is what makes a slow ODMR immune to
+    drift, so row k must be the running mean rather than pass k alone —
+    which also keeps "the last row is the answer" true on both paths."""
+    session = await source(await rig(bright_rate=4e8))
+    measurement = plan(odmr(5), microwave="microwave", sweeps=10, checkpoints=3)
+    descriptor = await measurement.describe(session)
+    result = await Run(descriptor, session).execute(
+        measurement.points(session, descriptor)
+    )
+
+    data = np.asarray(result["data"], dtype=float).reshape(descriptor.shape)
+    assert data.shape == (3, 5)
+    assert np.isfinite(data).all()
+
+
+async def test_a_pulsed_odmr_recovers_the_resonance_that_was_injected():
+    """The end-to-end claim for the stepped path, exactly as the Rabi test
+    makes it for the played one: the simulated sample was told where its
+    transition is, and the measured dip has to land on it."""
+    session = await source(
+        await rig(bright_rate=4e8, contrast=0.3, resonance=2.868e9, linewidth=6e6)
+    )
+    sequence = odmr(points=25, start=2.855e9, stop=2.881e9)
+    measurement = plan(sequence, microwave="microwave", sweeps=40, checkpoints=1)
+    descriptor = await measurement.describe(session)
+    result = await Run(descriptor, session).execute(
+        measurement.points(session, descriptor)
+    )
+
+    curve = np.asarray(result["data"], dtype=float).reshape(descriptor.shape)[-1]
+    frequencies = descriptor.axes[1].values
+    assert frequencies[int(np.argmin(curve))] == pytest.approx(2.868e9, abs=2e6)
+    # A real dip, not noise: the centre must sit well below the wings.
+    assert curve.min() < curve.max() * 0.95
+
+
+async def test_a_stepped_sweep_with_no_source_bound_says_what_to_bind():
+    """It cannot fall back to playing the sweep — there is nothing in the
+    sequence to play — so the failure has to name the fix."""
+    session = await rig()
+    measurement = plan(odmr(5), microwave="microwave", sweeps=10, checkpoints=1)
+    descriptor = await measurement.describe(session)
+
+    with pytest.raises(ValueError, match="'microwave' role bound"):
+        async for _ in measurement.points(session, descriptor):
+            pass
+
+
+async def test_a_source_with_no_frequency_to_step_says_what_it_does_offer():
+    """By tag, so a vendor spelling it `freq` works — and one that tags
+    nothing fails by name, at `describe()`, before the pulser is touched
+    at all. That is the same moment the sequence itself is validated, and
+    for the same reason: a run that cannot produce its axis should not
+    start."""
+    session = await rig()
+    laser = adapter_registry.get("mock_laser")()
+    await laser.connect()
+    session.register(laser, "microwave")
+
+    measurement = plan(odmr(5), microwave="microwave", sweeps=10, checkpoints=1)
+    with pytest.raises(ValueError, match="no settable tagged 'frequency'"):
+        await measurement.describe(session)
+
+
+async def test_the_played_path_is_untouched_by_any_of_this():
+    """A Rabi still plays its whole sweep in one pass — the stepped loop
+    is reached only when the sequence says an instrument owns the axis."""
+    measurement = plan(rabi(12))
+    assert not measurement.stepped
+    descriptor = await measurement.describe(await rig())
+    assert descriptor.axes[0].name == "sweeps"
+    assert descriptor.axes[1].name == "tau"
+
+
+# --- Through the measurement template, not just the plan --------------------
+
+
+async def test_the_template_runs_a_pulsed_odmr_and_fits_its_dip():
+    """The wiring between the three pieces the stepped path added: the
+    library generator, the stepped loop, and `FIT = "dip"`. Each is tested
+    on its own above; this is the one that breaks if they stop agreeing on
+    what the x-axis holds."""
+    import pathlib
+
+    import labpilot.core.workflow_templates as template_package
+    from labpilot.core.run.script import run_script
+
+    session = await source(await rig(
+        bright_rate=4e8, contrast=0.3, resonance=2.867e9, linewidth=6e6
+    ))
+    template = pathlib.Path(template_package.__path__[0]) / "pulsed_measurement.py"
+    result = await run_script(session, template, {
+        "SEQUENCE": "pulsed_odmr",
+        "SWEEPS": 20, "CHECKPOINTS": 1, "BIN_WIDTH": 8e-9,
+        "FIT": "dip", "CHANNELS": CHANNELS,
+    })
+
+    # `tau` carries the swept values whatever they are — hertz here.
+    assert result["tau"][0] > 1e9
+    assert len(result["curve"]) == len(result["tau"])
+    assert result["fit"] is not None
+    assert result["fit"]["center"] == pytest.approx(2.867e9, abs=2e6)
+    assert result["fit"]["fwhm"] == pytest.approx(6e6, rel=0.3)
