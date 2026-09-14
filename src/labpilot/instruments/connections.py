@@ -72,6 +72,22 @@ CONNECTION_METHODS: dict[str, ConnectionMethod] = {
             ),
         ),
     ),
+    # An R-Series card is an FPGA: what it *does* is whatever gateware was
+    # compiled onto it, so the bitfile is the real setting. Leaving it
+    # blank is a first-class choice, not an omission — the pulsed
+    # measurement then picks the image its sequence needs from the library
+    # in ~/.labpilot/config/ni_rseries.toml. See instruments/NI/bitfiles.py.
+    "ni_fpga": ConnectionMethod(
+        "ni_fpga", "NI R-Series (FPGA)",
+        (
+            ConnectionField("resource", "str", "RIO resource name", "RIO0"),
+            ConnectionField("model", "str", "Card model", "generic"),
+            ConnectionField(
+                "bitfile", "str",
+                "Bitfile (.lvbitx; blank = chosen from the library)", "",
+            ),
+        ),
+    ),
     # seabreeze finds Ocean Optics spectrometers over USB itself, so the
     # only address is which one — and naming the model makes its exposure
     # limits and pixel count known before it is plugged in.

@@ -439,6 +439,37 @@ plus both templates in `test_template_smoke.py`. Offscreen:
 `scripts/verify_pulse_editor.py` (52 checks, driving the real canvas) and
 `scripts/verify_pulse_measurement.py` (34).
 
+## Driving it with an NI R-Series FPGA card
+
+`ni_rseries_fpga` is a pulser like the PulseStreamer and the PulseBlaster
+are, with one difference that matters to a measurement: when its image
+also has a counting half, **one card fills both roles**.
+
+```python
+lp.connect("fpga", "ni_rseries_fpga", resource="RIO0", model="7852",
+           bitfile="~/fpga/pulser8.lvbitx",
+           channels="DIO0, DIO1, DIO2", tick_rate=100e6)
+
+run = lp.pulsed(seq, pulser="fpga", counter="fpga", sweeps=2000)
+```
+
+Binding one instrument to two roles is legal because the card is
+`kind="generic"` — which fits any role — and because it advertises both
+capabilities when its bitfile has both. Nothing special-cases it.
+
+Leave `bitfile` empty and the measurement chooses the image itself, from
+the library in `~/.labpilot/config/ni_rseries.toml`: it knows the sequence
+needs three channels and a counter, and the library says which of your
+compiled images offers that. Nothing is compiled at run time — see
+[instruments.md](instruments.md#ni-r-series-fpga-cards) for why that is
+the only honest reading of "convert the sequence to an FPGA program", and
+for the register-and-FIFO contract your gateware has to meet.
+
+The sequence's own readout count arms the counter, so the gates are
+exactly the readouts the program will produce rather than a hand-typed
+number — the same property that makes `describe()` able to state the run's
+axes up front.
+
 ## Deliberate differences from Qudi
 
 A clean-room reimplementation of the design — Qudi's pulsed sources are

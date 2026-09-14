@@ -65,6 +65,14 @@ ni = [
     "nidaqmx >= 0.9 ; sys_platform != 'darwin'",
     "pylablib >= 1.4",
 ]
+# NI R-Series FPGA cards (instruments/NI/fpga.py). `nifpga` is NI's own
+# host interface; it needs the NI-RIO driver installed as well, which is
+# Windows and Linux only. The bitfile itself is compiled from a LabVIEW
+# FPGA project and cannot be shipped by anyone — see instruments/NI/
+# rseries.toml.
+ni-fpga = [
+    "nifpga >= 22.0 ; sys_platform != 'darwin'",
+]
 # Ocean Optics / Ocean Insight spectrometers (instruments/OceanOptics/).
 oceanoptics = [
     "seabreeze >= 2.0",

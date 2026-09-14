@@ -106,6 +106,7 @@ NI-DAQmx:
 | `app` | PyQt6, pyqtgraph, pymodaq_gui, qtconsole | the desktop app |
 | `pymeasure` / `pylablib` | those libraries | the ~200 adapters backed by each |
 | `ni` | nidaqmx (not macOS — NI ships no build) | NI DAQ cards |
+| `ni-fpga` | nifpga | NI R-Series FPGA cards |
 | `oceanoptics` | seabreeze | Ocean Optics spectrometers |
 | `swabian` | pulsestreamer | the Pulse Streamer |
 | `spincore` | spinapi + the vendor driver | the PulseBlaster |

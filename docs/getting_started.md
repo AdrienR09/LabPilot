@@ -18,6 +18,7 @@ enough to write and run acquisition scripts. Driver libraries are extras:
 | `pymeasure` | PyMeasure-backed instrument adapters |
 | `pylablib` | pylablib-backed instrument adapters |
 | `ni` | NI DAQ cards. No macOS build exists — NI ships DAQmx for Windows and Linux only |
+| `ni-fpga` | NI R-Series FPGA cards, via nifpga (also needs the NI-RIO driver) |
 | `oceanoptics` | Ocean Optics / Ocean Insight spectrometers, via seabreeze |
 | `swabian` | The Swabian Pulse Streamer |
 | `spincore` | The SpinCore PulseBlaster (also needs the vendor driver) |

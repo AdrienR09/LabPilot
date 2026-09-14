@@ -444,6 +444,10 @@ INSTRUMENT_CATALOG.extend([
     # The I/O paths are built against pylablib's verified API but have not
     # been run against a card — see NICardAdapter's docstring.
     InstrumentMetadata("ni_card", "National Instruments", "NI-DAQmx", "NI DAQ Card (any model)", InstrumentType.GENERIC, InstrumentBackend.PYLABLIB, connection_types=['ni_daqmx'], tags=['daq', 'ni-daqmx', 'analog-io', 'counter', 'scanner', 'hardware-scan']),
+    # The FPGA sibling of ni_card, and a genuinely different instrument:
+    # its gateware decides what it is, so the bitfile is the setting that
+    # matters and the pulsed measurement can choose one for itself.
+    InstrumentMetadata("ni_rseries_fpga", "National Instruments", "R-Series", "NI R-Series FPGA Card (any model)", InstrumentType.GENERIC, InstrumentBackend.VENDOR, connection_types=['ni_fpga'], tags=['ni', 'fpga', 'r-series', 'pulser', 'sequencer', 'odmr', 'pulsed', 'nifpga']),
     InstrumentMetadata("pylablib_agilent33220a", "Agilent", "33220A", "Agilent 33220A Function Generator", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, tags=['awg', 'function-generator']),
     InstrumentMetadata("pylablib_agilent33500", "Agilent", "33500", "Agilent 33500 Function Generator", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, tags=['awg', 'function-generator']),
     InstrumentMetadata("pylablib_rigol_dg1000", "Rigol", "DG1000", "Rigol DG1000 Function Generator", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, tags=['awg', 'function-generator']),

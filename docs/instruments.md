@@ -295,6 +295,113 @@ on a sample clock it must be given, and nothing on the card produces a
 implement a fast counter on NI hardware either. Use a TimeTagger or a
 FastComTec for that; see [pulsed.md](pulsed.md).
 
+## NI R-Series FPGA cards
+
+`ni_rseries_fpga` is the FPGA sibling of `ni_card`, and a genuinely
+different instrument. An R-Series board is a user-programmable FPGA with
+analog and digital I/O on it: what it *does* is whatever gateware you
+compiled for it, so two labs' identical cards are two different devices.
+
+**The bitfile is the instrument.** Compiling one needs LabVIEW FPGA and
+the Xilinx toolchain and takes tens of minutes, so "convert the pulse
+sequence into an FPGA program" cannot mean emitting one at run time — and
+this adapter does not pretend otherwise. What it converts the sequence
+into is **instructions**: one `(channel mask, ticks)` word per element,
+streamed into the sequencer engine the bitfile already put on the card.
+Exactly what a PulseBlaster or a PulseStreamer consumes, and never a
+waveform.
+
+qudi's own FPGA pulser confirms this is the right reading: it ships
+pre-compiled images and *switches between them* to change the sample
+rate — a 500 MHz `.bit` and a 950 MHz one, with nothing in between,
+because those are the two someone compiled.
+
+### Two ways to choose the image
+
+Both first-class; neither is the other's fallback.
+
+**Pinned in the configuration** — you compiled it, you know what it does:
+
+```
+resource   = RIO0
+model      = 7852
+bitfile    = ~/fpga/pulser_8ch_100MHz_7852R.lvbitx
+channels   = DIO0, DIO1, DIO2, DIO3
+tick_rate  = 100e6
+```
+
+`channels` is in **bit order**: position in that list is the bit this
+adapter sets in the instruction word, so it must match the order your
+gateware unpacks them in. It is the one setting here that silently
+produces a working sequence on the wrong wires.
+
+**Chosen by the measurement** — leave `bitfile` empty, and
+`upload_sequence` picks from the library in
+`~/.labpilot/config/ni_rseries.toml` the image whose engine can play what
+this sequence asks for: enough channels, the right tick rate, a counter
+if the run needs one. The narrowest fit wins. Still nothing is compiled;
+the choice is among images the lab already built:
+
+```toml
+[[bitfile]]
+name = "pulser8_100MHz"
+path = "~/fpga/pulser_8ch_100MHz_7852R.lvbitx"
+model = "7852"
+tick_rate = 100e6
+channels = ["DIO0", "DIO1", "DIO2", "DIO3",
+            "DIO4", "DIO5", "DIO6", "DIO7"]
+memory = 8192
+counter = true
+```
+
+That library ships **empty**, which is not an omission: a bitfile is
+built from a LabVIEW project and nobody can ship one for your rig.
+
+### The contract with your gateware
+
+The adapter and the LabVIEW VI have to agree on names, and there is no
+standard to appeal to. The agreement is written down in
+`instruments/NI/bitfiles.py` as `Gateware`, defaulted to the reference
+VI's names, and every one is overridable — a lab with a working sequencer
+VI renames four strings rather than editing Python:
+
+| Name | Direction | What it carries |
+|---|---|---|
+| `Instructions` | host → target, U64 | ticks in bits 0–31, channel mask in 32–63 |
+| `Instruction Count` | register | how many words were written |
+| `Run` / `Loop` | registers | play; play repeatedly (what averaging needs) |
+| `Counts` | target → host, U32 | one word per time bin, gate after gate |
+| `Bin Ticks` / `Gates` / `Bins` / `Sweeps` / `Count` | registers | the counting half |
+
+### A `.lvbitx` describes itself
+
+It is XML with the bitstream base64'd inside, so the adapter reads a
+bitfile's whole host interface **with no card present** — the same
+problem the DAQmx model table solves by hand, except here the answer is
+genuinely in a file we already have. Parsing is forgiving on purpose: NI
+has changed that schema between LabVIEW versions, and an image this
+cannot read is still one the driver may well load, so a failed parse
+costs the offline checks and nothing else. Opening the card then
+reconciles what the file claimed against what the session exposes, and
+any disagreement lands in the instrument's `warning` — the same contract
+`ni_card` has with its model table.
+
+### Capabilities follow the gateware
+
+Every image this adapter drives is a pulser, so `PulserMixin` is
+inherited. The counter half is declared on the *schema* only when the
+loaded bitfile actually has the counting registers — which is what lets
+one card fill both roles of a pulsed measurement when its image does
+both, and advertise only `pulser` when it does not. That is the same
+reasoning that makes the DAQ card `generic`: what a device can do follows
+from how it is configured, not from which class was instantiated.
+
+The card table (`instruments/NI/rseries.toml`) is deliberately thin —
+the bitfile decides which lines are driven and how fast, so the card only
+bounds it — and follows the same rule as everywhere else here: a field
+nobody was sure of is left out, and an absent field is never validated.
+`model = "generic"` validates nothing at all.
+
 ## Ocean Optics spectrometers
 
 The same shape, for the same reason. Every Ocean Optics / Ocean Insight

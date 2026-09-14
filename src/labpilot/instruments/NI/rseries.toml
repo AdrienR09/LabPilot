@@ -1,0 +1,169 @@
+# NI R-Series (FPGA) cards, and the compiled bitfiles you have for them.
+#
+# Two tables in one file, because they are the two things you configure
+# `ni_rseries_fpga` with and they refer to each other: a bitfile is
+# compiled for exactly one card.
+#
+# Copy to ~/.labpilot/config/ni_rseries.toml to add or correct entries.
+# Yours is an *override layer*, not a replacement: an entry you do not
+# mention survives untouched, and one you invent is kept. Nothing is ever
+# written back to your file.
+#
+#
+# =========================== [[card]] ===============================
+#
+# What the card physically has. Deliberately thin, and much less
+# load-bearing than instruments/NI/models.toml is for a DAQmx card:
+# on an R-Series board the *bitfile* decides which lines are driven, at
+# what derived clock, and how deep the program memory is. This is only
+# the envelope around that.
+#
+# The repo's rule applies as it does everywhere: **a field nobody was
+# sure of is left out, and an absent field is never validated.** The
+# entries below carry the numbers from NI's published specifications that
+# are consistent across their datasheets — analog counts, the 40 MHz
+# onboard clock, the FPGA part. Per-model DIO counts vary by connector
+# configuration and are given only where the family is unambiguous.
+#
+# Opening a card checks the model against what the driver reports and
+# says so in the instrument's `warning` if they disagree — the device is
+# right by definition.
+
+[family.R5]
+# The Virtex-5 generation: 8 AI, 8 AO, a 40 MHz onboard clock.
+base_clock = 40e6
+ai = 8
+ao = 8
+
+[family.R7]
+# The Kintex-7 generation. Same analog complement, same base clock, much
+# more fabric — which in practice means a deeper instruction memory and a
+# higher derived tick rate for the same design.
+base_clock = 40e6
+ai = 8
+ao = 8
+
+[[card]]
+number = "7841"
+family = "R5"
+label = "NI 7841R"
+buses = ["PCIe", "PXI"]
+fpga = "Virtex-5 LX30"
+dio = 96
+
+[[card]]
+number = "7842"
+family = "R5"
+label = "NI 7842R"
+buses = ["PCIe", "PXI"]
+fpga = "Virtex-5 LX50"
+dio = 96
+
+[[card]]
+number = "7851"
+family = "R5"
+label = "NI 7851R"
+buses = ["PCIe", "PXI"]
+fpga = "Virtex-5 LX30"
+dio = 96
+
+[[card]]
+number = "7852"
+family = "R5"
+label = "NI 7852R"
+buses = ["PCIe", "PXI"]
+fpga = "Virtex-5 LX50"
+dio = 96
+
+[[card]]
+number = "7853"
+family = "R5"
+label = "NI 7853R"
+buses = ["PXI"]
+fpga = "Virtex-5 LX110"
+dio = 96
+
+[[card]]
+number = "7854"
+family = "R5"
+label = "NI 7854R"
+buses = ["PXI"]
+fpga = "Virtex-5 LX110"
+dio = 144
+
+[[card]]
+number = "7855"
+family = "R7"
+label = "NI 7855R"
+buses = ["PCIe", "PXIe", "USB"]
+fpga = "Kintex-7 70T"
+
+[[card]]
+number = "7856"
+family = "R7"
+label = "NI 7856R"
+buses = ["PCIe", "PXIe", "USB"]
+fpga = "Kintex-7 160T"
+
+[[card]]
+number = "7857"
+family = "R7"
+label = "NI 7857R"
+buses = ["PCIe", "PXIe"]
+fpga = "Kintex-7 325T"
+
+[[card]]
+number = "7858"
+family = "R7"
+label = "NI 7858R"
+buses = ["PCIe", "PXIe"]
+fpga = "Kintex-7 410T"
+
+# The escape hatch, exactly as in models.toml: an entry that states no
+# I/O at all. Nothing is checked against it offline, and the bitfile —
+# which is the authority on an R-Series card anyway — is taken at its
+# word. Use it for a FlexRIO target, a cRIO chassis, or any board this
+# table does not list.
+[[card]]
+number = "generic"
+label = "generic (unlisted card)"
+
+
+# ========================== [[bitfile]] =============================
+#
+# The compiled images you have, and what each one's engine can play.
+#
+# **This ships empty, and that is not an omission.** A bitfile is built
+# from a LabVIEW FPGA project with the Xilinx toolchain; it takes tens of
+# minutes, it is specific to one FPGA part, and nobody can ship one for
+# your rig. What ships is the shape of an entry and the register names
+# the reference VI uses.
+#
+# Filling this in is what lets a *measurement* choose the image: the
+# pulsed measurement knows its sequence needs five channels and a
+# counter, and this table says which of your images offers that. Leave it
+# empty and pin one image with the adapter's `bitfile` setting instead —
+# both paths are supported and neither is the fallback for the other.
+#
+# An entry looks like this:
+#
+#     [[bitfile]]
+#     name = "pulser8_100MHz"
+#     path = "~/fpga/pulser_8ch_100MHz_7852R.lvbitx"
+#     model = "7852"                 # the card it was compiled for
+#     tick_rate = 100e6              # the engine's clock, in Hz
+#     channels = ["DIO0", "DIO1", "DIO2", "DIO3",
+#                 "DIO4", "DIO5", "DIO6", "DIO7"]
+#     memory = 8192                  # instructions it holds; 0 = unstated
+#     counter = true                 # it has the counting half too
+#
+#     # Only if your VI does not use the reference names. Anything you
+#     # leave out keeps its default — see bitfiles.py's `Gateware`.
+#     [bitfile.gateware]
+#     instructions = "Pulse FIFO"
+#     run = "Start"
+#
+# `channels` is in **bit order**: position in that list is the bit this
+# adapter sets in the instruction word's channel mask, so it has to match
+# the order your VI unpacks them in. That is the one thing here that
+# silently produces a working sequence on the wrong wires.
