@@ -32,6 +32,9 @@ interface Device {
   status?: 'idle' | 'busy' | 'error';
   kind?: string;
   dimensionality?: string;
+  // Contracts beyond read/write — "pulser", "gated_counter". What a
+  // workflow role with a `capability` requirement is matched against.
+  capabilities?: string[];
   tags?: string[];
   parameters?: Record<string, any>;
   last_reading?: any;
@@ -457,6 +460,7 @@ export const useLabPilotStore = create<LabPilotState>()(
             status: created.status || 'idle',
             kind: created.kind,
             dimensionality: created.dimensionality,
+            capabilities: created.capabilities,
             tags: created.tags,
           });
         });

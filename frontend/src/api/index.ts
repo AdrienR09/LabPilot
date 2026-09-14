@@ -170,8 +170,13 @@ export const loadWorkflowTemplate = (
 
 export interface WorkflowBindingRole {
   role: string;
-  kind: string;
-  dimensionality: string;
+  // `kind`/`dimensionality` are the taxonomy requirement and are often
+  // null: a role that names a `capability` deliberately does not also
+  // name a kind, because the same contract is spelled by adapters of
+  // four different kinds (see instrument_roles.role_refusal).
+  kind: string | null;
+  dimensionality: string | null;
+  capability: string | null;
   instrument_id: string | null;
   optional: boolean;
 }
@@ -203,6 +208,9 @@ export interface DashboardInstrument {
   adapter_type: string;
   kind: string;
   dimensionality: string;
+  // Contracts beyond read/write — "pulser", "gated_counter",
+  // "hardware_scan". What a role with a `capability` requirement matches.
+  capabilities: string[];
   tags: string[];
   connected: boolean;
   status?: 'idle' | 'busy' | 'error';

@@ -23,6 +23,7 @@ itself never changes when a binding is made or changed.
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterable  # noqa: TC003 -- used in a runtime signature
 from pathlib import Path
 from typing import Optional
 
@@ -51,8 +52,25 @@ def role_refusal(
     instrument_id: str,
     kind: str,
     dimensionality: str,
+    capabilities: Iterable[str] = (),
 ) -> str | None:
     """Why this instrument may not fill this role, or None if it may.
+
+    ## A capability decides; a kind only guesses
+
+    `"capability"` is checked first and binds nothing else, because it is
+    the one requirement that is exactly knowable: a device either declares
+    `gated_counter` or it does not, and if it does not, `configure_gates`
+    is a `AttributeError` waiting for the run to reach it.
+
+    That is why a role which names a capability should not also name a
+    kind. A photon counter is a 0D detector, and whether its adapter
+    spells that `kind="counter"` or `kind="detector"` is a taxonomy
+    choice with no bearing on whether it can gate: the mock rig's counter
+    says `counter`, a Time Tagger says `counter` at 1D, an R-Series FPGA
+    card says `generic`, and an APD that grew the mixin says `detector`.
+    Requiring one of those spellings refuses three devices that do the
+    job in order to refuse nothing that does not.
 
     ## A generic instrument fits every role
 
@@ -66,15 +84,23 @@ def role_refusal(
     and it is the reason a card that does the job is missing from the
     list.
 
-    So `generic` satisfies any requirement, and what it can *actually* do
-    is settled where that is knowable: by its schema, when the script asks
-    for a parameter it does not have. That check is exact, names the
-    parameter, and needs no taxonomy.
+    So `generic` satisfies any *kind* requirement, and what it can
+    actually do is settled where that is knowable: by its capabilities
+    above, and by its schema when the script asks for a parameter it does
+    not have. Both checks are exact and need no taxonomy.
 
-    The check stays for every other kind, where it is still useful: a
-    `motor` bound to a `detector` role is nearly always a mis-click, and
-    the error is cheaper than the failed run.
+    The kind check stays for every other kind, where it is still useful:
+    a `motor` bound to a `detector` role is nearly always a mis-click,
+    and the error is cheaper than the failed run.
     """
+    wanted_capability = requirement.get("capability")
+    if wanted_capability and wanted_capability not in set(capabilities or ()):
+        have = ", ".join(sorted(capabilities or ())) or "none"
+        return (
+            f"Role {role!r} needs a {wanted_capability!r} instrument, but "
+            f"{instrument_id!r} declares {have}"
+        )
+
     if kind == GENERIC:
         return None
 

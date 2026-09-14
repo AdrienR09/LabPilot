@@ -90,6 +90,51 @@ const InstrumentNode = ({ data }: { data: any }) => {
   );
 };
 
+// Why this instrument may not fill this role, or null if it may — the
+// exact mirror of `instrument_roles.role_refusal` on the backend, which
+// re-checks it in PUT .../bindings/{role}. Kept as one function so the
+// port's "needs ..." label, the drag validation and the server can never
+// drift apart.
+//
+// Three rules, in the order the backend applies them:
+//
+//  1. A declared `capability` decides on its own. It is the only exactly
+//     knowable requirement — a device either declares `gated_counter` or
+//     `configure_gates` does not exist — and a role that names one names
+//     no kind, because the same contract is spelled `counter`,
+//     `detector` and `generic` by different adapters for the same job.
+//  2. A `generic` instrument satisfies any kind. An NI card is an
+//     actuator, a detector and a counter depending only on which
+//     terminal a workflow asks for, so refusing it is the taxonomy
+//     asserting what it cannot know. This rule was missing here, which
+//     is why a generic card the backend would happily bind could not be
+//     dragged onto any port at all.
+//  3. A role with no declared dimensionality (e.g. omniscan.py's
+//     "detector") accepts any, rather than comparing a real
+//     dimensionality against undefined and refusing everything.
+function portRefusal(instrument: any, port: any): string | null {
+  if (port.capability && !(instrument.capabilities || []).includes(port.capability)) {
+    return `needs a ${port.capability} instrument`;
+  }
+  if (instrument.kind === 'generic') return null;
+  if (port.kind && instrument.kind !== port.kind) {
+    return `needs kind ${port.kind}`;
+  }
+  if (port.dimensionality && instrument.dimensionality !== port.dimensionality) {
+    return `needs ${port.dimensionality}`;
+  }
+  return null;
+}
+
+/** What a port asks for, in the words of whichever requirement it
+ * declares — a capability where it names one, the kind/dimensionality
+ * pair otherwise, and "any instrument" where it constrains nothing. */
+function portRequirement(port: any): string {
+  if (port.capability) return `a ${port.capability}`;
+  const parts = [port.dimensionality, port.kind].filter(Boolean);
+  return parts.length ? parts.join(' ') : 'any instrument';
+}
+
 // One empty/filled slot inside a workflow's binding box — represents a
 // `REQUIRED_INSTRUMENTS` role from a role-based template
 // (core/workflow_templates/). Connecting an instrument node to this node's
@@ -115,7 +160,7 @@ const PortNode = ({ data }: { data: any }) => {
             )}
           </div>
           <div className="text-[10px] text-gray-500 dark:text-gray-400">
-            needs {data.dimensionality} {data.kind}
+            needs {portRequirement(data)}
           </div>
         </div>
       </div>
@@ -295,6 +340,7 @@ function buildBindingNodesAndEdges(
         role: role.role,
         kind: role.kind,
         dimensionality: role.dimensionality,
+        capability: role.capability,
         instrumentId: role.instrument_id,
         instrumentName: boundDevice ? boundDevice.name : role.instrument_id,
         optional: role.optional,
@@ -383,6 +429,7 @@ function instrumentNodesFromDevices(devices: any[], x: number): Node[] {
       label: inst.name,
       kind: inst.kind || 'detector',
       dimensionality: inst.dimensionality || '0D',
+      capabilities: inst.capabilities || [],
       connected: inst.connected || false,
       status: inst.status,
       error: inst.error,
@@ -546,29 +593,17 @@ export default function Flow() {
   const refresh = () => loadView();
 
   // A connection is only valid instrument -> port, and only when the
-  // instrument's kind + dimensionality match what the role requires — a
-  // mismatched drag is refused here rather than silently accepted (the
-  // backend re-validates the same thing in PUT .../bindings/{role}, this
-  // is just so a bad drag never visually "sticks").
-  //
-  // A role with no declared dimensionality (e.g. omniscan.py's "detector"
-  // — REQUIRED_INSTRUMENTS = {"kind": "detector"}, no "dimensionality" key,
-  // so it accepts a 0D/1D/ND detector interchangeably) must accept ANY
-  // instrument dimensionality, mirroring the backend's own check exactly
-  // (server.py: `if requirement.get("dimensionality") and actual_dim !=
-  // requirement["dimensionality"]`) — this used to compare
-  // dimensionality with strict equality unconditionally, so a role with
-  // no restriction at all (undefined/null) could never equal a real
-  // instrument's dimensionality string and no detector could ever connect.
+  // instrument satisfies what the role requires — a mismatched drag is
+  // refused here rather than silently accepted (the backend re-validates
+  // the same thing in PUT .../bindings/{role}; this is just so a bad drag
+  // never visually "sticks"). `portRefusal` is that rule, kept in one
+  // place so the tooltip and the drag cannot disagree.
   const isValidConnection = useCallback(
     (connection: Connection) => {
       const source = nodes.find((n) => n.id === connection.source);
       const target = nodes.find((n) => n.id === connection.target);
       if (!source || !target || source.type !== 'instrument' || target.type !== 'port') return false;
-      return (
-        source.data.kind === target.data.kind &&
-        (!target.data.dimensionality || source.data.dimensionality === target.data.dimensionality)
-      );
+      return portRefusal(source.data, target.data) === null;
     },
     [nodes]
   );

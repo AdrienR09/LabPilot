@@ -61,9 +61,16 @@ from labpilot.core.pulse import ensure_default_sequences, load_sequence
 from labpilot.core.run import PulsedMeasurementPlan
 from labpilot.script import bind, execute
 
+# Named by what they must *do*, not by which of the five kinds their
+# adapter happens to call itself. A photon counter is a 0D detector, and
+# the four that can gate one spell their kind four different ways —
+# `counter` on the mock rig, `counter` at 1D on a Time Tagger, `generic`
+# on an R-Series FPGA card, `detector` on an APD whose adapter grew the
+# mixin. The capability is the same fact in every case, and it is the one
+# that decides whether `configure_gates` exists.
 REQUIRED_INSTRUMENTS = {
-    "pulser": {"kind": "generic", "capability": "pulser"},
-    "counter": {"kind": "counter", "capability": "gated_counter"},
+    "pulser": {"capability": "pulser"},
+    "counter": {"capability": "gated_counter"},
     # A digital rig gates an always-on source with the pulser, so neither
     # of these has to be bound. Naming one records it in the run's
     # provenance; naming the microwave also switches it around the run.

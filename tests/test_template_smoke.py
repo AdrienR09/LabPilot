@@ -66,6 +66,15 @@ _MOCKS = {
     ("counter", None): MockGatedCounter,
 }
 
+# A role that names a capability names no kind — the same contract is
+# spelled `counter`, `detector` and `generic` by adapters that all do the
+# job, so the kind cannot select the mock either. Looked up first, because
+# it is the requirement that actually decides.
+_BY_CAPABILITY: dict[str, type] = {
+    "pulser": MockPulser,
+    "gated_counter": MockGatedCounter,
+}
+
 # Per-template constant overrides, passed as the workflow instance's
 # parameters — exactly how a saved instance overrides a template's
 # defaults. Purely about runtime: every template ships defaults sized for a real
@@ -116,13 +125,6 @@ _MOCK_OVERRIDES: dict[tuple[str, str], type] = {
     # asks for an integration time — which a 0D counter has no parameter
     # for, and omniscan rightly refuses to silently ignore.
     ("hyperspectral_imaging", "detector"): MockBasicDetector1D,
-    # A pulser is `kind="generic"` like a hardware scanner, so the
-    # per-kind mock is the wrong device entirely — capability, not kind,
-    # is what actually distinguishes them.
-    **{
-        (name, "pulser"): MockPulser
-        for name in ("pulsed_measurement", "rabi", "ramsey", "hahn_echo", "t1")
-    },
 }
 
 
@@ -184,12 +186,17 @@ async def _build_session(script: str, name: str, mock_key: str | None = None) ->
             continue
         kind = spec.get("kind")
         dim = spec.get("dimensionality")
+        capability = spec.get("capability")
         factory = (
             _MOCK_OVERRIDES.get((mock_key, role))
+            or _BY_CAPABILITY.get(capability)
             or _MOCKS.get((kind, dim))
             or _MOCKS.get((kind, None))
         )
-        assert factory is not None, f"{name}: no mock for kind={kind!r} dim={dim!r}"
+        assert factory is not None, (
+            f"{name}: no mock for kind={kind!r} dim={dim!r} "
+            f"capability={capability!r}"
+        )
         adapter = factory()
         await adapter.connect()
         session.register(adapter, name=role)

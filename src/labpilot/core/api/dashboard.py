@@ -85,6 +85,10 @@ class InstrumentStatus(BaseModel):
     adapter_type: str
     kind: str  # detector or actuator
     dimensionality: str  # 0D, 1D, 2D, 3D
+    #: Contracts beyond read/write — "pulser", "gated_counter",
+    #: "hardware_scan". What a workflow role with a `capability`
+    #: requirement is matched against, since `kind` cannot say.
+    capabilities: list[str] = []
     tags: list[str]
     connected: bool
     status: str = "idle"  # idle | busy | error
@@ -232,6 +236,7 @@ class DashboardManager:
             adapter_type=handle.adapter_key,
             kind=handle.schema.kind,
             dimensionality=handle.dimensionality,
+            capabilities=sorted(handle.schema.capabilities),
             tags=handle.schema.tags,
             connected=handle.connected,
             status=handle.status,

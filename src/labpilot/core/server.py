@@ -1326,6 +1326,11 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
                 "role": role,
                 "kind": requirement.get("kind"),
                 "dimensionality": requirement.get("dimensionality"),
+                # The contract the role actually needs, where it names one
+                # — a client validates a drag against this rather than
+                # against `kind`, which for a pulser or a gated counter
+                # says nothing (see instrument_roles.role_refusal).
+                "capability": requirement.get("capability"),
                 "instrument_id": bindings.get(role),
                 # e.g. omniscan.py's "scanner" role — an alternative to
                 # its "actuator"/"detector" pair, not required alongside
@@ -1370,6 +1375,7 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
             refusal = role_refusal(
                 role, required[role], request.instrument_id,
                 handle.schema.kind, handle.dimensionality,
+                handle.schema.capabilities,
             )
             if refusal:
                 raise HTTPException(status_code=422, detail=refusal)

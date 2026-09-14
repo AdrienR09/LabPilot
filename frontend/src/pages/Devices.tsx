@@ -450,6 +450,7 @@ export default function Devices() {
           adapter_type: selected.adapter_type,
           kind: selected.kind || 'detector',
           dimensionality: (selected.dimensionality || '0D') as any,
+          capabilities: selected.capabilities || [],
           connected: selected.connected,
           status: selected.status,
           error: selected.error,
