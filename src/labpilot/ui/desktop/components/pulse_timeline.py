@@ -277,15 +277,6 @@ class PulseTimelineWidget(QWidget):
         remove.clicked.connect(self.remove_selected)
         row.addWidget(remove)
 
-        fit = IconButton("Fit", "zoom-fit-best")
-        fit.setToolTip(
-            "Frame the whole sequence. Editing never reframes on its own: "
-            "you zoom in to place an edge, and rescaling under the cursor "
-            "would throw that away."
-        )
-        fit.clicked.connect(lambda _checked=False: self.fit_view())
-        row.addWidget(fit)
-
         row.addSpacing(12)
         row.addWidget(QLabel("Snap"))
         self.snap_combo = QComboBox()
@@ -320,7 +311,11 @@ class PulseTimelineWidget(QWidget):
         self.plot.setLabel("bottom", "Time", units="s")
         self.plot.showGrid(x=True, y=False, alpha=0.25)
         self.plot.setMouseEnabled(x=True, y=False)
-        self.plot.getPlotItem().hideButtons()
+        # pyqtgraph's own auto-range button — the small "A" that appears in
+        # the corner once the view has been panned or zoomed. Left visible
+        # rather than hidden and replaced by a toolbar button of our own:
+        # it is the control every pyqtgraph user already looks for, it costs
+        # no toolbar width, and it shows up exactly when it is useful.
         self.plot.setMenuEnabled(False)
         self._axis = self.plot.getAxis("left")
         # Double-click a lane to put a pulse there. The toolbar's Add
@@ -547,12 +542,14 @@ class PulseTimelineWidget(QWidget):
     def fit_view(self) -> None:
         """Frame the whole sequence.
 
-        Called when a *new* sequence arrives, and from the Fit button —
-        never on an ordinary edit. Re-framing on every edit meant that
-        nudging one pulse rescaled the canvas under the cursor, which is
-        the opposite of what dragging something is supposed to do: you
-        zoom in to place an edge precisely, and the zoom is exactly what
-        gets thrown away.
+        Called when a *new* sequence arrives, and never on an ordinary
+        edit: re-framing on every edit meant that nudging one pulse
+        rescaled the canvas under the cursor, which is the opposite of
+        what dragging something is supposed to do — you zoom in to place
+        an edge precisely, and the zoom is exactly what gets thrown away.
+
+        Reframing on demand is pyqtgraph's own auto-range button (see
+        `_canvas`), not a button of ours.
         """
         end = self.timeline.end or 1e-6
         self.plot.setXRange(-0.02 * end, end * 1.02)

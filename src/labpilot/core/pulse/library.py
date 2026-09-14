@@ -27,6 +27,7 @@ than applied silently.
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -60,6 +61,7 @@ __all__ = [
     "RigProfile",
     "centre_to_centre",
     "generator",
+    "generator_defaults",
     "generator_parameters",
     "hahn_echo",
     "pulsed_odmr",
@@ -290,6 +292,26 @@ def generator_parameters(name: str) -> tuple[Parameter, ...]:
             f"{', '.join(sorted(GENERATORS)) or 'none'}"
         )
     return _PARAMETERS[name]
+
+
+def generator_defaults(name: str) -> dict[str, Any]:
+    """What each declared parameter is worth if you do not pass it.
+
+    Read from the generator function's own signature, because that is
+    where it already is — `rabi(*, tau_start=20e-9, ...)`. Duplicating
+    the numbers onto the `Parameter`s would give two places to change a
+    default and one of them would be missed.
+
+    Only declared parameters are returned, so `profile` and anything else
+    the function takes for its own purposes is not offered as a setting.
+    """
+    declared = {p.name for p in generator_parameters(name)}
+    signature = inspect.signature(GENERATORS[name])
+    return {
+        key: parameter.default
+        for key, parameter in signature.parameters.items()
+        if key in declared and parameter.default is not inspect.Parameter.empty
+    }
 
 
 def _time(name: str, description: str = "") -> Parameter:

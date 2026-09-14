@@ -959,6 +959,11 @@ class WorkflowWindow(QMainWindow):
         from labpilot.ui.desktop.components.pulse_editor import PulseEditorControlWidget
 
         def _set_param(name: str, value) -> None:
+            # Locally first. `_fill_from` reads this same dict for the rig
+            # timing, and the Fill dialog sets those values on its way out
+            # — so without this the very first Fill after changing one
+            # would draw with the number that was there before.
+            params[name] = value
             try:
                 self.client.set_workflow_param(self.workflow_id, name, value)
                 self.status_bar.showMessage(f"{name} set to {value}")
@@ -967,13 +972,19 @@ class WorkflowWindow(QMainWindow):
 
         editor = PulseEditorControlWidget(params, generators=sorted(GENERATORS))
 
-        def _fill_from(generator: str) -> None:
+        def _fill_from(generator: str, arguments: dict) -> None:
             """Draw one of the standard experiments on the canvas.
 
             A starting point, not a mode: what is drawn afterwards is what
             gets saved, so a hand-moved gate stays moved. The generator
             runs here, in this process, because a sequence is pure data
             and there is no hardware in one.
+
+            `arguments` are the experiment's own — tau range and point
+            count, or the frequency span of a pulsed ODMR — collected by
+            the Fill dialog from what the generator declares about itself.
+            The rig timing comes through `params`, which that dialog has
+            already written back.
             """
             from labpilot.core.pulse.library import RigChannel, RigProfile, build
             from labpilot.core.pulse.tracks import timeline_from_sequence
@@ -994,7 +1005,7 @@ class WorkflowWindow(QMainWindow):
                         for entry in editor.channels()
                     ),
                     analog_mw=bool(params.get("ANALOG_MW", True)),
-                ))
+                ), **arguments)
             except Exception as error:
                 self.status_bar.showMessage(f"Could not draw {generator}: {error}")
                 return
@@ -1041,6 +1052,11 @@ class WorkflowWindow(QMainWindow):
         )
 
         def _set_param(name: str, value) -> None:
+            # Locally first. `_fill_from` reads this same dict for the rig
+            # timing, and the Fill dialog sets those values on its way out
+            # — so without this the very first Fill after changing one
+            # would draw with the number that was there before.
+            params[name] = value
             try:
                 self.client.set_workflow_param(self.workflow_id, name, value)
                 self.status_bar.showMessage(f"{name} set to {value}")
@@ -1111,6 +1127,11 @@ class WorkflowWindow(QMainWindow):
         source_id = graph.get("metadata", {}).get("instrument_bindings", {}).get("source")
 
         def _set_param(name: str, value) -> None:
+            # Locally first. `_fill_from` reads this same dict for the rig
+            # timing, and the Fill dialog sets those values on its way out
+            # — so without this the very first Fill after changing one
+            # would draw with the number that was there before.
+            params[name] = value
             try:
                 self.client.set_workflow_param(self.workflow_id, name, value)
                 self.status_bar.showMessage(f"{name} set to {value}")

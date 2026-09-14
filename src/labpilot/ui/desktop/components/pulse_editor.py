@@ -20,18 +20,25 @@ things:
   alternate signal and reference.
 - **Pulse** — everything about whatever is selected: name, time, shape,
   whether it drives its channel, and whether the measurement sweeps it.
-- **Rig profile** — the physics a sequence is written against. Rabi
-  period, laser length and delay, wait time, the symbolic channel names.
-  Not driver settings, which is exactly why they are editable with
-  nothing plugged in.
+- **Channels** — the lanes this rig has and what each one is for. Names,
+  not wiring, which is exactly why they are editable with nothing plugged
+  in.
 
 ## What is not here any more
 
 A track picker and an Add button (double-click the lane and the moment
 you want); a Sweep panel (a sweep is a property of a pulse, so it is
 edited from the pulse); a "No sweep" button and an "Add region" button
-(marking a second pulse is what adds a second place tau appears). Each of
-them was a second way to say something the canvas already says.
+(marking a second pulse is what adds a second place tau appears); a Fit
+button (pyqtgraph's own auto-range button already does that, in the place
+every pyqtgraph user looks for it). Each of them was a second way to say
+something the canvas already says.
+
+The rig's physics — Rabi period, laser length and delay, wait time, the
+microwave defaults — used to sit in a permanent "Rig profile" tab beside
+those. It is in the **Start from** dialog now, because that is the only
+thing that reads it: once a sequence is drawn, what gets saved is the
+drawing, so those fields were live for one click and inert thereafter.
 
 ## Two kinds of sweep, both on the pulse
 
@@ -58,13 +65,15 @@ network call. It emits `sigParamChanged(name, value)` and
 from __future__ import annotations
 
 import contextlib
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -80,7 +89,15 @@ from PyQt6.QtWidgets import (
 )
 
 from labpilot.core.config.paths import sequence_dir
-from labpilot.core.pulse.library import GATE, KINDS, LASER, MW, OTHER
+from labpilot.core.pulse.library import (
+    GATE,
+    KINDS,
+    LASER,
+    MW,
+    OTHER,
+    generator_defaults,
+    generator_parameters,
+)
 from labpilot.core.pulse.sequence import SequenceError
 from labpilot.core.pulse.store import slug
 from labpilot.core.pulse.tracks import Timeline
@@ -94,7 +111,10 @@ def sequence_folder() -> str:
     pressing Save."""
     return str(sequence_dir())
 
-__all__ = ["PulseEditorControlWidget"]
+if TYPE_CHECKING:
+    from labpilot.core.device.parameter import Parameter
+
+__all__ = ["FillDialog", "PulseEditorControlWidget"]
 
 #: What "Start from" offers. Read from `core.pulse.library.GENERATORS` at
 #: build time; this is only the fallback when that is unavailable, and the
@@ -153,6 +173,175 @@ def _show(row: tuple[QFormLayout, QWidget], visible: bool) -> None:
     form.setRowVisible(widget, visible)
 
 
+class FillDialog(QDialog):
+    """What **Start from** draws with — and nothing else.
+
+    Every field here is an argument to one call: `build(generator,
+    profile, **params)`. They used to live in a permanent "Rig profile"
+    tab, which is where the complaint about that tab comes from — after
+    the first Fill they did nothing at all, because what gets saved is
+    the drawing, not the numbers it was drawn from. A control that is
+    live for one click and dead thereafter reads as clutter because it
+    *is* clutter.
+
+    Putting them behind the button that consumes them also closes a real
+    gap. The top half is built from the chosen generator's own declared
+    `Parameter`s — `tau_start`, `tau_step`, `points` for a Rabi,
+    `start`/`stop`/`points` for a pulsed ODMR — which the editor could
+    not set at all before, so Fill always drew the default fifty points
+    and any other range had to be dragged in by hand. `library.py`
+    declares those parameters explicitly, with units and limits, for
+    exactly this; only the console was reading them.
+    """
+
+    def __init__(
+        self, generator: str, params: dict[str, Any], parent: QWidget | None = None
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Start from {generator}")
+        self._generator = generator
+        self._fields: dict[str, pg.SpinBox] = {}
+
+        layout = QVBoxLayout(self)
+        blurb = QLabel(
+            f"Draws a <b>{generator}</b> on the timeline, replacing what is "
+            f"there. A starting point to edit: once drawn, the timeline is "
+            f"what gets saved, so a hand-moved gate stays moved."
+        )
+        blurb.setWordWrap(True)
+        blurb.setStyleSheet("color: #888;")
+        layout.addWidget(blurb)
+
+        experiment = QGroupBox("This experiment")
+        form = QFormLayout(experiment)
+        defaults = generator_defaults(generator)
+        for parameter in generator_parameters(generator):
+            box = self._spin_for(parameter, defaults.get(parameter.name, 0.0))
+            self._fields[parameter.name] = box
+            if parameter.description:
+                box.setToolTip(parameter.description)
+            form.addRow(f"{parameter.name.replace('_', ' ')}:", box)
+        layout.addWidget(experiment)
+
+        timing = QGroupBox("Rig timing")
+        timing.setToolTip(
+            "Physics, not driver settings — so it is all editable with "
+            "nothing connected, which is what lets a sequence be designed "
+            "away from the lab."
+        )
+        timing_form = QFormLayout(timing)
+        self._rig: dict[str, pg.SpinBox] = {}
+        for label, name, default, tip in (
+            ("Rabi period:", "RABI_PERIOD", 200e-9,
+             "One full Rabi oscillation. A pi pulse is half of it and a "
+             "pi/2 pulse a quarter, so every experiment's drive lengths "
+             "come from this one number — calibrate it with a Rabi."),
+            ("Laser length:", "LASER_LENGTH", 3e-6,
+             "How long the readout laser stays on. Long enough to collect "
+             "photons, short enough not to repolarise before you have."),
+            ("Laser delay:", "LASER_DELAY", 700e-9,
+             "Between the readout window closing and the laser actually "
+             "being off: cable length, AOM rise time, photon travel."),
+            ("Wait time:", "WAIT_TIME", 1e-6,
+             "Repolarisation before the next repetition, so each point "
+             "starts from the same spin state."),
+        ):
+            spin = _time_spinbox(params.get(name, default))
+            spin.setToolTip(tip)
+            timing_form.addRow(label, spin)
+            self._rig[name] = spin
+
+        self.rabi_hint = QLabel("")
+        self.rabi_hint.setStyleSheet("color: #888;")
+        timing_form.addRow("", self.rabi_hint)
+        self._rig["RABI_PERIOD"].sigValueChanged.connect(
+            lambda sb: self._update_rabi_hint(sb.value())
+        )
+        self._update_rabi_hint(params.get("RABI_PERIOD", 200e-9))
+        layout.addWidget(timing)
+
+        drive = QGroupBox("Microwave")
+        drive_form = QFormLayout(drive)
+        self.frequency_spin = _sized(pg.SpinBox(
+            value=float(params.get("MW_FREQUENCY", 2.87e9)),
+            bounds=(0.0, None), suffix="Hz", siPrefix=True, step=1e6, dec=True,
+        ))
+        self.amplitude_spin = _sized(pg.SpinBox(
+            value=float(params.get("MW_AMPLITUDE", 0.25)),
+            bounds=(0.0, None), suffix="V", siPrefix=True, step=0.01,
+        ))
+        self.analog_check = QCheckBox("Analog drive (an AWG synthesises the pulse)")
+        self.analog_check.setChecked(bool(params.get("ANALOG_MW", True)))
+        self.analog_check.setToolTip(
+            "Unchecked describes a digital-only rig — a PulseBlaster gating "
+            "an external microwave source. The sequences are identical "
+            "either way; only this flag changes."
+        )
+        self.analog_check.toggled.connect(self._on_analog_toggled)
+        drive_form.addRow("Frequency:", self.frequency_spin)
+        drive_form.addRow("Amplitude:", self.amplitude_spin)
+        drive_form.addRow(self.analog_check)
+        self._on_analog_toggled(self.analog_check.isChecked())
+        layout.addWidget(drive)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Draw")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    @staticmethod
+    def _spin_for(parameter: Parameter, default: Any) -> pg.SpinBox:
+        """One control, from what the generator declared about it.
+
+        Units and limits are stated on the `Parameter`, so nothing here
+        guesses them from the name — which is the trap Qudi's own
+        generator GUI falls into (`'amp' in name` gives it volts). The
+        starting value comes from the generator's own signature, which is
+        where it already lives.
+        """
+        low, high = parameter.limits or (None, None)
+        if parameter.dtype == "i8":
+            return _sized(pg.SpinBox(
+                value=int(default or 1), int=True, step=1, dec=False,
+                bounds=(low, high),
+            ))
+        return _sized(pg.SpinBox(
+            value=float(default or 0.0), bounds=(low, high),
+            suffix=parameter.unit or None, siPrefix=bool(parameter.unit),
+            step=1e-9 if parameter.unit == "s" else 1e6, dec=True, minStep=1e-12,
+        ))
+
+    def _on_analog_toggled(self, analog: bool) -> None:
+        # A digital rig has no amplitude to set: the channel is a gate.
+        self.amplitude_spin.setEnabled(analog)
+        self.frequency_spin.setEnabled(analog)
+
+    def _update_rabi_hint(self, period: float) -> None:
+        self.rabi_hint.setText(
+            f"pi = {period / 2 * 1e9:.1f} ns,  pi/2 = {period / 4 * 1e9:.1f} ns"
+        )
+
+    def rig_values(self) -> dict[str, Any]:
+        """The rig profile fields, as workflow parameters."""
+        values: dict[str, Any] = {
+            name: float(box.value()) for name, box in self._rig.items()
+        }
+        values["MW_FREQUENCY"] = float(self.frequency_spin.value())
+        values["MW_AMPLITUDE"] = float(self.amplitude_spin.value())
+        values["ANALOG_MW"] = bool(self.analog_check.isChecked())
+        return values
+
+    def generator_values(self) -> dict[str, Any]:
+        """The chosen experiment's own arguments."""
+        return {
+            name: (int(box.value()) if box.opts.get("int") else float(box.value()))
+            for name, box in self._fields.items()
+        }
+
+
 class PulseEditorControlWidget(QWidget):
     """The timeline canvas, plus the sequence, sweep and rig settings."""
 
@@ -160,7 +349,8 @@ class PulseEditorControlWidget(QWidget):
     # axes_control.py — snake_case here would be the odd one out.
     sigParamChanged = pyqtSignal(str, object)
     sigGenerate = pyqtSignal()
-    sigFillRequested = pyqtSignal(str)
+    sigFillRequested = pyqtSignal(str, dict)
+    """The generator to draw, and the arguments it was given."""
 
     def __init__(
         self,
@@ -215,7 +405,7 @@ class PulseEditorControlWidget(QWidget):
         # The pulse first: it is what you edit, and the rig profile is
         # what you set once.
         self.tabs.addTab(self.timeline.inspector, "Pulse")
-        self.tabs.addTab(self._build_rig_tab(), "Rig profile")
+        self.tabs.addTab(self._build_channels_tab(), "Channels")
         column.addWidget(self.tabs, 1)
 
         self.generate_button = IconButton("Save sequence", "document-save")
@@ -270,17 +460,13 @@ class PulseEditorControlWidget(QWidget):
             self.generator_combo.setCurrentText(current)
         row.addWidget(self.generator_combo, 1)
 
-        self.fill_button = IconButton("Fill", "document-import")
+        self.fill_button = IconButton("Fill…", "document-import")
         self.fill_button.setToolTip(
             "Draw this experiment on the timeline, replacing what is there. "
-            "A starting point to edit — once filled, the timeline is what "
-            "gets saved."
+            "Asks for its range and your rig's timing first — a starting "
+            "point to edit, and once drawn the timeline is what gets saved."
         )
-        self.fill_button.clicked.connect(
-            lambda _checked=False: self.sigFillRequested.emit(
-                self.generator_combo.currentText()
-            )
-        )
+        self.fill_button.clicked.connect(lambda _checked=False: self._ask_and_fill())
         row.addWidget(self.fill_button)
         form.addRow("Start from:", start)
 
@@ -314,111 +500,54 @@ class PulseEditorControlWidget(QWidget):
             filename = "<not a usable filename>"
         self.path_label.setText(f"{sequence_folder()}/{filename}")
 
-    # --- The Rig tab ------------------------------------------------------
+    # --- The Channels tab -------------------------------------------------
 
-    def _build_rig_tab(self) -> QWidget:
-        """Your rig's numbers — what **Start from** draws with.
+    def _ask_and_fill(self) -> None:
+        """Collect what **Start from** needs, then ask for the drawing.
 
-        Not driver settings, and that is the point: every value here is
-        physics or naming, so it is editable with nothing plugged in,
-        which is what lets a sequence be designed away from the lab. A
-        pulser's sample rate, memory granularity and channel numbers are
-        deliberately absent — they belong to whichever device eventually
-        plays the file, and the editor does not know which that is.
+        The values are stored as workflow parameters on the way through,
+        so the numbers a sequence was drawn with are recorded in the file
+        that drew it rather than living only in a dialog that has closed.
+        """
+        generator = self.generator_combo.currentText()
+        dialog = FillDialog(generator, self._params, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        for name, value in dialog.rig_values().items():
+            self._params[name] = value
+            self.sigParamChanged.emit(name, value)
+        self.sigFillRequested.emit(generator, dialog.generator_values())
+
+    # --- The Channels tab -------------------------------------------------
+
+    def _build_channels_tab(self) -> QWidget:
+        """The lanes this rig has, and what each one is for.
+
+        The one part of the old "Rig profile" tab that is live the whole
+        time you are editing: it is where the lanes come from, so adding a
+        row adds a lane to draw on. Everything else that tab held —
+        Rabi period, laser length, microwave defaults — fed exactly one
+        call, `build()` behind the Fill button, and did nothing at all
+        once a sequence was drawn. It now lives in that button's dialog.
         """
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(8, 8, 8, 8)
 
         preamble = QLabel(
-            "Your rig's own numbers. <b>Start from</b> draws the standard "
-            "experiments with these, and a hand-drawn sequence is written "
-            "against them.<br><br>Nothing here is a driver setting — no "
-            "sample rate, no channel numbers — so it is all editable with "
-            "nothing connected, and the saved file runs on any pulser."
+            "Names, not wiring. Which physical channel each one becomes "
+            "belongs to the measurement workflow's bindings, so the saved "
+            "file runs on any rig.<br><br>A rig may have several of a kind "
+            "— two lasers, two microwave lines, two counters. The "
+            "<i>kind</i> is what the editor reasons about, never the name, "
+            "so a drive called <tt>mw2</tt> is a drive because it says so. "
+            "Declare no gate and the rig is ungated: the laser pulses are "
+            "then the readouts."
         )
         preamble.setWordWrap(True)
         preamble.setStyleSheet("color: #888;")
         layout.addWidget(preamble)
 
-        timing = QGroupBox("Timing")
-        timing_form = QFormLayout(timing)
-        self._rig_spins: dict[str, pg.SpinBox] = {}
-        for label, name, default, tip in (
-            ("Rabi period:", "RABI_PERIOD", 200e-9,
-             "One full Rabi oscillation. A pi pulse is half of it and a "
-             "pi/2 pulse a quarter, so every experiment's drive lengths "
-             "come from this one number — calibrate it with a Rabi."),
-            ("Laser length:", "LASER_LENGTH", 3e-6,
-             "How long the readout laser stays on. Long enough to collect "
-             "photons, short enough not to repolarise before you have."),
-            ("Laser delay:", "LASER_DELAY", 700e-9,
-             "Between the readout window closing and the laser actually "
-             "being off: cable length, AOM rise time, photon travel."),
-            ("Wait time:", "WAIT_TIME", 1e-6,
-             "Repolarisation before the next repetition, so each point "
-             "starts from the same spin state."),
-        ):
-            spin = _time_spinbox(self._params.get(name, default))
-            spin.setToolTip(tip)
-            spin.sigValueChanged.connect(
-                lambda sb, key=name: self.sigParamChanged.emit(key, sb.value())
-            )
-            timing_form.addRow(label, spin)
-            self._rig_spins[name] = spin
-        self.rabi_hint = QLabel("")
-        self.rabi_hint.setStyleSheet("color: #888;")
-        timing_form.addRow("", self.rabi_hint)
-        self._rig_spins["RABI_PERIOD"].sigValueChanged.connect(
-            lambda sb: self._update_rabi_hint(sb.value())
-        )
-        self._update_rabi_hint(self._params.get("RABI_PERIOD", 200e-9))
-        layout.addWidget(timing)
-
-        drive = QGroupBox("Microwave")
-        drive_form = QFormLayout(drive)
-        self.frequency_spin = _sized(pg.SpinBox(
-            value=float(self._params.get("MW_FREQUENCY", 2.87e9)),
-            bounds=(0.0, None), suffix="Hz", siPrefix=True, step=1e6, dec=True,
-        ))
-        self.frequency_spin.sigValueChanged.connect(
-            lambda sb: self.sigParamChanged.emit("MW_FREQUENCY", sb.value())
-        )
-        self.amplitude_spin = _sized(pg.SpinBox(
-            value=float(self._params.get("MW_AMPLITUDE", 0.25)),
-            bounds=(0.0, None), suffix="V", siPrefix=True, step=0.01,
-        ))
-        self.amplitude_spin.sigValueChanged.connect(
-            lambda sb: self.sigParamChanged.emit("MW_AMPLITUDE", sb.value())
-        )
-        self.analog_check = QCheckBox("Analog drive (an AWG synthesises the pulse)")
-        self.analog_check.setChecked(bool(self._params.get("ANALOG_MW", True)))
-        self.analog_check.setToolTip(
-            "Unchecked describes a digital-only rig — a PulseBlaster gating "
-            "an external microwave source. The sequences are identical either "
-            "way; only this flag changes."
-        )
-        self.analog_check.toggled.connect(
-            lambda checked: self._on_analog_toggled(bool(checked))
-        )
-        drive_form.addRow("Frequency:", self.frequency_spin)
-        drive_form.addRow("Amplitude:", self.amplitude_spin)
-        drive_form.addRow(self.analog_check)
-        layout.addWidget(drive)
-
-        channels = QGroupBox("Symbolic channels")
-        channels.setToolTip(
-            "Names, not wiring: the mapping onto a pulser's physical "
-            "channels belongs to the measurement workflow's bindings, so "
-            "this file runs on any rig.\n\n"
-            "A rig may have several of a kind — two lasers, two microwave "
-            "lines, two counters. The *kind* is what the editor reasons "
-            "about, never the name, so a drive called 'mw2' is a drive "
-            "because it says so.\n\n"
-            "Declare no gate and the rig is ungated: the laser pulses are "
-            "then the readouts."
-        )
-        box = QVBoxLayout(channels)
         self.channel_table = QTableWidget(0, 2)
         self.channel_table.setHorizontalHeaderLabels(["Name", "Used for"])
         self.channel_table.horizontalHeader().setStretchLastSection(True)
@@ -426,8 +555,7 @@ class PulseEditorControlWidget(QWidget):
         self.channel_table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows
         )
-        self.channel_table.setMinimumHeight(140)
-        box.addWidget(self.channel_table)
+        layout.addWidget(self.channel_table, 1)
 
         buttons = QWidget()
         row = QHBoxLayout(buttons)
@@ -439,11 +567,8 @@ class PulseEditorControlWidget(QWidget):
         drop.clicked.connect(lambda _checked=False: self._remove_channel_row())
         row.addWidget(drop)
         row.addStretch(1)
-        box.addWidget(buttons)
+        layout.addWidget(buttons)
         self._fill_channel_table()
-        layout.addWidget(channels)
-
-        layout.addStretch()
         return page
 
     # --- The channel table ------------------------------------------------
@@ -498,17 +623,6 @@ class PulseEditorControlWidget(QWidget):
         self.timeline.set_kinds({e["name"]: e["kind"] for e in declared})
         self._describe()
 
-    def _on_analog_toggled(self, analog: bool) -> None:
-        self.sigParamChanged.emit("ANALOG_MW", analog)
-        # A digital rig has no amplitude to set: the channel is a gate.
-        self.amplitude_spin.setEnabled(analog)
-        self.frequency_spin.setEnabled(analog)
-
-    def _update_rabi_hint(self, period: float) -> None:
-        self.rabi_hint.setText(
-            f"pi = {period / 2 * 1e9:.1f} ns,  pi/2 = {period / 4 * 1e9:.1f} ns"
-        )
-
     # --- Wiring -----------------------------------------------------------
 
     def _on_timeline_changed(self, data: Any) -> None:
@@ -556,7 +670,7 @@ class PulseEditorControlWidget(QWidget):
     def declared_channels(params: dict[str, Any]) -> list[dict[str, str]]:
         """The rig's channels, in lane order, each with its kind.
 
-        A plain function of the parameters rather than of the Rig tab's
+        A plain function of the parameters rather than of the Channels tab's
         widgets, because the canvas is built before that tab exists — and
         because these are the one source of truth an offline editor has
         for its lanes. A malformed entry is skipped rather than raised on:

@@ -8,7 +8,7 @@ Three claims are checked here, and they are the ones the design rests on:
    regions shaded across them. Pulses move and resize; a pulse belongs to
    an instrument, so a vertical wobble must not move it to another lane.
 
-2. **The lanes come from the rig profile, not from a connected pulser.**
+2. **The lanes come from the declared channels, not a connected pulser.**
    An offline editor has no pulser to ask, and a sequence that took its
    channels from one would be tied to one rig's wiring. Nothing here
    constructs a client, and nothing reads an instrument schema.
@@ -39,6 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from labpilot.ui.desktop.components.widgets import IconButton  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 import labpilot.ui.qt_api  # noqa: F401, E402  (pins QT_API before Qt loads)
@@ -134,9 +135,9 @@ def main() -> int:
     app.processEvents()
     check("it holds no client", not hasattr(dock, "client"))
     check(
-        "two tabs: the selected pulse, and the rig profile",
+        "two tabs: the selected pulse, and the rig's channels",
         [dock.tabs.tabText(i) for i in range(dock.tabs.count())]
-        == ["Pulse", "Rig profile"],
+        == ["Pulse", "Channels"],
         f"{[dock.tabs.tabText(i) for i in range(dock.tabs.count())]}",
     )
     check(
@@ -185,7 +186,7 @@ def main() -> int:
         f"{ungated_marked}",
     )
 
-    print("\n3. The lanes come from the rig profile, not from a pulser")
+    print("\n3. The lanes come from the declared channels, not from a pulser")
     renamed = dict(DEFAULTS, CHANNELS=[
         {"name": "laser", "kind": "laser"},
         {"name": "microwave", "kind": "mw"},
@@ -532,6 +533,61 @@ def main() -> int:
         "and the canvas grew a lane for it",
         "shutter" in many.timeline.timeline.channels,
         f"{many.timeline.timeline.channels}",
+    )
+
+    print("\n13h. Start from asks for what it draws with")
+    from labpilot.ui.desktop.components.pulse_editor import FillDialog
+
+    dialog = FillDialog("rabi", DEFAULTS)
+    app.processEvents()
+    check(
+        "the experiment's own parameters are offered",
+        sorted(dialog.generator_values()) == ["points", "tau_start", "tau_step"],
+        f"{sorted(dialog.generator_values())}",
+    )
+    check(
+        "with the generator's declared defaults",
+        dialog.generator_values()["points"] == 50,
+        f"{dialog.generator_values()}",
+    )
+    odmr = FillDialog("pulsed_odmr", DEFAULTS)
+    app.processEvents()
+    check(
+        "a different experiment offers different ones",
+        sorted(odmr.generator_values()) == ["points", "start", "stop"],
+        f"{sorted(odmr.generator_values())}",
+    )
+    check(
+        "and they come back in hertz, not seconds",
+        odmr.generator_values()["start"] > 1e9,
+        f"{odmr.generator_values()['start']}",
+    )
+    check(
+        "the rig timing comes back too",
+        sorted(dialog.rig_values()) == [
+            "ANALOG_MW", "LASER_DELAY", "LASER_LENGTH", "MW_AMPLITUDE",
+            "MW_FREQUENCY", "RABI_PERIOD", "WAIT_TIME",
+        ],
+        f"{sorted(dialog.rig_values())}",
+    )
+    check(
+        "a digital rig cannot set an amplitude the pulser does not synthesise",
+        (dialog.analog_check.setChecked(False) or True)
+        and not dialog.amplitude_spin.isEnabled(),
+    )
+    # The values it collects must actually reach `build`, or the dialog is
+    # the same dead control the rig tab was.
+    built = build("rabi", RigProfile(), **{**dialog.generator_values(), "points": 7})
+    check("what it collects is what build() takes", built.points == 7, f"{built.points}")
+
+    print("\n13i. Reframing is pyqtgraph's own button, not one of ours")
+    labels = [
+        w.text() for w in many.timeline.findChildren(IconButton) if w.text()
+    ]
+    check("no Fit button of our own on the toolbar", "Fit" not in labels, f"{labels}")
+    check(
+        "pyqtgraph's auto-range button is left in place",
+        many.timeline.plot.getPlotItem().autoBtn is not None,
     )
 
     print("\n14. Filling from an experiment draws it, and editing survives")
