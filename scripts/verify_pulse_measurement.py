@@ -35,10 +35,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DESKTOP = ROOT / "src" / "labpilot" / "ui" / "desktop"
 
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(DESKTOP))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np  # noqa: E402
@@ -129,8 +127,8 @@ def synthetic_result(*, fit: bool = True, empty: bool = False) -> dict:
 
 
 def main() -> int:
-    from components.pulse_control import PulseMeasurementControlWidget
-    from components.workflow_result import PulsedResultView
+    from labpilot.ui.desktop.components.pulse_control import PulseMeasurementControlWidget
+    from labpilot.ui.desktop.components.workflow_result import PulsedResultView
 
     app = QApplication.instance() or QApplication([])
 

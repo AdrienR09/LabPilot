@@ -61,8 +61,6 @@ import contextlib
 from typing import Any
 
 import pyqtgraph as pg
-from components.pulse_timeline import PulseTimelineWidget
-from components.widgets import IconButton
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -86,6 +84,8 @@ from labpilot.core.pulse.library import GATE, KINDS, LASER, MW, OTHER
 from labpilot.core.pulse.sequence import SequenceError
 from labpilot.core.pulse.store import slug
 from labpilot.core.pulse.tracks import Timeline
+from labpilot.ui.desktop.components.pulse_timeline import PulseTimelineWidget
+from labpilot.ui.desktop.components.widgets import IconButton
 
 
 def sequence_folder() -> str:

@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from components.base import ComponentMeta
+from labpilot.ui.desktop.components.base import ComponentMeta
 
 __all__ = [
     "AxesControl", "PulseControl", "PulseEditorControl", "SweepControl",
@@ -130,7 +130,7 @@ def controls_for(params: dict[str, Any], blocks: list[dict]) -> list[type]:
     build does not have must not stop a window opening, and
     `scripts/verify_ui_registry.py` is where a typo is meant to be caught.
     """
-    from components.base import component_for
+    from labpilot.ui.desktop.components.base import component_for
 
     chosen: list[type] = []
     for block in blocks:

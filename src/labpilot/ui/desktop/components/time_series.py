@@ -16,11 +16,16 @@ import time
 from collections import deque
 
 import numpy as np
-from components.base import UIComponent
-from components.widgets import ProfessionalSpinBox, ValueReadout, dock
 from pymodaq_data.data import Axis, DataRaw
 from pymodaq_gui.plotting.data_viewers.viewer1D import Viewer1D
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+
+from labpilot.ui.desktop.components.base import UIComponent
+from labpilot.ui.desktop.components.widgets import (
+    ProfessionalSpinBox,
+    ValueReadout,
+    dock,
+)
 
 
 class TimeSeriesComponent(UIComponent):

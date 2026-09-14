@@ -9,6 +9,6 @@ original name so existing call sites (main.py, session_manager.py) don't
 need to change their import.
 """
 
-from instrument_window import create_instrument_window
+from labpilot.ui.desktop.instrument_window import create_instrument_window
 
 __all__ = ["create_instrument_window"]

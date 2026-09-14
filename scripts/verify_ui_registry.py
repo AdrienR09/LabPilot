@@ -33,7 +33,6 @@ UI_BLOCKS = DESKTOP / "config" / "ui_blocks.toml"
 WORKFLOW_BLOCKS = DESKTOP / "config" / "workflow_blocks.toml"
 
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(DESKTOP))
 
 failures: list[str] = []
 
@@ -51,9 +50,9 @@ print("LABPILOT UI REGISTRY VERIFICATION")
 print("=" * 78)
 
 print("\n1. Importing the component packages (this is what registers them)...")
-import components  # noqa: E402  — sys.path is set above
-import components.workflow_result  # noqa: E402,F401
-from components.base import component_for, components_in  # noqa: E402
+import labpilot.ui.desktop.components  # noqa: E402  — importing is what registers
+import labpilot.ui.desktop.components.workflow_result  # noqa: E402,F401
+from labpilot.ui.desktop.components.base import component_for, components_in  # noqa: E402
 
 instrument_blocks = components_in("instrument")
 result_views = components_in("result")

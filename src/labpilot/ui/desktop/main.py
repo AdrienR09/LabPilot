@@ -257,8 +257,9 @@ def add_session_menu_to_window(window):
     try:
         from PyQt6.QtGui import QAction
         from PyQt6.QtWidgets import QMenu, QMenuBar
-        from session_gui import QtSessionManagerWindow
-        from session_manager import session_manager
+
+        from labpilot.ui.desktop.session_gui import QtSessionManagerWindow
+        from labpilot.ui.desktop.session_manager import session_manager
 
         # Create menu bar if it doesn't exist
         if not window.menuBar():
@@ -358,9 +359,9 @@ def main():
         # Launch specific instrument window, fetching its real status from
         # the same backend the React frontend uses — never a stub/fake entry.
         try:
-            from backend_client import BackendClient
-            from instrument_windows import create_instrument_window
-            from session_manager import session_manager
+            from labpilot.ui.desktop.backend_client import BackendClient
+            from labpilot.ui.desktop.instrument_windows import create_instrument_window
+            from labpilot.ui.desktop.session_manager import session_manager
 
             client = BackendClient(args.backend_url)
             instrument_data = client.get_instrument(args.instrument)
@@ -400,9 +401,9 @@ def main():
         # Combined native window for every instrument the workflow
         # references — see workflow_window.py.
         try:
-            from backend_client import BackendClient
-            from session_manager import session_manager
-            from workflow_window import WorkflowWindow
+            from labpilot.ui.desktop.backend_client import BackendClient
+            from labpilot.ui.desktop.session_manager import session_manager
+            from labpilot.ui.desktop.workflow_window import WorkflowWindow
 
             client = BackendClient(args.backend_url)
             window = WorkflowWindow(args.workflow, client)

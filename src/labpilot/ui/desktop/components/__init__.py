@@ -10,7 +10,7 @@ import labpilot.ui.qt_api  # pins QT_API before qtpy loads
 
 # isort: split
 
-from components import (  # noqa: F401 — import for registration side effect
+from labpilot.ui.desktop.components import (  # noqa: F401 — import for registration side effect
     actions,
     channel_table,
     hyperspectral_viewer,
@@ -22,7 +22,7 @@ from components import (  # noqa: F401 — import for registration side effect
     viewer,
     workflow_controls,
 )
-from components.base import (
+from labpilot.ui.desktop.components.base import (
     REGISTRY,
     ComponentMeta,
     UIComponent,

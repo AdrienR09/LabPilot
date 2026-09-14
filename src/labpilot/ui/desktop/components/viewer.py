@@ -14,8 +14,6 @@ viewer.
 from __future__ import annotations
 
 import numpy as np
-from components.base import UIComponent
-from components.widgets import IconButton, dock
 from pymodaq_data.data import Axis, DataRaw
 from pymodaq_gui.plotting.data_viewers.viewer0D import Viewer0D
 from pymodaq_gui.plotting.data_viewers.viewer1D import Viewer1D
@@ -31,6 +29,8 @@ from PyQt6.QtWidgets import (
 )
 
 from labpilot.core.analysis.fits import fit_peak
+from labpilot.ui.desktop.components.base import UIComponent
+from labpilot.ui.desktop.components.widgets import IconButton, dock
 
 _VIEWER_CLASSES = {"0D": Viewer0D, "1D": Viewer1D, "2D": Viewer2D, "ND": ViewerND}
 

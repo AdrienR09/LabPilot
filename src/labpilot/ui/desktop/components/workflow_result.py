@@ -25,13 +25,6 @@ from typing import Any, Callable, ClassVar, Optional
 
 import numpy as np
 import pyqtgraph as pg
-from components.base import ComponentMeta
-from components.nd_math import (
-    compute_1d_projection,
-    compute_panel_projection,
-    parse_flat_data,
-)
-from components.widgets import dock
 from PyQt6.QtCore import QObject, QRectF, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -45,6 +38,14 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from pyqtgraph.graphicsItems.GradientEditorItem import Gradients
+
+from labpilot.ui.desktop.components.base import ComponentMeta
+from labpilot.ui.desktop.components.nd_math import (
+    compute_1d_projection,
+    compute_panel_projection,
+    parse_flat_data,
+)
+from labpilot.ui.desktop.components.widgets import dock
 
 pg.setConfigOption("imageAxisOrder", "row-major")  # match numpy's (row, col) convention
 

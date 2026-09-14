@@ -21,8 +21,6 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-from components.base import UIComponent
-from components.widgets import IconButton, dock
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -35,6 +33,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from labpilot.ui.desktop.components.base import UIComponent
+from labpilot.ui.desktop.components.widgets import IconButton, dock
 
 #: Actions whose name reads as a question rather than a command, for the
 #: button label only.

@@ -60,5 +60,10 @@ labpilot start   # runs labpilot.core.server, default port 8000
 ## Requirements
 
 ```bash
-pip install -r requirements.txt   # PyQt6, PyQt6-WebEngine, pyqtgraph, numpy, requests
+pip install "labpilot[app]"
 ```
+
+There is no `requirements.txt` beside this file any more. It pinned
+`PyQt6==6.7.1` and listed `qt-material`, `requests`, `matplotlib` and
+`pandas`, none of which anything here imports — a second dependency list
+that had drifted from the one in `pyproject.toml` that actually installs.

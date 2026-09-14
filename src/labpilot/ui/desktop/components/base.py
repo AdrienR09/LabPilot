@@ -121,7 +121,7 @@ class InstrumentContext:
         """
         if self.poller is not None:
             return
-        from backend_client import InstrumentStream
+        from labpilot.ui.desktop.backend_client import InstrumentStream
 
         stream = InstrumentStream(
             self.client.base_url, self.instrument.id, self.poll_interval
@@ -133,7 +133,7 @@ class InstrumentContext:
         stream.start()
 
     def _fall_back_to_polling(self) -> None:
-        from backend_client import InstrumentPoller
+        from labpilot.ui.desktop.backend_client import InstrumentPoller
 
         if self.poller is not None:
             self.poller.stop()

@@ -205,7 +205,7 @@ class QtSessionManager(QObject):
         """Restore a single window from saved state"""
         try:
             # Import here to avoid circular imports
-            from main import DashboardInstrument
+            from labpilot.ui.desktop.main import DashboardInstrument
 
             from .instrument_windows import create_instrument_window
 

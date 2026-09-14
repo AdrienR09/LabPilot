@@ -89,23 +89,46 @@ import.
 - **`labpilot.ui`** — everything UI.
   - `desktop/` — the Qt desktop shell, a separate process talking HTTP.
 
+## Installing
+
+```bash
+pip install labpilot            # the framework, the server and the CLI
+pip install "labpilot[app]"     # plus the Qt desktop app and its console
+```
+
+`labpilot` on its own is enough to write and run acquisition scripts, serve the
+REST/WebSocket API and drive every mock instrument. Driver libraries are extras,
+because an NI card is not a reason for a lab with a spectrometer to install
+NI-DAQmx:
+
+| Extra | Brings | For |
+|---|---|---|
+| `app` | PyQt6, pyqtgraph, pymodaq_gui, qtconsole | the desktop app |
+| `pymeasure` / `pylablib` | those libraries | the ~200 adapters backed by each |
+| `ni` | nidaqmx (not macOS — NI ships no build) | NI DAQ cards |
+| `oceanoptics` | seabreeze | Ocean Optics spectrometers |
+| `swabian` | pulsestreamer | the Pulse Streamer |
+| `spincore` | spinapi + the vendor driver | the PulseBlaster |
+| `full` | everything that installs cleanly from PyPI anywhere | |
+
+Every adapter imports its driver inside the method that needs it, so a missing
+extra costs a clear error when you connect *that* instrument and nothing at all
+otherwise. `labpilot list-adapters` lists all 300-odd either way, because an
+adapter describes itself without its driver.
+
 ## Running
 
 ```bash
-./launch.sh
-```
-
-Starts the React dev server (`frontend/`, port 3000) and the Qt shell together;
-the Qt shell starts and owns its own backend process.
-
-To run the backend standalone:
-
-```bash
-pip install -e ".[full]"
-labpilot start
+labpilot start                     # the backend, on :8000
 labpilot list-adapters             # see what's connectable
 labpilot list-adapters --tags camera
+labpilot-manager                   # the desktop app, against a running backend
 ```
+
+`./launch.sh` is the development convenience: it starts the React dev server
+(`frontend/`, port 3000) and the Qt shell together, and the Qt shell starts and
+owns its own backend process. It expects an editable install (`pip install -e
+".[app]"`) of this checkout.
 
 ## Instrument adapters
 
@@ -129,10 +152,11 @@ a working setter.
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-pytest                                  # 550 tests, headless and Qt-free
+pip install -e ".[dev,app]"
+pytest                                  # 1108 tests, headless and Qt-free
 ruff check .
 python scripts/lint_budget.py           # the lint ratchet — must not rise
+python scripts/verify_packaging.py      # the wheel installs and runs standalone
 ```
 
 Desktop checks live in `scripts/verify_*.py` rather than `pytest`, because

@@ -32,8 +32,6 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from components.base import UIComponent
-from components.widgets import IconButton, dock
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -44,6 +42,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from labpilot.ui.desktop.components.base import UIComponent
+from labpilot.ui.desktop.components.widgets import IconButton, dock
 
 
 def table_parameters(schema: dict) -> list[dict]:

@@ -238,8 +238,8 @@ plt.imshow(data)
 
 ## Requirements
 
-The `console` extra (`pip install -e ".[console]"` — included in
-`[full]`): `qtconsole` + `ipykernel`. If it's missing, the toolbar action
+The `console` extra (`pip install "labpilot[console]"` — included in
+`[app]` and `[full]`): `qtconsole` + `ipykernel`. If it's missing, the toolbar action
 will fail to open with an error naming what to install.
 
 ## How it's wired (for reference)

@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "labpilot-core"
+name = "labpilot"
 version = "0.1.0"
 description = "Next-generation Python data acquisition framework for laboratory instruments"
 readme = "README.md"
@@ -24,12 +24,19 @@ classifiers = [
     "Framework :: AsyncIO",
 ]
 
+# Everything `import labpilot` and `labpilot start` need, and nothing
+# else. A driver library belongs in an extra below: an NI card is not a
+# reason for a lab with a spectrometer to install NI-DAQmx.
 dependencies = [
     "anyio >= 4.0.0",
     "pydantic >= 2.0.0",
-    "tomli-w >= 1.0.0",
     "numpy >= 1.24.0",
-    "xarray >= 2023.1.0",
+    # Fits — ODMR dips, Rabi decay, T1 — and therefore the optimizer and
+    # half the shipped templates. Imported lazily inside each fit function,
+    # which is *not* a guard: it raises ModuleNotFoundError at the point of
+    # use rather than at import, so leaving it undeclared meant a fresh
+    # install fitted nothing and only said so mid-run.
+    "scipy >= 1.10",
     "h5py >= 3.8.0",
     "aiosqlite >= 0.19.0",
     "fastapi >= 0.104.0",
@@ -38,12 +45,41 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Instrument driver libraries
+# --- Instrument driver libraries -------------------------------------------
+#
+# Every adapter imports its driver *inside* the method that needs it, so an
+# uninstalled extra costs a clear error when you connect that instrument and
+# nothing at all otherwise. `labpilot list-adapters` lists all of them
+# either way, because an adapter describes itself without its driver.
+
 pymeasure = [
     "pymeasure >= 0.14",
 ]
 pylablib = [
     "pylablib >= 1.4",
+]
+# National Instruments DAQ cards (instruments/NI/). No macOS build exists —
+# NI ships DAQmx for Windows and Linux only — which is why the model table
+# in instruments/NI/models.toml is worth having at all.
+ni = [
+    "nidaqmx >= 0.9 ; sys_platform != 'darwin'",
+    "pylablib >= 1.4",
+]
+# Ocean Optics / Ocean Insight spectrometers (instruments/OceanOptics/).
+oceanoptics = [
+    "seabreeze >= 2.0",
+]
+# Swabian Instruments: the Time Tagger counter and the Pulse Streamer
+# sequencer. TimeTagger itself is not on PyPI — install it from Swabian's
+# own installer — so only the pulser is declared here.
+swabian = [
+    "pulsestreamer >= 2.1",
+]
+# SpinCore PulseBlaster (instruments/SpinCore/). `spinapi` wraps a vendor
+# shared library that its wheel does not bundle, so the vendor driver has
+# to be installed as well.
+spincore = [
+    "spinapi >= 3.2",
 ]
 
 # Qt visualization layer
@@ -57,12 +93,6 @@ gui = [
     "pymodaq_gui >= 5.1",
 ]
 
-# Command-line interface
-cli = [
-    "click >= 8.1",  # As per spec (replaces typer)
-    "rich >= 13.0.0",
-]
-
 # Native IPython console window (see ui/desktop/console_window.py) — a
 # real out-of-process kernel shown in a Qt widget (qtconsole), not a
 # browser/iframe notebook.
@@ -71,17 +101,25 @@ console = [
     "ipykernel >= 6.25",
 ]
 
-# Grouped optionals
+# --- Grouped ---------------------------------------------------------------
+
+# A working desktop install: the window system and the native console.
+# There is no `cli` extra — `labpilot start` and `labpilot list-adapters`
+# are argparse, which is stdlib, so the CLI is in the base install.
+app = [
+    "labpilot[gui,console]",
+]
+# Everything that installs cleanly from PyPI on any platform. Hardware
+# extras are deliberately excluded — see each of them above for why.
 full = [
-    "labpilot-core[pymeasure,pylablib,cli,gui,console]",
+    "labpilot[gui,console,pymeasure,pylablib]",
 ]
 dev = [
     "pytest >= 7.4.0",
-    "pytest-anyio >= 0.0.0",
     "pytest-asyncio >= 0.21.0",
     "ruff >= 0.1.0",
     "mypy >= 1.6.0",
-    "httpx >= 0.25.0",
+    "build >= 1.0",
 ]
 
 [project.urls]
@@ -93,8 +131,20 @@ Issues = "https://github.com/labpilot/labpilot/issues"
 [project.scripts]
 labpilot = "labpilot.core.cli:main"
 
+[project.gui-scripts]
+# The manager window. A gui-script rather than a console one so Windows
+# launches it without a console window behind it.
+labpilot-manager = "labpilot.ui.desktop.manager_qt_webview:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/labpilot"]
+
+[tool.hatch.build.targets.sdist]
+# The React front end is not part of the wheel — it is served from a dev
+# server or built separately — but an sdist should still be a complete
+# checkout of what builds the project.
+include = ["src", "tests", "scripts", "docs", "frontend", "README.md", "LICENSE", "ATTRIBUTION.md", "pyproject.toml"]
+exclude = ["frontend/node_modules", "**/__pycache__", "**/.DS_Store"]
 
 [tool.ruff]
 line-length = 88

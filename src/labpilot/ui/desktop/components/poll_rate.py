@@ -15,7 +15,7 @@ settings (SettingsTreeComponent).
 
 from __future__ import annotations
 
-from components.base import UIComponent
+from labpilot.ui.desktop.components.base import UIComponent
 
 
 class PollRateComponent(UIComponent):

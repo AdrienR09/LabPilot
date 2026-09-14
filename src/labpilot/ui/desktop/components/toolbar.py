@@ -11,12 +11,13 @@ every detector window instead of each hand-writing its own toolbar.
 
 from __future__ import annotations
 
-from components.base import UIComponent
-from components.widgets import toggle_icon
-from main import LabPilotStyle
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QFont
 from PyQt6.QtWidgets import QLabel, QSizePolicy, QToolBar, QWidget
+
+from labpilot.ui.desktop.components.base import UIComponent
+from labpilot.ui.desktop.components.widgets import toggle_icon
+from labpilot.ui.desktop.main import LabPilotStyle
 
 
 class ToolbarComponent(UIComponent):

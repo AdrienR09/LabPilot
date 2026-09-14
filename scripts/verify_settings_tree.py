@@ -31,10 +31,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DESKTOP = ROOT / "src" / "labpilot" / "ui" / "desktop"
 
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(DESKTOP))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import labpilot.ui.qt_api  # noqa: F401, E402  (pins QT_API before Qt loads)
@@ -108,8 +106,8 @@ class _Client:
 
 def main() -> int:
     app = QApplication.instance() or QApplication([])
-    from components.base import InstrumentContext  # noqa: PLC0415
-    from components.settings_tree import SettingsTreeComponent  # noqa: PLC0415
+    from labpilot.ui.desktop.components.base import InstrumentContext  # noqa: PLC0415
+    from labpilot.ui.desktop.components.settings_tree import SettingsTreeComponent  # noqa: PLC0415
 
     client = _Client()
     window = QMainWindow()

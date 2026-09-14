@@ -39,7 +39,6 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from components.widgets import AxisSliderRow, ProfessionalSpinBox
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
@@ -52,6 +51,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from labpilot.ui.desktop.components.widgets import AxisSliderRow, ProfessionalSpinBox
 
 __all__ = ["AxesControlWidget", "AxisRangeSettingsDialog", "OptimizerSettingsDialog"]
 

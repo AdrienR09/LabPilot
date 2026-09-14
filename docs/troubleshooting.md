@@ -33,7 +33,7 @@ than thrashing memory for minutes and looking like a hang. Reduce
 
 **Console won't open / errors immediately.** The `console` extra
 (`qtconsole` + `ipykernel`) isn't installed —
-`pip install -e ".[console]"` (included in `[full]`).
+`pip install "labpilot[console]"` (included in `[app]` and `[full]`).
 
 **An instrument connects but every read fails.** Check its schema
 (`lp['<id>'].schema` from the console, or the Devices tab) — `read()`

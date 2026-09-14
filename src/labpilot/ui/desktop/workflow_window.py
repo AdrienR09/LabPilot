@@ -65,30 +65,40 @@ warnings.filterwarnings("ignore", category=DataIndexWarning)
 # copies it produced (an axis decomposition, an optimizer axis list, two
 # AST readers, two curve fits) each had to be kept in step with an
 # original by hand. See core/workflow/scan_params.py.
-from backend_client import (
+from labpilot.core.run.plans import decompose
+from labpilot.core.workflow.instrument_roles import (
+    read_required_instruments,
+    read_result_ui,
+)
+from labpilot.core.workflow.scan_params import resolve_scan_axes
+from labpilot.ui.desktop.backend_client import (
     AsyncWriter,
     BackendClient,
     OptimizePoller,
     WorkflowStatePoller,
 )
-from block_config import load_workflow_blocks
-from components.axes_control import (
+from labpilot.ui.desktop.block_config import load_workflow_blocks
+from labpilot.ui.desktop.components.axes_control import (
     AxesControlWidget,
     AxisRangeSettingsDialog,
     OptimizerSettingsDialog,
 )
-from components.base import InstrumentContext, component_for
-from components.hdf5_export import save_workflow_result_hdf5
-from components.odmr_control import (
+from labpilot.ui.desktop.components.base import InstrumentContext, component_for
+from labpilot.ui.desktop.components.hdf5_export import save_workflow_result_hdf5
+from labpilot.ui.desktop.components.odmr_control import (
     OdmrFitControlWidget,
     OdmrSweepControlWidget,
     evaluate_dip,
     fit_dip,
 )
-from components.schema_utils import fetch_schema, pick_1d_series, primary_key
-from components.widgets import StatusLabel, dock
-from components.workflow_controls import controls_for
-from components.workflow_result import (
+from labpilot.ui.desktop.components.schema_utils import (
+    fetch_schema,
+    pick_1d_series,
+    primary_key,
+)
+from labpilot.ui.desktop.components.widgets import StatusLabel, dock
+from labpilot.ui.desktop.components.workflow_controls import controls_for
+from labpilot.ui.desktop.components.workflow_result import (
     Image2DResultView,
     NDScanResultView,
     OdmrResultView,
@@ -96,14 +106,7 @@ from components.workflow_result import (
     _OptimizerCurvePanel,
     _ScanImagePanel,
 )
-from main import DashboardInstrument, LabPilotStyle
-
-from labpilot.core.run.plans import decompose
-from labpilot.core.workflow.instrument_roles import (
-    read_required_instruments,
-    read_result_ui,
-)
-from labpilot.core.workflow.scan_params import resolve_scan_axes
+from labpilot.ui.desktop.main import DashboardInstrument, LabPilotStyle
 
 __all__ = ["WorkflowWindow"]
 
@@ -952,9 +955,8 @@ class WorkflowWindow(QMainWindow):
         a sequence file. `core.pulse.library` is reached from here rather
         than from the widget so the widget stays a dumb view.
         """
-        from components.pulse_editor import PulseEditorControlWidget
-
         from labpilot.core.pulse.library import GENERATORS
+        from labpilot.ui.desktop.components.pulse_editor import PulseEditorControlWidget
 
         def _set_param(name: str, value) -> None:
             try:
@@ -1032,10 +1034,11 @@ class WorkflowWindow(QMainWindow):
         method added to `core/pulse/` appears in this dock with no change
         here.
         """
-        from components.pulse_control import PulseMeasurementControlWidget
-
         from labpilot.core.pulse.analyse import ANALYSES
         from labpilot.core.pulse.extract import EXTRACTORS
+        from labpilot.ui.desktop.components.pulse_control import (
+            PulseMeasurementControlWidget,
+        )
 
         def _set_param(name: str, value) -> None:
             try:

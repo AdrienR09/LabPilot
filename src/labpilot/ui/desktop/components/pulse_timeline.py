@@ -49,7 +49,6 @@ from dataclasses import replace
 from typing import Any, ClassVar
 
 import pyqtgraph as pg
-from components.widgets import IconButton
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFontMetrics
 from PyQt6.QtWidgets import (
@@ -77,6 +76,7 @@ from labpilot.core.pulse.tracks import (
     Track,
     blank_pulse,
 )
+from labpilot.ui.desktop.components.widgets import IconButton
 
 __all__ = ["PulseTimelineWidget"]
 

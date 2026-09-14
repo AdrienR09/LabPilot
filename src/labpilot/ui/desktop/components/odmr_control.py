@@ -17,7 +17,6 @@ from __future__ import annotations
 from typing import Optional
 
 import pyqtgraph as pg
-from components.widgets import IconButton
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -31,6 +30,7 @@ from PyQt6.QtWidgets import (
 )
 
 from labpilot.core.analysis.fits import evaluate_dip, fit_dip
+from labpilot.ui.desktop.components.widgets import IconButton
 
 # `fit_dip`/`evaluate_dip` are re-exported so `from
 # components.odmr_control import fit_dip` still reads naturally where the

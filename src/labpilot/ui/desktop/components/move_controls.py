@@ -39,18 +39,6 @@ from __future__ import annotations
 from typing import Optional
 
 import httpx
-from components.base import UIComponent
-from components.schema_utils import move_axes
-from components.widgets import (
-    IconButton,
-    MultiStateSwitch,
-    ProfessionalSpinBox,
-    StatusLabel,
-    ToggleSwitch,
-    ValueReadout,
-    dock,
-)
-from main import LabPilotStyle
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
@@ -62,6 +50,19 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from labpilot.ui.desktop.components.base import UIComponent
+from labpilot.ui.desktop.components.schema_utils import move_axes
+from labpilot.ui.desktop.components.widgets import (
+    IconButton,
+    MultiStateSwitch,
+    ProfessionalSpinBox,
+    StatusLabel,
+    ToggleSwitch,
+    ValueReadout,
+    dock,
+)
+from labpilot.ui.desktop.main import LabPilotStyle
 
 
 def _discrete_states(dtype: str, limits: Optional[tuple]) -> Optional[list]:

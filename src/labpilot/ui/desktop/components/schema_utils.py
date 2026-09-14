@@ -6,9 +6,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from backend_client import BackendClient
-
 from labpilot.core.device.parameter import INTEGRATION_TIME
+from labpilot.ui.desktop.backend_client import BackendClient
 
 _AXIS_KEY_HINTS = ("wavelength", "wavelengths", "time", "times", "frequency", "frequencies", "x")
 

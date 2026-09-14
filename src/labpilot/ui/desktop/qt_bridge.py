@@ -36,7 +36,7 @@ class QtBridge(QObject):
         """
         print(f"[QtBridge] 🚀 Launching UI for instrument: {instrument_id}")
         try:
-            from launch_instrument import launch_instrument_window
+            from labpilot.ui.desktop.launch_instrument import launch_instrument_window
 
             pid = launch_instrument_window(instrument_id, self.backend_url)
             if pid is None:
@@ -54,7 +54,7 @@ class QtBridge(QObject):
         single-instrument path."""
         print(f"[QtBridge] 🚀 Launching UI for workflow: {workflow_id}")
         try:
-            from launch_workflow import launch_workflow_window
+            from labpilot.ui.desktop.launch_workflow import launch_workflow_window
 
             pid = launch_workflow_window(workflow_id, self.backend_url)
             if pid is None:

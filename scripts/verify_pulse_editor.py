@@ -35,10 +35,8 @@ from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DESKTOP = ROOT / "src" / "labpilot" / "ui" / "desktop"
 
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(DESKTOP))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402
@@ -124,9 +122,9 @@ def rabi_timeline(points: int = 12) -> Timeline:
 
 
 def main() -> int:
-    from components.pulse_editor import PulseEditorControlWidget
-    from components.pulse_timeline import PulseItem, PulseTimelineWidget
-    from components.workflow_result import PulseSequenceResultView
+    from labpilot.ui.desktop.components.pulse_editor import PulseEditorControlWidget
+    from labpilot.ui.desktop.components.pulse_timeline import PulseItem, PulseTimelineWidget
+    from labpilot.ui.desktop.components.workflow_result import PulseSequenceResultView
 
     app = QApplication.instance() or QApplication([])
 

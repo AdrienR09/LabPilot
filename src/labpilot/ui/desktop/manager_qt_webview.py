@@ -8,16 +8,17 @@ Includes QtBridge for React-Qt communication
 import sys
 from pathlib import Path
 
-from console_window import ConsoleWindow
-from main import LabPilotStyle
-from managed_server import ManagedServer
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QAction
 from PyQt6.QtWebChannel import QWebChannel
 from PyQt6.QtWebEngineCore import QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import QApplication, QMainWindow, QToolBar, QVBoxLayout, QWidget
-from qt_bridge import QtBridge
+
+from labpilot.ui.desktop.console_window import ConsoleWindow
+from labpilot.ui.desktop.main import LabPilotStyle
+from labpilot.ui.desktop.managed_server import ManagedServer
+from labpilot.ui.desktop.qt_bridge import QtBridge
 
 
 class LabPilotManagerWindow(QMainWindow):

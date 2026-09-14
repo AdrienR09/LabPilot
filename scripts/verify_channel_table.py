@@ -33,10 +33,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DESKTOP = ROOT / "src" / "labpilot" / "ui" / "desktop"
 
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(DESKTOP))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtWidgets import (  # noqa: E402
@@ -123,8 +121,8 @@ class _Client:
 
 
 def build(client: _Client):
-    from components.base import InstrumentContext
-    from components.channel_table import ChannelTableComponent
+    from labpilot.ui.desktop.components.base import InstrumentContext
+    from labpilot.ui.desktop.components.channel_table import ChannelTableComponent
 
     window = QMainWindow()
     instrument = type(
@@ -239,8 +237,8 @@ def main() -> int:
     check("the wiring is unchanged", client.rows[0]["terminal"] == "ao0")
 
     print("\n6. An instrument with no record table gets no dock")
-    from components.base import InstrumentContext
-    from components.channel_table import ChannelTableComponent
+    from labpilot.ui.desktop.components.base import InstrumentContext
+    from labpilot.ui.desktop.components.channel_table import ChannelTableComponent
 
     bare = QMainWindow()
     ctx = InstrumentContext(

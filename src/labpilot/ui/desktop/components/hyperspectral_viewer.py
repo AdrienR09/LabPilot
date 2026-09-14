@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
-from components.base import UIComponent
-from components.widgets import dock
 from PyQt6.QtWidgets import QVBoxLayout, QWidget
+
+from labpilot.ui.desktop.components.base import UIComponent
+from labpilot.ui.desktop.components.widgets import dock
 
 pg.setConfigOption("imageAxisOrder", "row-major")  # match numpy's (row, col) convention
 

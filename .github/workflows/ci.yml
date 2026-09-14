@@ -30,3 +30,24 @@ jobs:
 
       - name: Lint (must not regress)
         run: python scripts/lint_budget.py
+
+  # A separate job on purpose: the tests above run against the *source
+  # tree*, which is exactly the condition under which a missing dependency,
+  # an unpackaged data file, or an import that needs a particular working
+  # directory are all invisible. This builds the wheel and drives it from
+  # a throwaway venv outside the repo. See scripts/verify_packaging.py.
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install the build front end only
+        run: python -m pip install --upgrade pip build
+
+      - name: The wheel installs and runs standalone
+        run: python scripts/verify_packaging.py

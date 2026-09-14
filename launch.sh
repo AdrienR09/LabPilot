@@ -137,15 +137,13 @@ LOG_OFFSET=0
 if [[ -f "$SERVER_LOG" ]]; then
     LOG_OFFSET=$(wc -c < "$SERVER_LOG" | tr -d ' ')
 fi
-# Run from the module's own directory: manager_qt_webview.py imports its
-# siblings flat (`from console_window import ...`), so it needs that directory
-# on sys.path — `python -m labpilot.ui.desktop.manager_qt_webview` from the
-# repo root would fail on those imports.
-cd "$PROJECT_ROOT/src/labpilot/ui/desktop"
+# `-m` from anywhere: the desktop modules import each other by full package
+# name, so nothing needs a particular cwd any more. (This used to have to
+# `cd` into src/labpilot/ui/desktop, because the imports were flat.)
 # Note the status directly rather than via `if ! ...`, where `$?` is the
 # negation's own result and every failure reports as status 0.
 STATUS=0
-python manager_qt_webview.py "$@" || STATUS=$?
+python -m labpilot.ui.desktop.manager_qt_webview "$@" || STATUS=$?
 if [[ $STATUS -ne 0 ]]; then
     echo ""
     echo "❌ Manager exited with status $STATUS."

@@ -22,28 +22,21 @@ def launch_workflow_window(workflow_id: str, backend_url: str = "http://localhos
     instead of silently doing nothing.
     """
     try:
-        desktop_path = Path(__file__).parent
-        main_py = desktop_path / "main.py"
-
-        if not main_py.exists():
-            raise FileNotFoundError(f"main.py not found at {main_py}")
-
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+        # `-m`, not the path to main.py with a cwd that makes its sibling
+        # imports resolve. The window's modules import each other by their
+        # full package name now, so it runs from anywhere — including from
+        # an installed wheel, where there is no repo to be inside.
         cmd = [
             sys.executable,
-            str(main_py),
+            "-m", "labpilot.ui.desktop.main",
             "--workflow", workflow_id,
             "--backend-url", backend_url,
         ]
 
         with open(LOG_PATH, "a") as log_file:
-            process = subprocess.Popen(
-                cmd,
-                cwd=desktop_path,
-                stdout=log_file,
-                stderr=log_file,
-            )
+            process = subprocess.Popen(cmd, stdout=log_file, stderr=log_file)
 
         print(f"✅ Launched Qt window for workflow {workflow_id} (PID: {process.pid})")
         return process.pid

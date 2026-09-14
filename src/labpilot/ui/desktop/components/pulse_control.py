@@ -37,7 +37,6 @@ from __future__ import annotations
 from typing import Any
 
 import pyqtgraph as pg
-from components.widgets import IconButton
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -50,6 +49,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from labpilot.ui.desktop.components.widgets import IconButton
 
 __all__ = ["PulseMeasurementControlWidget"]
 

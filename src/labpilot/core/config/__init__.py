@@ -394,7 +394,6 @@ class ConfigPersistence:
             "config_dir": str(self.config_dir),
             "session_config_exists": self.session_config_path.exists(),
             "device_configs": len(list(self.devices_dir.glob("*.json"))),
-            "conversations": len(self.list_conversations()),
             "backup_count": len(list(self.backups_dir.glob("*.json"))),
         }
 

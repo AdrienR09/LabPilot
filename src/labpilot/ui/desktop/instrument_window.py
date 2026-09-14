@@ -31,13 +31,21 @@ from PyQt6.QtWidgets import QDockWidget, QMainWindow, QStatusBar, QWidget
 # we want. Not a real problem, so don't let it spam the log every frame.
 warnings.filterwarnings("ignore", category=DataIndexWarning)
 
-from backend_client import BackendClient
-from block_config import load_ui_blocks
-from components import component_for, components_in
-from components.base import InstrumentContext
-from components.schema_utils import fetch_schema, pick_1d_series, primary_key
-from instrument_blocks import resolve_blocks, should_auto_start_polling, title_suffix
-from main import DashboardInstrument, LabPilotStyle
+from labpilot.ui.desktop.backend_client import BackendClient
+from labpilot.ui.desktop.block_config import load_ui_blocks
+from labpilot.ui.desktop.components import component_for, components_in
+from labpilot.ui.desktop.components.base import InstrumentContext
+from labpilot.ui.desktop.components.schema_utils import (
+    fetch_schema,
+    pick_1d_series,
+    primary_key,
+)
+from labpilot.ui.desktop.instrument_blocks import (
+    resolve_blocks,
+    should_auto_start_polling,
+    title_suffix,
+)
+from labpilot.ui.desktop.main import DashboardInstrument, LabPilotStyle
 
 
 class InstrumentWindow(QMainWindow):

@@ -9,10 +9,11 @@ function, just relocated into the component system.
 
 from __future__ import annotations
 
-from components.base import UIComponent
-from components.schema_utils import main_config_names
-from components.widgets import dock
 from pyqtgraph.parametertree import Parameter, ParameterTree
+
+from labpilot.ui.desktop.components.base import UIComponent
+from labpilot.ui.desktop.components.schema_utils import main_config_names
+from labpilot.ui.desktop.components.widgets import dock
 
 
 class SettingsTreeComponent(UIComponent):

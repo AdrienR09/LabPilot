@@ -3,20 +3,40 @@
 ## Installation
 
 ```bash
-# Core + every optional extra (instrument drivers, Qt GUI, CLI, console)
-pip install -e ".[full]"
+pip install labpilot            # the framework, the server and the CLI
+pip install "labpilot[app]"     # plus the Qt desktop app and its console
 ```
 
-Individual extras, if you don't need everything:
+`labpilot` on its own runs every mock instrument, serves the API, and is
+enough to write and run acquisition scripts. Driver libraries are extras:
 
 | Extra | Adds |
 |---|---|
+| `app` | The Qt desktop shell, its windows and its console — `gui` + `console` |
+| `gui` | PyQt6, pyqtgraph, pymodaq_gui |
+| `console` | The native IPython console window (see [console.md](console.md)) |
 | `pymeasure` | PyMeasure-backed instrument adapters |
 | `pylablib` | pylablib-backed instrument adapters |
-| `gui` | PyQt6 desktop shell + native instrument windows |
-| `cli` | `labpilot` command-line tool |
-| `console` | The native IPython console window (see [console.md](console.md)) |
-| `dev` | pytest, ruff, mypy |
+| `ni` | NI DAQ cards. No macOS build exists — NI ships DAQmx for Windows and Linux only |
+| `oceanoptics` | Ocean Optics / Ocean Insight spectrometers, via seabreeze |
+| `swabian` | The Swabian Pulse Streamer |
+| `spincore` | The SpinCore PulseBlaster (also needs the vendor driver) |
+| `full` | Everything that installs cleanly from PyPI on any platform |
+| `dev` | pytest, ruff, mypy, build |
+
+There is no `cli` extra: `labpilot start` and `labpilot list-adapters` are
+argparse, so the command-line tool is in the base install.
+
+Every adapter imports its driver inside the method that needs it, so a
+missing extra costs a clear error when you connect *that* instrument and
+nothing at all otherwise. `labpilot list-adapters` lists all of them either
+way, because an adapter describes itself without its driver.
+
+Working from a checkout instead:
+
+```bash
+pip install -e ".[dev,app]"
+```
 
 ## Launching
 

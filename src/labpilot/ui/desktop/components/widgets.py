@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-from main import LabPilotStyle
 from PyQt6.QtCore import (
     QEasingCurve,
     QPropertyAnimation,
@@ -31,6 +30,8 @@ from PyQt6.QtWidgets import (
     QSlider,
     QWidget,
 )
+
+from labpilot.ui.desktop.main import LabPilotStyle
 
 
 class ProfessionalSpinBox(QDoubleSpinBox):
