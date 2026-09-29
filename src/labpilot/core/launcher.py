@@ -5,13 +5,24 @@ This is what `launch.sh` does, without needing bash, conda, `lsof` or
 POSIX process groups, because the person most likely to launch the app
 this way is on Windows and will never read `launch.sh`.
 
-Three differences from that script, each of which it got away with only
+Nothing about the front end has to be arranged beforehand. An installed
+wheel carries the bundle (see `hatch_build.py`), and from a checkout this
+installs the npm dependencies and builds the bundle itself if they are
+missing — so the first launch on a new machine is `labpilot app` and
+nothing else. What it cannot fix, it reports before spawning anything, so
+a resolvable problem never becomes a window open on an error page.
+
+Four differences from that script, each of which it got away with only
 because it ran in a macOS checkout:
 
-* **The front end does not need Node.** If the bundle is already built,
-  the backend serves it and no dev server is started at all — which is
-  the only path that works on a machine with no `npm`. `--dev` forces the
-  dev server anyway, for hot reload while editing `frontend/`.
+* **The front end does not need Node at launch.** If the bundle is built
+  — or came with the wheel — the backend serves it and no dev server
+  starts, which is the only path that works on a machine with no `npm`.
+  `--dev` forces the dev server anyway, for hot reload while editing
+  `frontend/`.
+* **A missing front end is built, not complained about.** `launch.sh`
+  assumed `npm install` had already been run and failed obscurely when it
+  had not.
 * **Ports are checked by binding them.** `launch.sh` cleared ports 3000
   and 8000 by killing whatever held them. That is the wrong move on a
   shared machine, and it does not help on Windows at all, where a bind
@@ -159,14 +170,46 @@ def _wait_for_http(url: str, process: subprocess.Popen, name: str, timeout: floa
     raise RuntimeError(f"The {name} did not answer at {url} within {timeout:.0f}s")
 
 
+def _run_npm(source: Path, npm: str, args: list[str], what: str) -> None:
+    result = subprocess.run(_npm_command(npm, args), cwd=source, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"`npm {' '.join(args)}` failed while {what} — its output is above.")
+
+
+def _install_dependencies(source: Path, npm: str) -> None:
+    """Install `node_modules` if it is not there yet.
+
+    Checked with `lexists` rather than `is_dir`, because on macOS a
+    `postinstall` hook replaces the directory with a symlink out of
+    iCloud's reach (`frontend/scripts/relocate-node-modules.cjs`), and a
+    broken symlink should be reinstalled rather than trusted.
+    """
+    node_modules = source / "node_modules"
+    if os.path.lexists(node_modules) and (node_modules / "vite").exists():
+        return
+    _say(f"📥 Installing front-end dependencies in {source} — this takes a few minutes once …")
+    _run_npm(source, npm, ["install"], "installing dependencies")
+
+
 def _build_frontend(source: Path, npm: str) -> None:
     _say(f"📦 Building the front end in {source} …")
-    result = subprocess.run(_npm_command(npm, ["run", "build"]), cwd=source, check=False)
-    if result.returncode != 0:
-        raise RuntimeError(
-            "`npm run build` failed — its output is above. If this is a fresh "
-            f"checkout, run `npm install` in {source} first."
-        )
+    _run_npm(source, npm, ["run", "build"], "building the front end")
+
+
+def _bundle_is_stale(source: Path, build: Path) -> bool:
+    """Whether the sources have changed since the bundle was built.
+
+    Only ever reported, never acted on: rebuilding unasked would add half a
+    minute to a launch that someone may have every reason to expect to be
+    instant. `--build` is how you ask.
+    """
+    try:
+        built_at = (build / "index.html").stat().st_mtime
+    except OSError:
+        return False
+    watched = [source / "package.json", source / "vite.config.ts", source / "index.html"]
+    watched += [p for p in (source / "src").rglob("*") if p.is_file()]
+    return any(p.stat().st_mtime > built_at for p in watched if p.exists())
 
 
 def _start_backend(host: str, port: int) -> subprocess.Popen:
@@ -249,30 +292,54 @@ def run_app(args) -> int:
     children: list[tuple[str, subprocess.Popen]] = []
 
     try:
-        # --- Decide how the front end gets served, before starting anything ---
-        if args.build:
-            if source is None or npm is None:
-                raise RuntimeError(
-                    "--build needs the `frontend/` sources and npm, and this "
-                    f"install has {'no npm on PATH' if source else 'no frontend/ directory'}."
-                )
-            _build_frontend(source, npm)
+        # --- Settle the front end before starting anything ---
+        #
+        # Done first, and in full, because the alternative is a window that
+        # opens onto an error page after the backend is already up. Anything
+        # missing that can be fixed here is fixed here: dependencies get
+        # installed, a missing bundle gets built. Only what genuinely cannot
+        # be resolved — no sources, or no npm to use them with — is reported,
+        # and it is reported before a single process is spawned.
+        use_dev_server = args.dev
+        build = None if args.build else frontend_build_dir()
 
-        build = frontend_build_dir()
-        use_dev_server = args.dev or build is None
-
-        if use_dev_server:
+        if build is None or use_dev_server:
             if source is None:
                 raise RuntimeError(
-                    "No front end to serve: this install has no built bundle and no "
-                    "`frontend/` sources to build one from. Either run from a checkout, "
-                    "or point $LABPILOT_FRONTEND at a built bundle."
+                    "No front end to serve. This install has no bundled one, and no "
+                    "`frontend/` sources to build one from — which means it was built "
+                    "from a checkout that had not run `npm run build`.\n"
+                    "   Fix it either way:\n"
+                    "     • run `labpilot app` from a checkout, which builds it for you, or\n"
+                    "     • copy a built `frontend/build` over and point "
+                    "$LABPILOT_FRONTEND at it."
                 )
             if npm is None:
                 raise RuntimeError(
-                    "The Vite dev server needs npm, which is not on PATH. Install "
-                    "Node.js, or drop --dev to serve an already-built bundle."
+                    "The front end needs building and npm is not on PATH.\n"
+                    "   Install Node without admin rights either way:\n"
+                    "     • conda install -c conda-forge nodejs   (the same way this "
+                    "project's own Node was installed), or\n"
+                    "     • unzip node-v*-win-x64.zip from nodejs.org/dist and add it "
+                    "to your user PATH.\n"
+                    "   Or copy a built `frontend/build` over and point "
+                    "$LABPILOT_FRONTEND at it."
                 )
+
+            _install_dependencies(source, npm)
+            if not use_dev_server:
+                _build_frontend(source, npm)
+                build = frontend_build_dir()
+                if build is None:
+                    raise RuntimeError(
+                        "`npm run build` reported success but produced no "
+                        f"index.html in {source / 'build'}."
+                    )
+        elif source is not None and _bundle_is_stale(source, build):
+            _say(
+                "   ⚠️  The front end sources are newer than the built bundle. "
+                "Rebuild with `labpilot app --build`, or use --dev."
+            )
 
         # --- Backend ---
         backend_port = _usable_port(args.host, args.port)

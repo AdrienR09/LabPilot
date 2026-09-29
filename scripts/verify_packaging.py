@@ -108,6 +108,22 @@ def main() -> int:
             "and the icon theme the Qt windows draw from",
             any(n.startswith("labpilot/ui/desktop/styles/icons/") for n in names),
         )
+        # The browser UI, added by hatch_build.py when frontend/build exists.
+        # Absent is a legitimate wheel — one built from a checkout that never
+        # ran `npm run build` — so this warns rather than failing. A wheel for
+        # release should have it, or `labpilot app` has no UI to serve without
+        # a checkout to build one from.
+        if "labpilot/frontend_build/index.html" in names:
+            check(
+                "and the built front end, with its assets and no source maps",
+                any(n.startswith("labpilot/frontend_build/assets/") for n in names)
+                and not any(n.endswith(".map") for n in names),
+            )
+        else:
+            print(
+                "  ⚠️  no bundled front end — run `npm run build` in frontend/ "
+                "before building a release wheel"
+            )
 
         print("\n3. Installing into a clean virtual environment")
         run([sys.executable, "-m", "venv", str(venv)])

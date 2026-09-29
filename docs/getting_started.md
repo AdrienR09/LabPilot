@@ -47,7 +47,7 @@ pip install -e ".[dev,app]"
 labpilot app
 ```
 
-One command, any platform. It starts the backend, serves the front end,
+One command, any platform. It starts the backend, settles the front end,
 opens the Manager window, and stops all of it together on Ctrl-C or when
 you close the window.
 
@@ -59,21 +59,35 @@ you close the window.
 | `labpilot app --build` | Rebuild the front end bundle first |
 | `labpilot app --port 8765` | A specific backend port |
 
-The front end comes from the **built** bundle when there is one, which
-needs no Node installed. A fresh checkout has to build it once:
+### The front end takes care of itself
 
-```bash
-cd frontend && npm install && npm run build
-```
+There is no separate front-end setup step. Where the UI comes from,
+in order:
 
-Until you do, `labpilot app` falls back to the Vite dev server — same
-result, but it needs npm.
+1. **An installed wheel carries it.** `pip install labpilot` gives you a
+   working browser UI with no Node installed anywhere.
+2. **From a checkout, the command builds it** — including running
+   `npm install` first if `node_modules` is missing. That happens once,
+   takes a few minutes, and every launch after it is immediate.
+3. **`LABPILOT_FRONTEND`** points at a bundle built elsewhere, if you would
+   rather copy one across than install Node on the machine.
 
-Ports: `--port` is a preference, not a demand. If it cannot be bound the
-launcher takes one the OS offers and prints which. That matters most on
-Windows, where Hyper-V, WSL2 and Docker Desktop reserve blocks of TCP
-ports at boot and a bind inside one fails with WinError 10013 while
-nothing is listening there. To see the reserved ranges:
+If the sources are newer than the bundle, the launcher says so and leaves it
+alone — rebuilding unasked would add half a minute to a launch you may have
+expected to be instant. `--build` is how you ask; `--dev` skips the bundle
+entirely and serves from Vite with hot reload.
+
+A wheel built from a checkout that never ran `npm run build` has no bundled
+UI. `scripts/verify_packaging.py` warns when that happens, and
+`labpilot app` on such an install says what to do about it.
+
+### Ports
+
+`--port` is a preference, not a demand. If it cannot be bound the launcher
+takes one the OS offers and prints which. That matters most on Windows,
+where Hyper-V, WSL2 and Docker Desktop reserve blocks of TCP ports at boot
+and a bind inside one fails with WinError 10013 while nothing is listening
+there. To see the reserved ranges:
 
 ```
 netsh interface ipv4 show excludedportrange protocol=tcp
@@ -81,6 +95,18 @@ netsh interface ipv4 show excludedportrange protocol=tcp
 
 `./launch.sh` predates this command and does the same thing for a
 macOS/conda checkout only. Prefer `labpilot app`.
+
+### Installing Node, if you need it
+
+Only needed to build the front end from a checkout — and never with admin
+rights:
+
+```bash
+conda install -c conda-forge nodejs      # how this project's own Node is installed
+```
+
+Or unzip `node-v*-win-x64.zip` from [nodejs.org/dist](https://nodejs.org/dist/)
+and add it to your user PATH.
 
 **Backend only** — useful for headless use, or driving LabPilot from a
 script/console without the GUI:

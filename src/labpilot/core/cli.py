@@ -37,9 +37,10 @@ Examples:
         "app",
         help="Start the backend, the front end and the manager window together",
         description=(
-            "Starts everything and shuts it all down together. The front end is "
-            "served from a built bundle when one exists — which needs no Node — "
-            "and from the Vite dev server otherwise."
+            "Starts everything and shuts it all down together. The front end needs "
+            "no setting up: an installed wheel carries the built bundle, and from a "
+            "checkout this installs the npm dependencies and builds it if they are "
+            "missing."
         ),
     )
     app_parser.add_argument(
@@ -65,12 +66,14 @@ Examples:
         "--dev",
         action="store_true",
         help="Serve the front end from the Vite dev server (hot reload) even if a "
-             "built bundle exists. Needs npm and a checkout.",
+             "built bundle exists. Needs a checkout; installs its dependencies if "
+             "they are missing.",
     )
     app_parser.add_argument(
         "--build",
         action="store_true",
-        help="Run `npm run build` first, then serve the resulting bundle",
+        help="Rebuild the front end bundle before serving it, even if one already "
+             "exists (a launch otherwise reuses it)",
     )
     app_parser.add_argument(
         "--no-window",

@@ -10,6 +10,7 @@ of 404. Hooking the 404 instead leaves Starlette's method handling alone.
 
 from __future__ import annotations
 
+import os
 import socket
 
 import pytest
@@ -21,7 +22,12 @@ from labpilot.core.frontend import (
     frontend_build_dir,
     frontend_source_dir,
 )
-from labpilot.core.launcher import _reachable, _usable_port
+from labpilot.core.launcher import (
+    _bundle_is_stale,
+    _install_dependencies,
+    _reachable,
+    _usable_port,
+)
 from labpilot.core.server import create_app
 
 # --- Finding the front end -------------------------------------------------
@@ -97,6 +103,89 @@ def test_a_wildcard_bind_address_is_advertised_as_localhost(wildcard):
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "lab-pc.local", "192.168.1.20"])
 def test_a_real_host_is_passed_through(host):
     assert _reachable(host) == host
+
+
+# --- Managing the front end itself ----------------------------------------
+
+
+def _fake_checkout(tmp_path, *, stale: bool):
+    """A `frontend/` whose bundle is either newer or older than its sources.
+
+    Every watched path gets an explicit mtime, including `package.json` — a
+    file left at the current time is newer than any bundle we then backdate,
+    which made the first version of this helper report "stale" always.
+    """
+    source = tmp_path / "frontend"
+    (source / "src").mkdir(parents=True)
+    build = source / "build"
+    build.mkdir()
+
+    early, late = 1_000_000, 2_000_000
+    source_time, build_time = (late, early) if stale else (early, late)
+
+    for relative, content in (
+        ("package.json", "{}"),
+        ("vite.config.ts", "export default {}"),
+        ("index.html", "<!doctype html>"),
+        ("src/App.tsx", "export default 1"),
+    ):
+        path = source / relative
+        path.write_text(content)
+        os.utime(path, (source_time, source_time))
+
+    (build / "index.html").write_text("<!doctype html>")
+    os.utime(build / "index.html", (build_time, build_time))
+    return source, build
+
+
+def test_a_bundle_built_after_its_sources_is_not_stale(tmp_path):
+    source, build = _fake_checkout(tmp_path, stale=False)
+    assert _bundle_is_stale(source, build) is False
+
+
+def test_a_bundle_older_than_its_sources_is_stale(tmp_path):
+    source, build = _fake_checkout(tmp_path, stale=True)
+    assert _bundle_is_stale(source, build) is True
+
+
+def test_staleness_is_not_an_error_when_there_is_no_bundle(tmp_path):
+    """Reported, never acted on — and never allowed to raise, because it runs
+    on the ordinary launch path where a bundle has just been served."""
+    source = tmp_path / "frontend"
+    source.mkdir()
+    assert _bundle_is_stale(source, tmp_path / "nonexistent") is False
+
+
+def test_dependencies_are_installed_only_when_missing(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "labpilot.core.launcher._run_npm",
+        lambda source, npm, args, what: calls.append(args),
+    )
+    source = tmp_path / "frontend"
+    source.mkdir()
+
+    _install_dependencies(source, "npm")
+    assert calls == [["install"]], "a missing node_modules should be installed"
+
+    (source / "node_modules" / "vite").mkdir(parents=True)
+    _install_dependencies(source, "npm")
+    assert calls == [["install"]], "an existing node_modules should be left alone"
+
+
+def test_a_node_modules_without_vite_is_reinstalled(tmp_path, monkeypatch):
+    """A half-finished or interrupted `npm install` leaves the directory
+    behind, and trusting its mere existence is how `launch.sh` failed
+    obscurely rather than fixing itself."""
+    calls = []
+    monkeypatch.setattr(
+        "labpilot.core.launcher._run_npm",
+        lambda source, npm, args, what: calls.append(args),
+    )
+    source = tmp_path / "frontend"
+    (source / "node_modules").mkdir(parents=True)
+    _install_dependencies(source, "npm")
+    assert calls == [["install"]]
 
 
 # --- Serving the built bundle ---------------------------------------------

@@ -128,24 +128,27 @@ labpilot list-adapters --tags camera
 labpilot-manager                   # the desktop app, against a running backend
 ```
 
-`labpilot app` starts the backend, resolves a front end, opens the window, and
-shuts all of it down together. It serves the **built** bundle when one exists,
-which needs no Node at all; `--dev` runs the Vite dev server instead, for hot
-reload while editing `frontend/`, and `--build` rebuilds the bundle first. If
-the port it wants cannot be bound it asks the OS for another and says so, rather
-than killing whatever holds it — which also covers the Windows case where
-Hyper-V or WSL has reserved the range and a bind fails with WinError 10013
-though nothing is listening.
+`labpilot app` starts the backend, settles the front end, opens the window, and
+shuts all of it down together. **Nothing about the front end needs arranging
+first:** an installed wheel carries the built bundle, and from a checkout the
+command runs `npm install` and `npm run build` itself when they are missing. The
+first launch on a new machine is `labpilot app` and nothing else.
 
-Build the bundle once in a fresh checkout, or pass `--dev`:
+| | |
+|---|---|
+| (default) | Serves the built bundle — no Node needed at launch |
+| `--dev` | Vite dev server instead, with hot reload |
+| `--build` | Rebuild the bundle first |
+| `--no-window` | No Qt window; prints a URL for a browser |
 
-```bash
-cd frontend && npm install && npm run build
-```
+`--port` is a preference, not a demand: if it cannot be bound, the launcher takes
+one the OS offers and says which. That is what makes it work on Windows, where
+Hyper-V, WSL2 and Docker Desktop reserve blocks of TCP ports at boot and a bind
+inside one fails with WinError 10013 though nothing is listening there.
 
-`./launch.sh` does the same thing for a macOS/conda checkout and predates the
-command; `labpilot app` is the cross-platform replacement and the one to reach
-for.
+`./launch.sh` does roughly the same thing for a macOS/conda checkout and predates
+the command; `labpilot app` is the cross-platform replacement and the one to
+reach for.
 
 ## Instrument adapters
 

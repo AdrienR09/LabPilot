@@ -153,12 +153,29 @@ labpilot-manager = "labpilot.ui.desktop.manager_qt_webview:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/labpilot"]
 
+# Adds the built React bundle at labpilot/frontend_build/ when one exists.
+# A hook rather than `force-include`, which hard-errors on a missing path
+# and would break every fresh clone — see hatch_build.py.
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
 [tool.hatch.build.targets.sdist]
-# The React front end is not part of the wheel — it is served from a dev
-# server or built separately — but an sdist should still be a complete
-# checkout of what builds the project.
-include = ["src", "tests", "scripts", "docs", "frontend", "README.md", "LICENSE", "ATTRIBUTION.md", "pyproject.toml"]
+# An sdist is a complete checkout of what builds the project — including
+# `frontend/build`, even though it is a build artifact and is gitignored.
+# `python -m build` builds the sdist first and then the wheel FROM it, so
+# leaving the bundle out means the standard build command silently produces
+# a wheel with no browser UI. Shipping built front-end assets in the sdist
+# is what lets someone build a working wheel without installing Node, and is
+# what other Python packages wrapping a JS front end do for the same reason.
+include = ["src", "tests", "scripts", "docs", "frontend", "README.md", "LICENSE", "ATTRIBUTION.md", "pyproject.toml", "hatch_build.py"]
+# node_modules only: tens of thousands of files, and reproducible from
+# package.json. The build output is kept, via `artifacts` below.
 exclude = ["frontend/node_modules", "**/__pycache__", "**/.DS_Store"]
+# `include` is not enough on its own: hatchling selects sdist files through
+# the VCS, so anything in .gitignore is dropped regardless — and the bundle
+# is gitignored, being a build artifact. `artifacts` is the override meant
+# for precisely this case.
+artifacts = ["frontend/build/**"]
 
 [tool.ruff]
 line-length = 88
