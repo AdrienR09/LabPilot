@@ -13,6 +13,16 @@
 // symlink), so this moves it out immediately afterward, every time.
 // Idempotent: a no-op once node_modules is already the symlink.
 
+// macOS only, and not merely as an optimisation: the problem it solves is
+// specific to the "Desktop & Documents Folders" iCloud feature, the cache
+// path below is a macOS convention, and on Windows the symlink at the end
+// needs Developer Mode or an elevated prompt — so running it there turned
+// a plain `npm install` into an EPERM failure after having already created
+// a stray ~/Library/Caches tree. Exit before touching anything.
+if (process.platform !== "darwin") {
+  process.exit(0);
+}
+
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
