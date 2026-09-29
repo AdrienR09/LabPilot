@@ -23,8 +23,10 @@ from labpilot.core.frontend import (
     frontend_source_dir,
 )
 from labpilot.core.launcher import (
+    DESKTOP_REQUIREMENTS,
     _bundle_is_stale,
     _install_dependencies,
+    _missing_desktop_packages,
     _reachable,
     _usable_port,
 )
@@ -186,6 +188,35 @@ def test_a_node_modules_without_vite_is_reinstalled(tmp_path, monkeypatch):
     (source / "node_modules").mkdir(parents=True)
     _install_dependencies(source, "npm")
     assert calls == [["install"]]
+
+
+# --- The desktop packages ------------------------------------------------
+
+
+def test_the_desktop_check_reports_nothing_missing_in_this_environment():
+    """The dev environment has the `app` extra, so this is also a check that
+    the requirement list names real, importable modules rather than modules
+    that were renamed at some point."""
+    assert _missing_desktop_packages() == []
+
+
+def test_a_missing_desktop_module_is_named_by_its_distribution(monkeypatch):
+    """`No module named 'pyqtgraph'` is not actionable; `pip install
+    "labpilot[app]"` is. The mapping is what turns one into the other."""
+    monkeypatch.setitem(DESKTOP_REQUIREMENTS, "labpilot_not_a_real_module", "Some-Dist")
+    assert _missing_desktop_packages() == ["Some-Dist"]
+
+
+def test_the_check_covers_what_the_manager_imports_at_module_level():
+    """Import-time requirements only. `pymodaq_gui` and `vispy` ship in the
+    same extra but load when an instrument window opens, so requiring them
+    would refuse to start a manager that would have worked."""
+    assert set(DESKTOP_REQUIREMENTS) == {
+        "PyQt6.QtWidgets",
+        "PyQt6.QtWebEngineWidgets",
+        "pyqtgraph",
+        "qtconsole",
+    }
 
 
 # --- Serving the built bundle ---------------------------------------------

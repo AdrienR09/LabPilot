@@ -43,6 +43,7 @@ this module inside `core`, which never imports `ui`.
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import os
 import shutil
 import signal
@@ -98,6 +99,36 @@ def _usable_port(host: str, preferred: int) -> int:
             _say(f"   ⚠️  Port {preferred} is not bindable on {host} — using {chosen} instead")
         return chosen
     raise RuntimeError(f"Could not bind any port on {host}")
+
+
+# What the manager window needs *at import time*, and the distribution each
+# comes from. Measured by importing `manager_qt_webview` and diffing
+# `sys.modules`, not guessed — `pymodaq_gui` and `vispy` are in the same extra
+# but load only when an instrument window opens, so demanding them here would
+# refuse to launch a manager that would have worked.
+DESKTOP_REQUIREMENTS = {
+    "PyQt6.QtWidgets": "PyQt6",
+    "PyQt6.QtWebEngineWidgets": "PyQt6-WebEngine",
+    "pyqtgraph": "pyqtgraph",
+    "qtconsole": "qtconsole",
+}
+
+
+def _missing_desktop_packages() -> list[str]:
+    """Which desktop distributions are absent.
+
+    `find_spec` locates a module without executing it, so this initialises no
+    Qt and costs nothing in the common case where everything is present.
+    """
+    missing = []
+    for module, distribution in DESKTOP_REQUIREMENTS.items():
+        try:
+            found = importlib.util.find_spec(module) is not None
+        except (ImportError, ValueError):
+            found = False  # a missing parent package raises rather than returning None
+        if not found:
+            missing.append(distribution)
+    return missing
 
 
 def _reachable(host: str) -> str:
@@ -300,6 +331,26 @@ def run_app(args) -> int:
         # installed, a missing bundle gets built. Only what genuinely cannot
         # be resolved — no sources, or no npm to use them with — is reported,
         # and it is reported before a single process is spawned.
+        # Qt before anything else. It is the one requirement that cannot be
+        # resolved here, and checking it late meant the backend came up, the
+        # front end was built, and only then did the window die naming one
+        # missing module — `ModuleNotFoundError: No module named 'pyqtgraph'`
+        # — rather than the extra that supplies it.
+        if not args.no_window:
+            missing = _missing_desktop_packages()
+            if missing:
+                raise RuntimeError(
+                    "The manager window needs the desktop packages, and these are "
+                    f"missing: {', '.join(missing)}.\n"
+                    "   The base install has no Qt on purpose — a headless server, a "
+                    "script or a notebook does not need it.\n"
+                    "   Add it with:\n"
+                    '     pip install "labpilot[app]"          (or, from a checkout, '
+                    'pip install -e ".[app]")\n'
+                    "   Or skip the window and use a browser:\n"
+                    "     labpilot app --no-window"
+                )
+
         use_dev_server = args.dev
         build = None if args.build else frontend_build_dir()
 

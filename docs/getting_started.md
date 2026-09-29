@@ -59,6 +59,17 @@ you close the window.
 | `labpilot app --build` | Rebuild the front end bundle first |
 | `labpilot app --port 8765` | A specific backend port |
 
+The **window** needs the `app` extra, because the base install deliberately
+ships no Qt — a headless server, a script or a notebook has no use for it:
+
+```bash
+pip install "labpilot[app]"     # or, from a checkout: pip install -e ".[app]"
+```
+
+`labpilot app` checks for those packages before it starts anything and names
+the ones that are missing. Without them, `labpilot app --no-window` still
+gives you the full UI in a browser.
+
 ### The front end takes care of itself
 
 There is no separate front-end setup step. Where the UI comes from,
