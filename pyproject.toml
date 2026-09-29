@@ -93,6 +93,12 @@ spincore = [
 # Qt visualization layer
 gui = [
     "PyQt6 >= 6.5.0",
+    # A separate distribution from PyQt6, and nothing else in this tree
+    # depends on it — so it was missing from every fresh install while
+    # appearing to work here, where it happened to be in the conda env.
+    # `ui/desktop/manager_qt_webview.py` imports QtWebEngineWidgets at
+    # module level: without this, `labpilot-manager` cannot start at all.
+    "PyQt6-WebEngine >= 6.5.0",
     "pyqtgraph >= 0.13",
     "PyOpenGL >= 3.1",
     "vispy >= 0.14",

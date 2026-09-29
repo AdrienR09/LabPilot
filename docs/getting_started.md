@@ -41,15 +41,46 @@ pip install -e ".[dev,app]"
 
 ## Launching
 
-**Everything together** (backend + React dev server + Qt Manager window):
+**Everything together** (backend + front end + Manager window):
 
 ```bash
-./launch.sh
+labpilot app
 ```
 
-This activates the `labpilot-dev` conda environment, clears any leftover
-process on ports 3000/8000 from a previous run, and starts the backend,
-the Vite dev server, and the Manager window together.
+One command, any platform. It starts the backend, serves the front end,
+opens the Manager window, and stops all of it together on Ctrl-C or when
+you close the window.
+
+| | |
+|---|---|
+| `labpilot app` | The whole app |
+| `labpilot app --no-window` | Backend + front end only; prints a URL for your browser |
+| `labpilot app --dev` | Front end from the Vite dev server, with hot reload |
+| `labpilot app --build` | Rebuild the front end bundle first |
+| `labpilot app --port 8765` | A specific backend port |
+
+The front end comes from the **built** bundle when there is one, which
+needs no Node installed. A fresh checkout has to build it once:
+
+```bash
+cd frontend && npm install && npm run build
+```
+
+Until you do, `labpilot app` falls back to the Vite dev server — same
+result, but it needs npm.
+
+Ports: `--port` is a preference, not a demand. If it cannot be bound the
+launcher takes one the OS offers and prints which. That matters most on
+Windows, where Hyper-V, WSL2 and Docker Desktop reserve blocks of TCP
+ports at boot and a bind inside one fails with WinError 10013 while
+nothing is listening there. To see the reserved ranges:
+
+```
+netsh interface ipv4 show excludedportrange protocol=tcp
+```
+
+`./launch.sh` predates this command and does the same thing for a
+macOS/conda checkout only. Prefer `labpilot app`.
 
 **Backend only** — useful for headless use, or driving LabPilot from a
 script/console without the GUI:

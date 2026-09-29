@@ -17,18 +17,66 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  labpilot start                     Start LabPilot server on default port 8000
+  labpilot app                       Start the whole app: backend, front end, window
+  labpilot app --no-window           Same, but for a browser instead of the Qt window
+  labpilot app --dev                 Serve the front end from Vite, with hot reload
+  labpilot start                     Start the backend only, on default port 8000
   labpilot start --port 8765         Start server on port 8765
   labpilot start --load session.json Load specific session configuration
   labpilot list-adapters             List all available instrument adapters
   labpilot list-adapters --tags camera   Filter adapters by tags
-  labpilot -manager                  Launch Qt instrument manager GUI (legacy)
   labpilot --version                 Show version information
         """,
     )
 
     # Create subcommands
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # The whole application — the cross-platform equivalent of launch.sh
+    app_parser = subparsers.add_parser(
+        "app",
+        help="Start the backend, the front end and the manager window together",
+        description=(
+            "Starts everything and shuts it all down together. The front end is "
+            "served from a built bundle when one exists — which needs no Node — "
+            "and from the Vite dev server otherwise."
+        ),
+    )
+    app_parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="Host to bind the backend to (default: 127.0.0.1, i.e. this machine only)",
+    )
+    app_parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Backend port; another is chosen automatically if this one cannot be bound "
+             "(default: 8000)",
+    )
+    app_parser.add_argument(
+        "--frontend-port",
+        type=int,
+        default=3000,
+        help="Dev-server port, only used when the front end runs under Vite (default: 3000)",
+    )
+    app_parser.add_argument(
+        "--dev",
+        action="store_true",
+        help="Serve the front end from the Vite dev server (hot reload) even if a "
+             "built bundle exists. Needs npm and a checkout.",
+    )
+    app_parser.add_argument(
+        "--build",
+        action="store_true",
+        help="Run `npm run build` first, then serve the resulting bundle",
+    )
+    app_parser.add_argument(
+        "--no-window",
+        action="store_true",
+        help="Don't open the Qt manager window — print a URL to open in a browser instead",
+    )
 
     # Start server command
     start_parser = subparsers.add_parser("start", help="Start LabPilot server")
@@ -94,7 +142,11 @@ Examples:
     args = parser.parse_args()
 
     # Handle subcommands
-    if args.command == "start":
+    if args.command == "app":
+        from labpilot.core.launcher import run_app
+
+        sys.exit(run_app(args))
+    elif args.command == "start":
         _start_server(args)
     elif args.command == "list-adapters":
         _list_adapters(args)
@@ -103,8 +155,45 @@ Examples:
         parser.print_help()
 
 
+def _check_bindable(host: str, port: int) -> None:
+    """Fail early, and legibly, when the port cannot be bound.
+
+    uvicorn's own failure for this is an ERROR log line followed by
+    "Waiting for application shutdown", which reads like a hang and names
+    no remedy. It also calls `sys.exit()` rather than raising, so it
+    cannot be caught below — hence a check before it starts.
+
+    The Windows case is worth the message on its own: Hyper-V, WSL2 and
+    Docker Desktop reserve blocks of TCP ports at boot, and a bind inside
+    one fails with WinError 10013 while nothing is listening there, so
+    every "is this port free?" instinct says it is.
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((host, port))
+        except OSError as exc:
+            print(f"❌ Cannot bind {host}:{port} — {exc}", file=sys.stderr)
+            if getattr(exc, "winerror", None) == 10013:
+                print(
+                    "   On Windows this usually means Hyper-V, WSL2 or Docker has\n"
+                    "   reserved the port range. Check it with:\n"
+                    "     netsh interface ipv4 show excludedportrange protocol=tcp",
+                    file=sys.stderr,
+                )
+            print(
+                f"   Try another port:  labpilot start --port {port + 765}\n"
+                "   Or let it pick one for you:  labpilot app",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+
 def _start_server(args):
     """Start the LabPilot server."""
+    _check_bindable(args.host, args.port)
     try:
         import uvicorn
 

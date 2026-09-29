@@ -11,7 +11,14 @@ import {
 
 // Base configuration
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
-const WS_BASE_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws';
+// Derived from wherever this page was served, the same way API_BASE_URL is
+// relative: hardcoding port 8000 broke every live update as soon as the
+// backend ran anywhere else, and it always does when 8000 is unbindable.
+// Under the dev server this hits Vite's own /ws proxy; served from the
+// backend it hits the backend directly.
+const WS_BASE_URL =
+  import.meta.env.VITE_WS_URL ||
+  `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
 
 // Generic API client class
 class APIClient {

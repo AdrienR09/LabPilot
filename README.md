@@ -120,16 +120,32 @@ adapter describes itself without its driver.
 ## Running
 
 ```bash
-labpilot start                     # the backend, on :8000
+labpilot app                       # everything: backend, front end, manager window
+labpilot app --no-window           # same, for a browser instead of the Qt window
+labpilot start                     # the backend alone, on :8000
 labpilot list-adapters             # see what's connectable
 labpilot list-adapters --tags camera
 labpilot-manager                   # the desktop app, against a running backend
 ```
 
-`./launch.sh` is the development convenience: it starts the React dev server
-(`frontend/`, port 3000) and the Qt shell together, and the Qt shell starts and
-owns its own backend process. It expects an editable install (`pip install -e
-".[app]"`) of this checkout.
+`labpilot app` starts the backend, resolves a front end, opens the window, and
+shuts all of it down together. It serves the **built** bundle when one exists,
+which needs no Node at all; `--dev` runs the Vite dev server instead, for hot
+reload while editing `frontend/`, and `--build` rebuilds the bundle first. If
+the port it wants cannot be bound it asks the OS for another and says so, rather
+than killing whatever holds it — which also covers the Windows case where
+Hyper-V or WSL has reserved the range and a bind fails with WinError 10013
+though nothing is listening.
+
+Build the bundle once in a fresh checkout, or pass `--dev`:
+
+```bash
+cd frontend && npm install && npm run build
+```
+
+`./launch.sh` does the same thing for a macOS/conda checkout and predates the
+command; `labpilot app` is the cross-platform replacement and the one to reach
+for.
 
 ## Instrument adapters
 

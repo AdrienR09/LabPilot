@@ -23,9 +23,16 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -37,6 +44,7 @@ from labpilot.core.config import (
 from labpilot.core.config.paths import user_workflow_dir
 from labpilot.core.config.template_params import TemplateParamPersistence
 from labpilot.core.config.workflow_sets import WorkflowSetPersistence
+from labpilot.core.frontend import frontend_build_dir
 from labpilot.core.lab import UnknownInstrumentError
 from labpilot.core.run import OptimizePlan, RunAbortedError, prepare
 from labpilot.core.run.manager import RunManager, WorkflowExecutionError
@@ -1556,17 +1564,55 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
         except WebSocketDisconnect:
             server.websocket_manager.disconnect(websocket)
 
-    # Serve React frontend (in production)
-    if Path("frontend/build").exists():
+    # Serve the built React front end, when there is one.
+    #
+    # Located with `frontend_build_dir()` rather than from the working
+    # directory, which is what this used to do: `labpilot start` launched
+    # from anywhere but a repo root served no front end at all and said
+    # nothing about it, so an installed package had no browser UI.
+    build_dir = frontend_build_dir()
+    if build_dir is not None:
         # Vite outputs to 'assets', not 'static'
-        assets_dir = Path("frontend/build/assets")
-        if assets_dir.exists():
-            app.mount("/assets", StaticFiles(directory="frontend/build/assets"), name="assets")
+        assets_dir = build_dir / "assets"
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+        def _index() -> HTMLResponse:
+            # Read per request rather than cached at startup, so a
+            # `npm run build` while the server runs does not leave the
+            # old shell pointing at asset filenames that no longer exist.
+            return HTMLResponse((build_dir / "index.html").read_text())
 
         @app.get("/", response_class=HTMLResponse)
         async def serve_frontend():
-            with open("frontend/build/index.html") as f:
-                return HTMLResponse(f.read())
+            return _index()
+
+        @app.exception_handler(404)
+        async def serve_frontend_route(request: Request, exc: HTTPException):
+            """Serve a root-level build file, or the app shell, on a miss.
+
+            The front end routes with `BrowserRouter`, so `/devices` and
+            `/flow` are URLs the browser requests directly — on a reload,
+            or when a window opens one. Without this they 404 and the app
+            looks broken only after a refresh.
+
+            A handler rather than a `/{path:path}` catch-all route, which
+            was the first attempt and broke two things: a GET on a
+            POST-only endpoint answered 404 instead of 405, and a POST to
+            a nonexistent path answered 405 (matching the catch-all's path
+            but not its method) instead of 404. Hooking the 404 leaves
+            Starlette's own method handling untouched, because a 405 never
+            reaches here.
+            """
+            path = request.url.path.lstrip("/")
+            # An API miss stays a JSON 404. Answering it with an HTML page
+            # would hand every fetch() caller a body it cannot parse.
+            if path.startswith(("api/", "ws")):
+                return JSONResponse({"detail": exc.detail}, status_code=404)
+            candidate = (build_dir / path).resolve()
+            if path and candidate.is_file() and candidate.is_relative_to(build_dir.resolve()):
+                return FileResponse(candidate)
+            return _index()
 
     return app
 
