@@ -76,3 +76,17 @@ examples/*.db
 # Workflow instances written at runtime by the template loader
 src/labpilot/core/workflow_library/*.py
 !src/labpilot/core/workflow_library/__init__.py
+
+# iCloud Drive conflict copies. This checkout lives under ~/Documents,
+# which iCloud syncs, and a sync conflict drops byte-identical
+# "<name> 2.py" copies across the tree — 185 of them in one event,
+# including inside .git/refs/. These lines only keep `git status`
+# readable and keep a `git add -A` from committing the duplicates; they
+# do NOT stop one breaking the build, because adapter discovery
+# (pkgutil.walk_packages over instruments/) imports an ignored file just
+# the same and re-registers every adapter key, killing `import labpilot`
+# outright. The real fix is excluding this folder from iCloud sync.
+* 2.*
+* 3.*
+* 2/
+* 3/
