@@ -32,7 +32,7 @@ Examples:
     # Create subcommands
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    # The whole application — the cross-platform equivalent of launch.sh
+    # The whole application — replaces the launch.sh shell script
     app_parser = subparsers.add_parser(
         "app",
         help="Start the backend, the front end and the manager window together",

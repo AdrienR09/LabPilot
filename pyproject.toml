@@ -103,7 +103,7 @@ gui = [
     "PyOpenGL >= 3.1",
     "vispy >= 0.14",
     # Scientific viewer widgets (Viewer0D/1D/2D) embedded in the native
-    # instrument windows — see src/labpilot/ui/desktop/instrument_windows.py.
+    # instrument windows — see src/labpilot/ui/desktop/instrument_window.py.
     "pymodaq_gui >= 5.1",
 ]
 

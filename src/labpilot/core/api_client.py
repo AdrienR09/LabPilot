@@ -6,7 +6,7 @@ scripts, tests.
 Failures surface as LabPilot exceptions (`core/errors.py`) carrying the
 server's own message, not as httpx errors — see `_check`.
 
-src/ui/desktop/backend_client.py re-exports LabPilotClient as
+src/labpilot/ui/desktop/backend_client.py re-exports LabPilotClient as
 BackendClient (its historical name there) and adds the Qt-specific
 WorkflowStatePoller on top — that file is the one to extend for anything
 Qt-signal-based; this one stays framework-agnostic.

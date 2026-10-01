@@ -1,9 +1,9 @@
 # Troubleshooting
 
-**"Signal timed out" in a Qt window.** Usually means the backend
-(`:8000`) and/or the React dev server (`:3000`) aren't running — check
-with `curl http://localhost:8000/api/health`, and `./launch.sh` restarts
-both together.
+**"Signal timed out" in a Qt window.** Usually means the backend is not
+running — check with `curl http://localhost:8000/api/health`. `labpilot app`
+starts the backend, the front end and the window together, and restarts all
+three.
 
 **A scan freezes or seems stuck partway through.** Check the toolbar
 status label — the Execute button disables itself while a run is

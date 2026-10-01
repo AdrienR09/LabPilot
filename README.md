@@ -146,9 +146,8 @@ one the OS offers and says which. That is what makes it work on Windows, where
 Hyper-V, WSL2 and Docker Desktop reserve blocks of TCP ports at boot and a bind
 inside one fails with WinError 10013 though nothing is listening there.
 
-`./launch.sh` does roughly the same thing for a macOS/conda checkout and predates
-the command; `labpilot app` is the cross-platform replacement and the one to
-reach for.
+It replaces the `launch.sh` shell script, which only ever worked in a
+macOS/conda checkout.
 
 ## Instrument adapters
 

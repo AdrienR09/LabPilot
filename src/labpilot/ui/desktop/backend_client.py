@@ -1,7 +1,7 @@
 """Thin synchronous HTTP client for the LabPilot backend, plus a background
 poller that keeps its blocking calls off the Qt GUI thread.
 
-Used by the native Qt instrument windows (instrument_windows.py) to read
+Used by the native Qt instrument windows (instrument_window.py) to read
 real instrument data and write real settings — the same backend the React
 frontend talks to over `@/api`, just called from Python instead of JS.
 """
@@ -33,7 +33,7 @@ from labpilot.core.api_client import LabPilotClient
 # core.api_client.LabPilotClient (also used by notebook_api.py, so
 # notebook/IPython kernels don't need to pull in PyQt6 just to talk to
 # the backend). Re-exported under this name since every desktop-app
-# caller (instrument_windows.py, workflow_window.py, ...) imports
+# caller (instrument_window.py, workflow_window.py, ...) imports
 # BackendClient from here.
 BackendClient = LabPilotClient
 

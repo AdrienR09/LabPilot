@@ -104,8 +104,6 @@ there. To see the reserved ranges:
 netsh interface ipv4 show excludedportrange protocol=tcp
 ```
 
-`./launch.sh` predates this command and does the same thing for a
-macOS/conda checkout only. Prefer `labpilot app`.
 
 ### Installing Node, if you need it
 
@@ -132,7 +130,7 @@ labpilot list-adapters --tags camera  # filter by DeviceSchema tag
 
 ## Your first workflow
 
-1. Start everything with `./launch.sh`.
+1. Start everything with `labpilot app`.
 2. In the Manager's **Devices** tab, connect a couple of mock instruments
    (no real hardware needed — LabPilot ships mock adapters for exactly
    this) — e.g. a mock XYZ stage and a mock detector.

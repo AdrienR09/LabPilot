@@ -29,15 +29,16 @@ it needs from the backend by id — the bridge carries no instrument data.
 ## Running
 
 ```bash
-# from repo root — starts the React dev server, then the Qt shell
-./launch.sh
+# backend, front end and this Qt shell, together
+labpilot app
 ```
 
-This runs `frontend/` (`npm run dev`, port 3000) and then
-`src/labpilot/ui/desktop/manager_qt_webview.py`, which starts and owns its own
-backend process (`managed_server.py`) and waits for it to be ready before the
-window opens. Pass `--external-backend` to point it at an already-running or
-remote server instead.
+That starts the backend, settles the front end, and then runs
+`manager_qt_webview.py` against them — see `labpilot/core/launcher.py`. To run
+this shell on its own against a backend that is already up, use
+`labpilot-manager --external-backend --backend-url <url>`; left to itself it
+starts and owns a backend process (`managed_server.py`) and waits for it to be
+ready before the window opens.
 
 To run the backend on its own:
 
@@ -54,7 +55,7 @@ labpilot start   # runs labpilot.core.server, default port 8000
 | `managed_server.py` | Starts and owns the backend subprocess for the manager window. |
 | `main.py` | Standalone entry point for a single instrument window, invoked as a subprocess (`--instrument`/`--type`/`--dimensionality` args). Not meant to be imported. |
 | `launch_instrument.py` / `launch_workflow.py` | Subprocess launchers for `main.py`, called by `qt_bridge.py` and by `labpilot.core.server`'s `launch-qt` endpoint. |
-| `instrument_windows.py` | Per-instrument Qt window factory used by `main.py` (takes a `DashboardInstrument` dataclass). |
+| `instrument_window.py` | The generic, config-driven `InstrumentWindow` plus the `create_instrument_window` factory `main.py` calls. Replaced seven hand-written window classes. |
 | `session_gui.py` / `session_manager.py` | Save/restore window layout under `~/.labpilot/sessions`, wired into `main.py`'s window menu only. |
 
 ## Requirements

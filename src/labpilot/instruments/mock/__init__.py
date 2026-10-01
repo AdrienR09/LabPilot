@@ -65,14 +65,14 @@ __all__ = [
     'MockOscilloscope',
     'MockUSBOscilloscope',
     'MockHighSpeedOscilloscope',
-    # ODMR/pulsed-sensing instruments (4) — src/instruments/mock/{lasers,
+    # ODMR/pulsed-sensing instruments (4) — src/labpilot/instruments/mock/{lasers,
     # microwave_sources,optical_modulators,pulse_rig}.py
     'MockLaser',
     'MockMicrowaveSource',
     'MockAOM',
     'MockPulser',
     'MockGatedCounter',
-    # Hardware-timed (NI-card-style) scanning — src/instruments/mock/hardware_scan.py
+    # Hardware-timed (NI-card-style) scanning — src/labpilot/instruments/mock/hardware_scan.py
     'MockNIScanner',
     # A whole simulated NI card, chosen by model number — mock/ni_card.py
     'MockNICard',

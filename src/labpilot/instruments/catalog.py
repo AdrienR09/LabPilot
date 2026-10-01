@@ -83,7 +83,7 @@ def _pymeasure(key: str, mfg: str, model: str, name: str, itype: InstrumentType,
 
 
 INSTRUMENT_CATALOG: list[InstrumentMetadata] = [
-    # Mock adapters (41) — src/instruments/mock/
+    # Mock adapters (41) — src/labpilot/instruments/mock/
     _mock("mock_ni_card", "NI-DAQmx", "Mock NI DAQ Card (any model)", InstrumentType.GENERIC, ["daq", "ni-daqmx", "counter", "scanner", "hardware-scan"]),
     _mock("mock_ocean_optics", "Ocean Optics", "Mock Ocean Optics Spectrometer (any model)", InstrumentType.DETECTOR_1D, ["spectrometer", "spectroscopy", "ocean-optics"]),
     _mock("mock_spectrometer", "Basic", "Mock Spectrometer", InstrumentType.DETECTOR_1D, ["spectrometer", "visible"]),
@@ -123,7 +123,7 @@ INSTRUMENT_CATALOG: list[InstrumentMetadata] = [
     _mock("mock_usb_oscilloscope", "USB", "Mock USB Oscilloscope", InstrumentType.DETECTOR_1D, ["oscilloscope", "usb"]),
     _mock("mock_hs_oscilloscope", "HighSpeed", "Mock High-Speed Oscilloscope", InstrumentType.DETECTOR_1D, ["oscilloscope", "high-speed"]),
 
-    # ODMR/pulsed-sensing instruments (4) — src/instruments/mock/{lasers,
+    # ODMR/pulsed-sensing instruments (4) — src/labpilot/instruments/mock/{lasers,
     # microwave_sources,optical_modulators,pulse_rig}.py. Modeled on
     # qudi's MicrowaveInterface/PulserInterface and the real-world PyMoDAQ
     # S2QT ODMR plugin — see docs/workflows.md's ODMR notes.
@@ -133,14 +133,14 @@ INSTRUMENT_CATALOG: list[InstrumentMetadata] = [
     _mock("mock_pulser", "TTL", "Mock Pulser", InstrumentType.GENERIC, ["pulser", "sequencer", "ttl", "odmr", "pulsed"]),
     _mock("mock_gated_counter", "TTL", "Mock Gated Counter", InstrumentType.DETECTOR_0D, ["counter", "gated", "photon", "odmr", "pulsed"]),
 
-    # Hardware-timed scanning — src/instruments/mock/hardware_scan.py.
+    # Hardware-timed scanning — src/labpilot/instruments/mock/hardware_scan.py.
     # Modeled on Qudi's ScanningProbeInterface/NI hardware module: a single
     # combined position+detector device clocked as one, not a generic
     # actuator+detector pair — see core/workflow/capabilities.py's
     # HardwareTimedScanCapability and core/workflow_library/hardware_timed_scan.py.
     _mock("mock_ni_scanner", "Scanner", "Mock NI-Card Scanner", InstrumentType.GENERIC, ["ni", "daq", "scanner", "hardware-scan"]),
 
-    # Test fixtures (9) — src/instruments/test_fixtures.py, high-fidelity simulations
+    # Test fixtures (9) — src/labpilot/instruments/test_fixtures.py, high-fidelity simulations
     _fixture("fake_tunable_laser", "Tunable", "Test Tunable Laser", InstrumentType.SOURCE, ["laser", "tunable"]),
     _fixture("fake_spectrometer", "Tunable", "Test Spectrum Simulator", InstrumentType.DETECTOR_1D, ["spectrometer"]),
     _fixture("fake_spectrum_camera", "Spectrum", "Test Spectrum Camera", InstrumentType.DETECTOR_2D, ["camera", "spectrum"]),
@@ -152,7 +152,7 @@ INSTRUMENT_CATALOG: list[InstrumentMetadata] = [
     _fixture("fake_switch", "Switch", "Test Binary Switch", InstrumentType.ACTUATOR_0D, ["switch", "binary"]),
 
     # PyMeasure dedicated adapters (6) — hand-written, better schemas than the
-    # generic introspection fallback. src/instruments/<Manufacturer>/<type>.py
+    # generic introspection fallback. src/labpilot/instruments/<Manufacturer>/<type>.py
     _pymeasure("keithley_2400", "Keithley", "2400", "Keithley SourceMeter 2400", InstrumentType.SOURCE, ["VISA"], ["visa", "smu", "v-source", "i-measure"]),
     _pymeasure("keithley_2600", "Keithley", "2600", "Keithley SourceMeter 2600 Dual SMU", InstrumentType.SOURCE, ["VISA"], ["visa", "smu", "dual-channel"]),
     _pymeasure("keithley_6221", "Keithley", "6221", "Keithley 6221 AC/DC Current Source", InstrumentType.SOURCE, ["VISA"], ["visa", "current-source"]),
@@ -394,7 +394,7 @@ INSTRUMENT_CATALOG.extend(
 )
 
 
-# pylablib adapters (24) — src/instruments/<Manufacturer>/<type>.py
+# pylablib adapters (24) — src/labpilot/instruments/<Manufacturer>/<type>.py
 INSTRUMENT_CATALOG.extend([
     InstrumentMetadata("ophir", "Ophir", "StarLite", "Ophir Power Meter", InstrumentType.DETECTOR_0D, InstrumentBackend.PYLABLIB, tags=['power-meter', 'optical']),
     InstrumentMetadata("thorlabs_pm160", "Thorlabs", "PM160", "Thorlabs PM160 Power Meter", InstrumentType.DETECTOR_0D, InstrumentBackend.PYLABLIB, tags=['power-meter', 'optical']),
@@ -412,7 +412,7 @@ INSTRUMENT_CATALOG.extend([
     InstrumentMetadata("toptica_ibeam_smart", "Toptica", "iBeam Smart", "Toptica iBeam Smart Laser", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, tags=['laser', 'diode']),
     InstrumentMetadata("m2_solstis", "M Squared", "SolsTiS", "M Squared SolsTiS Tunable Laser", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, tags=['laser', 'tunable', 'ti:sapphire']),
 
-    # Pulsed sequencers — src/instruments/{Swabian,SpinCore}/. Both need
+    # Pulsed sequencers — src/labpilot/instruments/{Swabian,SpinCore}/. Both need
     # the manufacturer's own package, and both `describe()` without it, so
     # they are listed and searchable on a machine with no hardware.
     InstrumentMetadata("swabian_pulse_streamer", "Swabian", "Pulse Streamer 8/2", "Swabian Pulse Streamer", InstrumentType.GENERIC, InstrumentBackend.VENDOR, connection_types=['ethernet'], tags=['pulser', 'sequencer', 'ttl', 'digital', 'odmr', 'pulsed']),
@@ -456,7 +456,7 @@ INSTRUMENT_CATALOG.extend([
 ])
 
 
-# MockBasic (7) — src/instruments/MockBasic/simple.py, one per InstrumentType,
+# MockBasic (7) — src/labpilot/instruments/MockBasic/simple.py, one per InstrumentType,
 # used as the dashboard's starter/demo seed instead of a hardcoded fake list.
 INSTRUMENT_CATALOG.extend([
     InstrumentMetadata("mock_basic_detector_0d", "MockBasic", "Generic", "Basic 0D Detector", InstrumentType.DETECTOR_0D, InstrumentBackend.MOCK, tags=["mock-basic"]),

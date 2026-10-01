@@ -8,10 +8,8 @@ every widget module imports `PyQt6.*` directly.
 
 Importing this module sets the variable. It is imported by
 `labpilot/ui/__init__.py` and by `components/__init__.py`, which between
-them are on the path of every way into this app — the packaged
-`labpilot.ui.desktop.*` imports and the flat `import components` that
-`launch.sh` runs — so it is no longer possible to reach a Qt widget
-without having passed through here.
+them are on the path of every way into this app, so it is no longer
+possible to reach a Qt widget without having passed through here.
 
 It used to be four copies of the same `setdefault` line, one per window
 module that someone remembered to add it to. Everything else — the

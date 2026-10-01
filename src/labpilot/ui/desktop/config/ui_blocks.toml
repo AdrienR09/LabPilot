@@ -6,14 +6,14 @@
 # runtime from that instrument's DeviceSchema instead, by the
 # "settings_tree" block below — never stored here.
 #
-# Copied from the packaged default (src/ui/desktop/config/ui_blocks.toml)
+# Copied from the packaged default (src/labpilot/ui/desktop/config/ui_blocks.toml)
 # to this file on first run. Edit freely: add/remove/reorder blocks, tweak
 # defaults — instrument_window.py re-reads this file every time a native
 # window is opened, no code change or restart needed.
 #
 # Each block is `{ type = "<component_type>", ...params }` — `type` must
 # name a component registered in the "instrument" context (every
-# UIComponent subclass in src/ui/desktop/components/ registers itself; see
+# UIComponent subclass in src/labpilot/ui/desktop/components/ registers itself; see
 # components/base.py, and scripts/verify_ui_registry.py, which checks every
 # type below resolves). Everything else is passed through as that
 # component's params, merged over its own default_params (this file's

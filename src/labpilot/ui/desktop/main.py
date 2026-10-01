@@ -360,7 +360,7 @@ def main():
         # the same backend the React frontend uses — never a stub/fake entry.
         try:
             from labpilot.ui.desktop.backend_client import BackendClient
-            from labpilot.ui.desktop.instrument_windows import create_instrument_window
+            from labpilot.ui.desktop.instrument_window import create_instrument_window
             from labpilot.ui.desktop.session_manager import session_manager
 
             client = BackendClient(args.backend_url)

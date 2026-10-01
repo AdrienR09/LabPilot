@@ -74,7 +74,7 @@ def set_instrument_ui_prefs(instrument_id: str, prefs: dict[str, Any]) -> None:
 class PrefSpec:
     """One declared display preference — the "tier 4" metaobject a
     `UIComponent` subclass would declare (mirrored here, not imported from
-    `src/ui/desktop/components/`, so the backend never needs PyQt6 on its
+    `src/labpilot/ui/desktop/components/`, so the backend never needs PyQt6 on its
     path). `kind` is a rendering hint for a generic frontend form, the same
     role `generic_params.ParamSpec` plays for device parameters — "bool"
     is the only kind any current pref needs; add "choice"/"int" here first

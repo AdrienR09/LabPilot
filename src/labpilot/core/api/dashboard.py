@@ -918,24 +918,6 @@ async def instrument_data_stream(
             manager.websockets.remove(websocket)
 
 
-@router.websocket("/ws/workflows")
-async def workflow_updates_stream(websocket: WebSocket):
-    """WebSocket endpoint for workflow progress updates."""
-    manager = get_dashboard_manager()
-    await websocket.accept()
-    manager.websockets.append(websocket)
-
-    try:
-        # Keep connection alive
-        while True:
-            data = await websocket.receive_text()
-            # Handle ping/pong
-            if data == "ping":
-                await websocket.send_text("pong")
-    except WebSocketDisconnect:
-        manager.websockets.remove(websocket)
-
-
 async def initialize_dashboard():
     """Initialize dashboard: load the active instrument-set config (or seed
     one)."""

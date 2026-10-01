@@ -207,7 +207,7 @@ class QtSessionManager(QObject):
             # Import here to avoid circular imports
             from labpilot.ui.desktop.main import DashboardInstrument
 
-            from .instrument_windows import create_instrument_window
+            from .instrument_window import create_instrument_window
 
             # Create instrument data
             instrument_data = {

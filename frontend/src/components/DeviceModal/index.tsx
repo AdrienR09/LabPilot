@@ -192,7 +192,7 @@ export function DeviceModal({ isOpen }: DeviceModalProps) {
                   <AlertTriangle className="h-8 w-8 mx-auto text-amber-500 mb-2" />
                   <p className="text-sm text-gray-700 dark:text-gray-300 font-medium">Backend unreachable</p>
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    Instrument catalog comes from the backend — start it with <code>labpilot start</code> (or <code>./launch.sh</code>) to browse and add devices.
+                    Instrument catalog comes from the backend — start it with <code>labpilot app</code> to browse and add devices.
                   </p>
                 </div>
               )}

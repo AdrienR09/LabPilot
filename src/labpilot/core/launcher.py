@@ -1,9 +1,9 @@
 """`labpilot app` — the backend, the front end and the manager window
 from one command.
 
-This is what `launch.sh` does, without needing bash, conda, `lsof` or
-POSIX process groups, because the person most likely to launch the app
-this way is on Windows and will never read `launch.sh`.
+It replaces a `launch.sh` shell script, and needs none of what that
+needed — bash, conda, `lsof`, POSIX process groups — because the person
+most likely to launch the app is on Windows, where none of them exist.
 
 Nothing about the front end has to be arranged beforehand. An installed
 wheel carries the bundle (see `hatch_build.py`), and from a checkout this

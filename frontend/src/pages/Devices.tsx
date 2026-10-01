@@ -190,7 +190,7 @@ export default function Devices() {
 
   // Screen icon: launch the live instrument UI. Inside the Qt desktop shell
   // this opens a real native PyQtGraph window as a separate OS window (see
-  // qt_bridge.py -> launch_instrument.py -> instrument_windows.py, which
+  // qt_bridge.py -> launch_instrument.py -> instrument_window.py, which
   // fetches the instrument's real schema/data from the backend by id — no
   // fake/simulated data). In a plain browser tab there's no Qt process to
   // open a window in, so fall back to the in-app live view modal.
