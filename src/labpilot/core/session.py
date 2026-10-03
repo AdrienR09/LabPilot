@@ -71,6 +71,9 @@ class Session:
         #: ContextVar, unlike role aliases below: this describes the
         #: apparatus, so two concurrent workflows *should* agree about it.
         self.context: dict[str, Any] = {}
+        #: Points that could not be measured, per run — see `note_failure`.
+        self._failures: dict[str, list[dict[str, Any]]] = {}
+        self._failure_counts: dict[str, int] = {}
         # Role aliases are NOT stored here — see _aliases_var above: they are
         # per-execution state, and two concurrently running workflows would
         # otherwise clobber each other's role bindings.
@@ -170,6 +173,38 @@ class Session:
 
     def clear_aliases(self) -> None:
         _aliases_var.set(None)
+
+    #: Per run, and capped: a scan whose detector has died would otherwise
+    #: record one entry per point for the rest of its grid, and the first
+    #: few failures say everything the last ten thousand would.
+    MAX_RECORDED_FAILURES = 50
+
+    def note_failure(self, run_uid: str, **detail: Any) -> None:
+        """Record a point that could not be measured, after retries.
+
+        A skipped point is a `None` in the result and a NaN in the file,
+        which is honest but says nothing about *why*. This is the why, and
+        it travels with the run into `RunMeta.context` so the file carries
+        it too.
+        """
+        failures = self._failures.setdefault(run_uid, [])
+        if len(failures) < self.MAX_RECORDED_FAILURES:
+            failures.append(detail)
+        self._failure_counts[run_uid] = self._failure_counts.get(run_uid, 0) + 1
+
+    def failures(self, run_uid: str) -> list[dict[str, Any]]:
+        """What was skipped in this run, up to the recording cap."""
+        return list(self._failures.get(run_uid, ()))
+
+    def failure_count(self, run_uid: str) -> int:
+        """How many points were skipped, including beyond the cap."""
+        return int(self._failure_counts.get(run_uid, 0))
+
+    def forget_failures(self, run_uid: str) -> None:
+        """Called when a run is finished with, so a long-lived session does
+        not accumulate every failure it has ever seen."""
+        self._failures.pop(run_uid, None)
+        self._failure_counts.pop(run_uid, None)
 
     def set_context(self, **entries: Any) -> dict[str, Any]:
         """Record what else is true, and return the whole context.

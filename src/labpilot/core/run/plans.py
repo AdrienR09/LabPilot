@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import itertools
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -55,6 +55,7 @@ from labpilot.core.device.motion import (
 )
 from labpilot.core.run.descriptor import RunDescriptor
 from labpilot.core.run.requests import _register_all as _register_transports
+from labpilot.core.run.retry import RetryPolicy, attempt
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
@@ -172,6 +173,13 @@ class ScanPlan:
     """Which device `hold` names parameters of. Defaults to the first
     axis's device, which is the ordinary case: the other axes of the same
     stage."""
+    retry: RetryPolicy = field(default_factory=RetryPolicy)
+    """How hard to try a point whose hardware refused.
+
+    Three tries, then raise — so a transient VISA timeout costs a second
+    instead of the run, and a real failure still stops as it always did.
+    Pass `RetryPolicy(on_failure="skip")` for an unattended scan that
+    should leave gaps and carry on. See `core/run/retry.py`."""
     repeats: int = 1
     """Play the whole grid this many times, keeping each pass separately.
 
@@ -232,7 +240,18 @@ class ScanPlan:
         # One reading, to learn what a point actually contains: a schema
         # declares a spectrometer returns a 1-D array, not that it is 2048
         # long. This is the single hardware touch in describe().
-        sample = await detector.read()
+        #
+        # Retried under the same policy as a point, but never skipped: the
+        # shape of the result is not optional, so a detector that will not
+        # answer here means there is no run to describe. Without the retry a
+        # single timeout on this one read would fail a scan before it
+        # started — the worst moment to be fragile, because nothing has been
+        # measured yet to show it was worth starting.
+        sample, _ = await attempt(
+            replace(self.retry, on_failure="abort"),
+            detector.read,
+            describe=f"{self.detector} probe",
+        )
         primary = sample.primary()
         detector_axes = tuple(sample.axes()) if primary.ndim else ()
 
@@ -277,12 +296,31 @@ class ScanPlan:
             )
             for index, (_pass, *combination) in enumerate(grid):
                 position = dict(zip((a.name for a in self.axes), combination, strict=True))
-                for device, targets in _by_device(position, self.axes).items():
-                    await self._command(session.get(device), targets)
-                reading = await detector.read()
-                values = np.asarray(
-                    reading[descriptor.value_name], dtype=float
-                ).ravel()
+
+                async def measure(position: dict[str, float] = position) -> np.ndarray:
+                    for device, targets in _by_device(position, self.axes).items():
+                        await self._command(session.get(device), targets)
+                    reading = await detector.read()
+                    return np.asarray(
+                        reading[descriptor.value_name], dtype=float
+                    ).ravel()
+
+                # The move and the read are one unit of work: retrying a
+                # read without re-asserting the position would measure the
+                # right point only if the move had actually succeeded.
+                values, failure = await attempt(
+                    self.retry, measure, describe=f"point {index}"
+                )
+                if failure is not None:
+                    # Leave it unmeasured — `None` in the buffer, NaN in the
+                    # file — and say why. Carrying on is the point: an
+                    # unattended overnight scan with three gaps and a record
+                    # of them beats no scan at all.
+                    session.note_failure(
+                        descriptor.run_uid, point=index,
+                        position=position, error=f"{type(failure).__name__}: {failure}",
+                    )
+                    continue
                 yield DatasetPatch(
                     array=descriptor.value_name,
                     index=index * per_point,

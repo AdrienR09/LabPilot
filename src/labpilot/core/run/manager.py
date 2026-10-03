@@ -668,7 +668,17 @@ class RunManager:
                 # was being measured. None of the three can be added to a
                 # file after the fact.
                 software=software(),
-                context=dict(self.session.context),
+                context={
+                    **dict(self.session.context),
+                    # A file with NaNs in it and no explanation is the thing
+                    # this avoids: the count travels with the data rather
+                    # than living only in a log the analyst never sees.
+                    **(
+                        {"skipped_points": result["skipped_points"]}
+                        if isinstance(result, dict) and result.get("skipped_points")
+                        else {}
+                    ),
+                },
             )
             dataset = Dataset.from_result(result, meta, result_ui or {})
             if not dataset.arrays:

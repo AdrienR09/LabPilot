@@ -215,7 +215,7 @@ class Run:
 
     def result(self) -> dict[str, Any]:
         """What the run measured, in the convention the views read."""
-        return {
+        result = {
             **self.descriptor.result_fields(),
             **dict(self.descriptor.params),
             "data": self.data,
@@ -223,6 +223,13 @@ class Run:
             "completed": self.completed,
             "total": self.descriptor.points,
         }
+        # Only when there were any: a key that is almost always empty
+        # trains everyone to ignore it, and these are worth noticing.
+        skipped = self.session.failure_count(self.descriptor.run_uid)
+        if skipped:
+            result["skipped_points"] = skipped
+            result["failures"] = self.session.failures(self.descriptor.run_uid)
+        return result
 
     def dataset(self):
         """The same data as a `Dataset` — units, coordinates, provenance."""
