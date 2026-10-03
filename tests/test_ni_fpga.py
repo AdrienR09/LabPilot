@@ -273,16 +273,37 @@ class FakeRegister:
 
 
 class FakeFifo:
-    def __init__(self, data=None):
+    """A FIFO that reports what it took, the way `nifpga`'s does.
+
+    The earlier version of this double returned `None` from `write` while
+    modelling `elements_remaining` correctly on `read` — and that asymmetry
+    is exactly why the adapter's silent-truncation bug survived: the test
+    double encoded the same wrong assumption as the code it was checking.
+    `grant` and `accept` exist so a test can be a FIFO that is too small,
+    or one that runs out of time part-way, which is the only way to reach
+    either failure without the hardware.
+    """
+
+    def __init__(self, data=None, grant=None, accept=None):
         self.started = False
         self.written: list[int] = []
         self.data = list(data or [])
+        self.grant = grant          # depth configure() hands back; None = as asked
+        self.accept = accept        # elements write() takes; None = all of them
+        self.configured: int | None = None
 
     def start(self):
         self.started = True
 
+    def configure(self, requested_depth):
+        self.configured = int(requested_depth)
+        return self.configured if self.grant is None else self.grant
+
     def write(self, values, timeout_ms=None):
-        self.written.extend(values)
+        values = list(values)
+        taken = len(values) if self.accept is None else min(self.accept, len(values))
+        self.written.extend(values[:taken])
+        return len(values) - taken  # elements_remaining
 
     def read(self, count, timeout_ms=None):
         taken, self.data = self.data[:count], self.data[count:]
@@ -294,23 +315,37 @@ class FakeSession:
 
     opened: ClassVar[list[tuple[str, str]]] = []
 
-    def __init__(self, bitfile, resource, counter=True, counts=None):
+    def __init__(self, bitfile, resource, counter=True, counts=None,
+                 no_run=False, instructions_fifo=None):
         FakeSession.opened.append((str(bitfile), str(resource)))
         self.bitfile = str(bitfile)
         self.resource = str(resource)
         self.closed = False
+        #: nifpga runs the bitfile on open unless told not to. Recorded so a
+        #: test can assert the adapter asked for the engine to stay stopped
+        #: until its program is loaded.
+        self.no_run = bool(no_run)
+        self.ran = False
+        #: How many instructions had been written when `run()` was called —
+        #: the ordering that the `no_run` default gets wrong.
+        self.instructions_at_run: int | None = None
         gateware = Gateware()
         self.registers = {
             name: FakeRegister() for name in gateware.pulser_names
             if name != gateware.instructions
         }
-        self.fifos = {gateware.instructions: FakeFifo()}
+        self._gateware = gateware
+        self.fifos = {gateware.instructions: instructions_fifo or FakeFifo()}
         if counter:
             self.registers.update({
                 name: FakeRegister() for name in gateware.counter_names
                 if name != gateware.counts
             })
             self.fifos[gateware.counts] = FakeFifo(counts)
+
+    def run(self, wait_until_done=False):
+        self.ran = True
+        self.instructions_at_run = len(self.fifos[self._gateware.instructions].written)
 
     def close(self):
         self.closed = True
@@ -323,7 +358,10 @@ def nifpga(monkeypatch):
     sessions: list[FakeSession] = []
 
     def make(bitfile, resource, **kw):
-        session = FakeSession(bitfile, resource, **_options)
+        # `kw` is what the adapter really passed (e.g. `no_run=True`) and was
+        # being discarded here, so no test could see it. `_options` is what a
+        # test asked for, and wins on a clash.
+        session = FakeSession(bitfile, resource, **{**kw, **_options})
         sessions.append(session)
         return session
 
@@ -425,6 +463,84 @@ async def test_a_sequence_too_deep_for_the_memory_is_refused(bitfile, nifpga):
             build("rabi", RigProfile(analog_mw=False), points=20),
             ChannelMap({"laser": "DIO0", "mw": "DIO1", "gate": "DIO2"}),
         )
+    await adapter.disconnect()
+
+
+# --- Getting the program onto the card, and only then running it ------------
+#
+# Three failures that `nifpga`'s call signatures do not make obvious, all of
+# which were present here and none of which a mock rig can punish you for —
+# they need a real card, a long sequence, and bad luck.
+
+
+async def test_a_program_that_does_not_all_arrive_is_never_played(bitfile, nifpga):
+    """`write()` is not all-or-nothing: given a timeout it transfers what
+    fits and returns the rest. Ignoring that and then writing
+    `instruction_count = len(words)` tells the gateware there are N
+    instructions when fewer arrived, and the card plays a truncated
+    sequence with nothing raised anywhere."""
+    nifpga.options["instructions_fifo"] = FakeFifo(accept=3)
+    adapter = await _connected(bitfile, nifpga)
+
+    with pytest.raises(Exception, match="instructions reached the card"):
+        await adapter.upload_sequence(
+            build("rabi", RigProfile(analog_mw=False), points=4),
+            ChannelMap({"laser": "DIO0", "mw": "DIO1", "gate": "DIO2"}),
+        )
+
+    session = nifpga.sessions[0]
+    assert not session.ran, "a half-written program must not be started"
+    await adapter.disconnect()
+
+
+async def test_a_fifo_too_small_for_the_program_says_so_before_writing(
+    bitfile, nifpga
+):
+    """`configure()` returns the depth actually granted, which can be less
+    than asked. Without calling it the depth is whatever the bitfile
+    declared, which has nothing to do with this sequence's length."""
+    nifpga.options["instructions_fifo"] = FakeFifo(grant=2)
+    adapter = await _connected(bitfile, nifpga)
+
+    with pytest.raises(BitfileError, match="host FIFO holds"):
+        await adapter.upload_sequence(
+            build("rabi", RigProfile(analog_mw=False), points=4),
+            ChannelMap({"laser": "DIO0", "mw": "DIO1", "gate": "DIO2"}),
+        )
+    assert not nifpga.sessions[0].ran
+    await adapter.disconnect()
+
+
+async def test_the_engine_is_held_until_the_whole_program_is_loaded(
+    bitfile, nifpga
+):
+    """`nifpga.Session(..., no_run=False)` is the default, so opening a
+    session *runs* the bitfile — before a single instruction exists in its
+    FIFO. Whether that is harmless depends entirely on the gateware idling
+    until its `run` register is set, which this adapter cannot check."""
+    adapter = await _connected(bitfile, nifpga)
+    await adapter.upload_sequence(
+        build("rabi", RigProfile(analog_mw=False), points=4),
+        ChannelMap({"laser": "DIO0", "mw": "DIO1", "gate": "DIO2"}),
+    )
+
+    session = nifpga.sessions[0]
+    assert session.no_run, "the session must open with the engine stopped"
+    assert session.ran, "and be started once the program is there"
+    assert session.instructions_at_run == len(session.fifos["Instructions"].written)
+    await adapter.disconnect()
+
+
+async def test_the_fifo_is_configured_for_the_program_it_has_to_hold(
+    bitfile, nifpga
+):
+    adapter = await _connected(bitfile, nifpga)
+    await adapter.upload_sequence(
+        build("rabi", RigProfile(analog_mw=False), points=4),
+        ChannelMap({"laser": "DIO0", "mw": "DIO1", "gate": "DIO2"}),
+    )
+    fifo = nifpga.sessions[0].fifos["Instructions"]
+    assert fifo.configured == len(fifo.written)
     await adapter.disconnect()
 
 

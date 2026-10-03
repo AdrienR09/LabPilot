@@ -60,6 +60,7 @@ from labpilot.core.device.capabilities import GATED_COUNTER
 from labpilot.core.device.constraints import Constraints, ScalarConstraint
 from labpilot.core.device.parameter import Parameter, ParamRole
 from labpilot.core.device.schema import DeviceSchema
+from labpilot.core.errors import DeviceError
 from labpilot.core.pulse.sampling import SamplingError, expand
 from labpilot.core.pulse.shapes import Shape
 from labpilot.instruments._base import AdapterBase, adapter_registry
@@ -365,8 +366,15 @@ class NIRSeriesAdapter(PulserMixin, GatedCounterMixin, AdapterBase):
         self.close_session()
         if self._info is None:
             return
+        # `no_run=True` matters: nifpga's default is to *run* the bitfile as
+        # soon as the session opens, which would start the sequencer engine
+        # before `_write_program` has put a single instruction in its FIFO.
+        # Whether that is harmless depends entirely on the gateware idling
+        # until its `run` register is set — an assumption this adapter has no
+        # way to check and should not rely on. `_write_program` calls
+        # `session.run()` once the program is loaded.
         self._session = nifpga.Session(
-            bitfile=str(self._info.path), resource=self.resource
+            bitfile=str(self._info.path), resource=self.resource, no_run=True
         )
         self._loaded = str(self._info.path)
         self._reconcile()
@@ -538,11 +546,54 @@ class NIRSeriesAdapter(PulserMixin, GatedCounterMixin, AdapterBase):
         self._open()
 
     def _write_program(self, words: list[int]) -> None:
+        """Stream the compiled program into the instruction FIFO, then run.
+
+        Three things here are not obvious from the `nifpga` call signatures,
+        and each was wrong in the first version of this method:
+
+        * `configure(requested_depth)` is what makes the host-side FIFO big
+          enough for the program, and it returns the depth actually granted
+          — which can be smaller. Without it the depth is whatever the
+          bitfile declared, which has nothing to do with how long this
+          particular sequence is.
+        * **`write()` returns `elements_remaining`.** It is not an
+          all-or-nothing call: given a timeout it transfers what fits and
+          reports the rest. Discarding that and then writing
+          `instruction_count = len(words)` tells the gateware there are N
+          instructions when fewer arrived, so the card plays a truncated
+          sequence and nothing raises — the kind of failure that only
+          appears on real hardware, with a long sequence, having passed
+          every short test.
+        * `Session(..., no_run=False)` is the default, so the bitfile is
+          already running by the time we get here (see `_open`, which passes
+          `no_run=True` for exactly this reason). The program has to be in
+          the FIFO *before* the engine is told to run.
+        """
         session = self._require_session()
         fifo = session.fifos[self._gateware.instructions]
+
+        granted = fifo.configure(len(words))
+        if granted is not None and int(granted) < len(words):
+            raise BitfileError(
+                f"{self.resource}: the host FIFO holds {int(granted):,} "
+                f"instructions and this sequence compiles to {len(words):,}. "
+                "Shorten the sequence, or rebuild the bitfile with a deeper "
+                f"{self._gateware.instructions!r} FIFO."
+            )
+
         fifo.start()
-        fifo.write(words, timeout_ms=5000)
+        remaining = fifo.write(words, timeout_ms=5000)
+        if remaining:
+            raise DeviceError(
+                f"{self.resource}: only "
+                f"{len(words) - int(remaining):,} of {len(words):,} "
+                "instructions reached the card within 5 s "
+                f"({int(remaining):,} left). The sequence was NOT played."
+            )
+
         session.registers[self._gateware.instruction_count].write(len(words))
+        # Only now is it safe to let the engine loose on the program.
+        session.run()
 
     async def pulser_on(self) -> None:
         if self._report is None:
