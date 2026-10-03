@@ -42,12 +42,43 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from labpilot.core.data.dataset import Axis, DataArray, Dataset, RunMeta
+from labpilot.core.data.dataset import (
+    _POINT_TIME_PARAM,
+    Axis,
+    DataArray,
+    Dataset,
+    RunMeta,
+)
+from labpilot.core.provenance import software
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 __all__ = ["RunDescriptor"]
+
+def _time_array(
+    times: Any, scan_shape: tuple[int, ...], axes: tuple[Axis, ...]
+) -> DataArray | None:
+    """Per-point acquisition times over the scanned axes, or None.
+
+    None whenever the caller did not record them or recorded the wrong
+    number — a timestamp array that does not line up with the grid is
+    worse than no timestamps, because it looks authoritative.
+    """
+    if times is None or not scan_shape:
+        return None
+    flat = np.asarray(
+        [np.nan if t is None else t for t in times]
+        if isinstance(times, list) else times,
+        dtype=float,
+    )
+    expected = int(np.prod(scan_shape, dtype=int))
+    if flat.size != expected:
+        return None
+    return DataArray(
+        name="point_time", values=flat.reshape(scan_shape), unit="s",
+        axes=axes[: len(scan_shape)], param=_POINT_TIME_PARAM,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +106,9 @@ class RunDescriptor:
     """Serialised `DeviceSchema` per role, for provenance."""
     params: Mapping[str, Any] = field(default_factory=dict)
     """The parameters this run was launched with."""
+    context: Mapping[str, Any] = field(default_factory=dict)
+    """Whatever the session was told was also true — sample, cooldown. See
+    `Session.context`."""
 
     # --- Derived shape ----------------------------------------------------
 
@@ -146,8 +180,24 @@ class RunDescriptor:
         """
         return [None] * self.size
 
-    def dataset(self, values: Any) -> Dataset:
-        """`values` as a `Dataset` with these axes and units."""
+    def allocate_times(self) -> list[float | None]:
+        """One slot per acquisition *point*, not per value.
+
+        A point is the thing that happens at a moment — one move-and-read
+        — while `per_point` values arrive together from it. A spectrometer
+        reading 2048 channels at one position was taken at one time, not
+        2048 times.
+        """
+        return [None] * self.points
+
+    def dataset(self, values: Any, times: Any = None) -> Dataset:
+        """`values` as a `Dataset` with these axes and units.
+
+        `times` is the per-point acquisition time, when the run recorded
+        it. It becomes a second array over the scanned axes only, so it
+        reaches HDF5 as an ordinary dataset with its own dimension scales
+        and needs no special reader.
+        """
         flat = np.asarray(
             [np.nan if v is None else v for v in values]
             if isinstance(values, list) else values,
@@ -159,11 +209,19 @@ class RunDescriptor:
             unit=self.value_unit,
             axes=self.axes,
         )
+        arrays = [array]
+        stamps = _time_array(times, self.shape[: self.scan_axis_count], self.axes)
+        if stamps is not None:
+            arrays.append(stamps)
         return Dataset(
-            (array,),
+            tuple(arrays),
             RunMeta(
                 run_uid=self.run_uid, plan_name=self.plan_name,
                 devices=dict(self.devices), params=dict(self.params),
+                # The run_uid is the plan's, so this cannot use
+                # `RunMeta.new_run` (which mints one) — but the software
+                # stamp is wanted either way.
+                software=software(), context=dict(self.context),
             ),
         )
 

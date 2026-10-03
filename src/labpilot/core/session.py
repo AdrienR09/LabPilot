@@ -64,6 +64,13 @@ class Session:
         self.state = ScanState.idle()
         self.devices: dict[str, Readable] = {}
         self._current_run_uid: str | None = None
+        #: Whatever else is true about what is being measured — sample,
+        #: cooldown, an operator's note. Stamped onto every run from here
+        #: rather than passed per run, because it changes when the sample
+        #: does and not when the measurement does. Deliberately NOT a
+        #: ContextVar, unlike role aliases below: this describes the
+        #: apparatus, so two concurrent workflows *should* agree about it.
+        self.context: dict[str, Any] = {}
         # Role aliases are NOT stored here — see _aliases_var above: they are
         # per-execution state, and two concurrently running workflows would
         # otherwise clobber each other's role bindings.
@@ -163,6 +170,25 @@ class Session:
 
     def clear_aliases(self) -> None:
         _aliases_var.set(None)
+
+    def set_context(self, **entries: Any) -> dict[str, Any]:
+        """Record what else is true, and return the whole context.
+
+        Merges rather than replaces, so `set_context(cooldown=8)` after
+        `set_context(sample="NV-3")` leaves the sample alone — the normal
+        case is correcting one field. Passing `None` for a key removes it.
+
+        Every run started afterwards carries this in its `RunMeta.context`
+        and its HDF5 attributes. Runs already finished are not touched,
+        which is the whole reason to set it before acquiring rather than
+        after.
+        """
+        for key, value in entries.items():
+            if value is None:
+                self.context.pop(key, None)
+            else:
+                self.context[key] = value
+        return dict(self.context)
 
     def set_progress_context(self, workflow_id: str, execution_id: str, sink: dict[str, dict]) -> None:
         """Called by RunManager right before running a script (inside

@@ -493,6 +493,24 @@ class LabPilotSession:
         `session.get(role)`."""
         return self[instrument_id]
 
+    def context(self, **entries: Any) -> dict[str, Any]:
+        """Record what is being measured, or read back what was recorded.
+
+            lp.context(sample="NV-3", cooldown=7)   # set, merging
+            lp.context()                            # read
+
+        Every run started afterwards stamps this into its HDF5 attributes,
+        alongside the instrument schemas and the software version. Nothing
+        else in the framework can tell you which sample a file came from,
+        and a file written without it can never be annotated retroactively
+        — so this is worth setting at the start of a session, once.
+
+        Merges rather than replaces; pass `None` to drop a key.
+        """
+        if not entries:
+            return self.client.get_context()
+        return self.client.set_context(entries)
+
     def scan(
         self,
         over: dict[str, tuple[float, float, int]],

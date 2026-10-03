@@ -141,6 +141,16 @@ class LabPilotClient:
         _check(resp)
         return (resp.json() or {}).get("result")
 
+    def get_context(self) -> dict[str, Any]:
+        resp = self._client.get("/api/session/context")
+        _check(resp)
+        return resp.json().get("data") or {}
+
+    def set_context(self, entries: dict[str, Any]) -> dict[str, Any]:
+        resp = self._client.post("/api/session/context", json=entries)
+        _check(resp)
+        return resp.json().get("data") or {}
+
     def connect(self, instrument_id: str) -> None:
         resp = self._client.post(f"/api/dashboard/instruments/{instrument_id}/connect")
         _check(resp)

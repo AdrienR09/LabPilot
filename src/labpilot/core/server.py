@@ -536,6 +536,25 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
             }
         )
 
+    @app.get("/api/session/context", response_model=ApiResponse)
+    async def get_session_context(server: LabPilotServer = Depends(get_server)):
+        """What every run started from now on will record about the sample."""
+        return ApiResponse(success=True, data=dict(server.session.context))
+
+    @app.post("/api/session/context", response_model=ApiResponse)
+    async def set_session_context(
+        entries: dict[str, Any],
+        server: LabPilotServer = Depends(get_server),
+    ):
+        """Record what else is true — sample, cooldown, an operator's note.
+
+        Merges, so one field can be corrected without restating the rest;
+        a `null` value removes its key. Applies to runs started afterwards,
+        which is why it is worth setting before acquiring rather than
+        trying to annotate files later.
+        """
+        return ApiResponse(success=True, data=server.session.set_context(**entries))
+
     @app.get("/api/devices", response_model=ApiResponse)
     async def list_devices(server: LabPilotServer = Depends(get_server)):
         """List all connected devices."""

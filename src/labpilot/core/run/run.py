@@ -80,6 +80,7 @@ class Run:
         self.session = session
         self.state = ScanState.idle()
         self.data: list[Any] = descriptor.allocate()
+        self.times: list[float | None] = descriptor.allocate_times()
         self.completed = 0
         self._filled = 0
         self.started_at: float | None = None
@@ -166,7 +167,9 @@ class Run:
                 # a hardware-timed scanner delivers whatever arrived since
                 # the last poll, which is a burst of samples.
                 self._filled += patch.size
+                previously = self.completed
                 self.completed = min(total, self._filled // per_point)
+                self._stamp(previously, self.completed)
                 await self._publish(patch, total)
 
                 # The point boundary: the one place a scan can be paused or
@@ -195,19 +198,35 @@ class Run:
 
         return self.result()
 
+    def _stamp(self, first: int, last: int) -> None:
+        """Record when points `first`..`last-1` were acquired.
+
+        A per-point plan completes one point per patch, so this stamps one
+        slot. A hardware-timed scanner delivers whatever arrived since the
+        last poll, so a burst completes several at once and they all get
+        the time the burst was received — the honest resolution of a
+        transport that batches, and still far better than one timestamp
+        for the whole run.
+        """
+        now = time.time()
+        for index in range(max(0, first), min(last, len(self.times))):
+            if self.times[index] is None:
+                self.times[index] = now
+
     def result(self) -> dict[str, Any]:
         """What the run measured, in the convention the views read."""
         return {
             **self.descriptor.result_fields(),
             **dict(self.descriptor.params),
             "data": self.data,
+            "point_times": self.times,
             "completed": self.completed,
             "total": self.descriptor.points,
         }
 
     def dataset(self):
         """The same data as a `Dataset` — units, coordinates, provenance."""
-        return self.descriptor.dataset(self.data)
+        return self.descriptor.dataset(self.data, self.times)
 
     async def events(self) -> AsyncIterator[Any]:
         """This run's events, as they happen.

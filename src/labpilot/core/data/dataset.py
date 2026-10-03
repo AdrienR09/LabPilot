@@ -35,7 +35,7 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -158,9 +158,27 @@ class RunMeta:
     """Serialised `DeviceSchema` per participating device, for a run."""
     params: Mapping[str, Any] = field(default_factory=dict)
     """The plan/template parameters this run was launched with."""
+    software: Mapping[str, Any] = field(default_factory=dict)
+    """Which program took this data — version, git sha, host, user. See
+    `core/provenance.py`. The schemas here say what the instruments were;
+    this says what asked them, which is the half that cannot be
+    reconstructed once the code has moved on."""
+    context: Mapping[str, Any] = field(default_factory=dict)
+    """Whatever else was true: sample, cooldown, operator's note. Free-form
+    on purpose — no framework can enumerate what a lab needs to remember,
+    and a run taken without it can never be annotated retroactively. Set
+    once per session with `lp.context(...)`."""
 
     @classmethod
     def new_run(cls, plan_name: str, **kwargs: Any) -> RunMeta:
+        """A run's metadata, with the software stamp filled in.
+
+        Captured here rather than at write time so it describes the process
+        that *acquired* the data, not whichever one later exported it.
+        """
+        from labpilot.core.provenance import software
+
+        kwargs.setdefault("software", software())
         return cls(run_uid=str(uuid.uuid4()), plan_name=plan_name, **kwargs)
 
 
@@ -355,11 +373,12 @@ class Dataset(dict):
             if not isinstance(value, (list, tuple, np.ndarray))
         }
         if scalars:
-            meta = RunMeta(
-                run_uid=meta.run_uid, plan_name=meta.plan_name,
-                timestamp=meta.timestamp, device=meta.device,
-                devices=meta.devices, params={**dict(meta.params), **scalars},
-            )
+            # `replace` rather than re-listing the fields: the previous
+            # version enumerated them, so every field added to `RunMeta`
+            # after it was written would have been silently dropped on the
+            # way through here — which is the opposite of what a provenance
+            # record is for.
+            meta = replace(meta, params={**dict(meta.params), **scalars})
 
         arrays = _scan_arrays(result) or _loose_arrays(result, result_ui)
         return cls(arrays, meta)
@@ -427,6 +446,20 @@ class Dataset(dict):
             if value:
                 group.attrs[key] = value
 
+        # Provenance and lab context, flattened into prefixed attributes
+        # rather than a JSON blob: `h5dump` and MATLAB read an attribute,
+        # and the whole point of recording this is that it stays readable
+        # by whatever opens the file in five years.
+        for prefix, mapping in (("software", self.meta.software),
+                                ("context", self.meta.context)):
+            for key, value in dict(mapping).items():
+                if value is None or isinstance(value, (list, tuple, dict)):
+                    # h5py has no attribute type for a nested structure;
+                    # a repr is still searchable, which beats dropping it.
+                    value = str(value) if value is not None else ""
+                if value != "":
+                    group.attrs[f"{prefix}/{key}"] = value
+
 
 def _axes_for(
     parameter: Parameter | None,
@@ -455,6 +488,17 @@ _INDEX_NAMES = {(1, 0): "sample", (2, 0): "row", (2, 1): "col"}
 # many of the LEADING axes belong to the actuator and can therefore be
 # driven, which is exactly `Axis.movable`.
 _SCAN_KEYS = ("data", "shape", "axis_names", "axis_positions")
+
+#: Declared so `_is_axis` excludes per-point times from `primary()` whatever
+#: order the arrays are in. A per-point time is a coordinate of the
+#: measurement, not a second measurement — and for a 0D detector it has the
+#: same rank as the data, so relying on "highest rank wins, earliest
+#: declaration breaks the tie" would be one reorder away from plotting the
+#: clock instead of the signal.
+_POINT_TIME_PARAM = Parameter(
+    name="point_time", unit="s", role=ParamRole.AXIS,
+    description="Unix time at which each point was acquired.",
+)
 
 
 def _scan_arrays(result: Mapping[str, Any]) -> dict[str, DataArray]:
@@ -489,12 +533,31 @@ def _scan_arrays(result: Mapping[str, Any]) -> dict[str, DataArray]:
         )
         for index, (name, coordinates) in enumerate(zip(names, positions, strict=False))
     )
-    return {
+    arrays = {
         "data": DataArray(
             name="data", values=flat.reshape(shape),
             unit=str(result.get("value_unit") or ""), axes=axes,
         )
     }
+
+    # Per-point acquisition times, when the run recorded them. Lifted here
+    # so a result that went out over REST as a dict and came back still
+    # carries them — otherwise the timestamps would exist only on the path
+    # that writes HDF5 directly from the `Run`, and be lost through the
+    # console, which reads `result()` over the wire.
+    stamps = result.get("point_times")
+    scan_shape = shape[:movable] if movable else shape
+    if isinstance(stamps, (list, tuple, np.ndarray)) and len(stamps) == int(
+        np.prod(scan_shape, dtype=int)
+    ):
+        arrays["point_time"] = DataArray(
+            name="point_time",
+            values=np.array(
+                [np.nan if t is None else t for t in stamps], dtype=float
+            ).reshape(scan_shape),
+            unit="s", axes=axes[: len(scan_shape)], param=_POINT_TIME_PARAM,
+        )
+    return arrays
 
 
 def _loose_arrays(

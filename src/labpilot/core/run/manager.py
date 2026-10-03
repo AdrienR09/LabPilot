@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from labpilot.core.data.dataset import Dataset, RunMeta, summarise_arrays
 from labpilot.core.events import Event, EventKind
+from labpilot.core.provenance import software
 from labpilot.core.run.run import RunAbortedError, active_run
 from labpilot.core.storage.runs import RunStore
 from labpilot.core.workflow.instrument_roles import (
@@ -660,6 +661,14 @@ class RunManager:
                     for role, name in bindings.items()
                     if name and name in self.session.devices
                 },
+                # This is the path every automatically persisted run takes,
+                # so it is the one that has to carry provenance: the
+                # schemas above say what the instruments were, `software`
+                # says which program asked them, and `context` says what
+                # was being measured. None of the three can be added to a
+                # file after the fact.
+                software=software(),
+                context=dict(self.session.context),
             )
             dataset = Dataset.from_result(result, meta, result_ui or {})
             if not dataset.arrays:
