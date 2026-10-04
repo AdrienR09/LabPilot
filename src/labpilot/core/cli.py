@@ -23,6 +23,8 @@ Examples:
   labpilot start                     Start the backend only, on default port 8000
   labpilot start --port 8765         Start server on port 8765
   labpilot start --load session.json Load specific session configuration
+  labpilot probe mock_basic_detector_0d  Connect one instrument and check its schema
+  labpilot probe ocean_optics --offline  Print its declared schema, connecting nothing
   labpilot list-adapters             List all available instrument adapters
   labpilot list-adapters --tags camera   Filter adapters by tags
   labpilot --version                 Show version information
@@ -118,6 +120,54 @@ Examples:
         help="Logging level (default: info)",
     )
 
+    # Probe one instrument — the first thing to run on new hardware
+    probe_parser = subparsers.add_parser(
+        "probe",
+        help="Connect one instrument, read it once, and check its declared schema",
+        description=(
+            "Connects the named adapter, prints the schema it declares, prints it "
+            "again once the device has answered, reads once, and reports every "
+            "place the hardware disagrees with the declaration. It writes nothing "
+            "and moves nothing: only connect, schema, read, disconnect. Exits 0 on "
+            "agreement, 1 on a disagreement, 2 if it could not get far enough to "
+            "tell."
+        ),
+    )
+    probe_parser.add_argument(
+        "adapter_key",
+        help="Adapter to probe, as `labpilot list-adapters` prints it",
+    )
+    probe_parser.add_argument(
+        "--resource",
+        help="The instrument's address — a VISA string, a serial port, a device name. "
+             "Shorthand for --param resource=...",
+    )
+    probe_parser.add_argument(
+        "--param",
+        action="append",
+        metavar="NAME=VALUE",
+        help="Any other constructor argument, repeatable (--param serial=12345). "
+             "Numbers and true/false/none are converted; anything else stays text.",
+    )
+    probe_parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Print the declared schema and stop — connect to nothing. Useful before "
+             "the instrument is wired, and to review what an adapter claims.",
+    )
+    probe_parser.add_argument(
+        "--no-read",
+        action="store_true",
+        help="Connect and compare schemas, but take no reading. For an instrument "
+             "where even a read costs something (a long camera exposure).",
+    )
+    probe_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the whole probe as JSON instead of a report, for a script or a "
+             "bug report",
+    )
+
     # List adapters
     adapters_parser = subparsers.add_parser(
         "list-adapters", help="List all registered instrument adapters"
@@ -151,6 +201,10 @@ Examples:
         sys.exit(run_app(args))
     elif args.command == "start":
         _start_server(args)
+    elif args.command == "probe":
+        from labpilot.core.probe import probe
+
+        sys.exit(probe(args))
     elif args.command == "list-adapters":
         _list_adapters(args)
     else:

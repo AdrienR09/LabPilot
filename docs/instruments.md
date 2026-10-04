@@ -469,7 +469,9 @@ get_instruments_by_type(InstrumentType.DETECTOR_1D)     # spectrometers, wavefor
 get_instruments_by_tag("spectroscopy")
 ```
 
-Also from the CLI: `labpilot list-adapters`, `labpilot list-adapters --tags camera`.
+Also from the CLI: `labpilot list-adapters`, `labpilot list-adapters --tags camera`,
+and `labpilot probe <adapter>` to check one adapter's declared schema against the
+instrument itself — see [getting_started.md](getting_started.md#your-first-real-instrument).
 
 ## Instantiating an adapter directly
 

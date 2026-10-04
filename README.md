@@ -123,6 +123,7 @@ adapter describes itself without its driver.
 labpilot app                       # everything: backend, front end, manager window
 labpilot app --no-window           # same, for a browser instead of the Qt window
 labpilot start                     # the backend alone, on :8000
+labpilot probe <adapter>           # check one instrument against its declared schema
 labpilot list-adapters             # see what's connectable
 labpilot list-adapters --tags camera
 labpilot-manager                   # the desktop app, against a running backend

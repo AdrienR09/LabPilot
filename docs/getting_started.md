@@ -128,6 +128,39 @@ labpilot list-adapters                # see what's connectable
 labpilot list-adapters --tags camera  # filter by DeviceSchema tag
 ```
 
+## Your first real instrument
+
+Before wiring anything into a measurement, ask the instrument to answer for
+itself:
+
+```bash
+labpilot probe ocean_optics --offline            # what the adapter claims, no hardware
+labpilot probe ocean_optics                      # connect, read once, check the claim
+labpilot probe keithley_2400 --resource GPIB0::24::INSTR
+labpilot probe mock_basic_detector_0d --json     # the same, for a script or a bug report
+```
+
+`probe` connects, prints the schema the adapter declares, prints it again once
+the device has answered, reads **once**, and reports every place the hardware
+disagrees with the declaration — a parameter declared readable that never comes
+back, a scalar that reads as an array, a pixel count that is not what the model
+table says, a position outside its own declared travel.
+
+**It writes nothing and moves nothing**: only `connect`, `schema`, `read`,
+`disconnect`. No setter, no action, no staging. That is what makes it safe to
+point at a stage with a sample under the objective, and it is why probing is a
+command of its own rather than a flag on something that drives hardware.
+
+It exits 0 when the hardware agrees, 1 when it does not — so a lab machine can
+keep the shipped schemas honest in CI — and 2 when it could not get far enough
+to tell (unknown adapter, missing vendor package, nothing at that address). Most
+adapters' schemas were written from a manual and have never met the instrument
+they describe, so a first probe finding something is normal, not alarming.
+
+For NI DAQ cards there is also `scripts/ni_probe.py`, which prints a card's real
+channel inventory as a `models.toml` block to paste into your user override —
+table data rather than a schema, so it stays a separate script.
+
 ## Your first workflow
 
 1. Start everything with `labpilot app`.
