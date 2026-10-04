@@ -509,6 +509,89 @@ Not yet run against hardware. `labpilot probe siglent_ssg --param
 host=192.168.1.42` is the first thing to run on it, and it is what turns
 the paragraphs above into facts.
 
+## PicoHarp 300 as a gated counter
+
+The photon counter for a pulsed NV rig, and the real instrument the whole
+pulsed stack was waiting on.
+
+```python
+counter = create_adapter("picoharp_300", {"serial_number": "1041234"})
+```
+
+**CH0 takes the pulse sequence's gate line; CH1 takes the APD.** T3 mode
+then gives, for every photon, which sync period it arrived in and how long
+after that sync — which is exactly the `(gate, time_bin)` pair
+`GatedCounterMixin` asks for, so the sequence's readouts become the
+histogram's first axis with no arithmetic in between.
+
+### The device does not histogram; the adapter does
+
+Unlike the Time Tagger, whose `TimeDifferences` builds per-readout
+histograms in hardware, the PicoHarp streams raw records and nothing else.
+So the adapter reads the FiFo on a background thread and accumulates with
+numpy. `PH_ReadFiFo` blocks for up to the device's 80 ms timeout, which is
+why it is a thread rather than a coroutine.
+
+One consequence to know: if the host cannot keep up, the device's FiFo
+fills and records are **lost**, and no driver call raises. `PH_GetFlags`
+is checked every pass and `fifo_overruns` is reported in the schema. A
+trace taken while that number is climbing is missing photons and does not
+look like it.
+
+### Two deliberate omissions
+
+**No gate pinning.** The Time Tagger has a second input that pins
+histogram 0 to the start of the sequence, so one dropped gate shifts a
+single sweep rather than rotating every later one. The PicoHarp has
+markers that could serve, but the record `channel` field's meaning for
+markers is the one part of the format the available documentation
+contradicts itself about — one place says a marker is `0b1000`, another
+`0b1111`, which is also the overflow value. Rather than guess, markers are
+left disabled, so the only records that arrive are photons and overflows
+and the decoding is exact. The cost is a property of the instrument, not
+of the code: a lost sync edge rotates the gate axis for the rest of the
+run. Keep the gate line clean, and prefer a Time Tagger for long
+sequences.
+
+**No PHR 800 router.** With one, record channels 1 to 3 carry the router's
+extra inputs — a second claim on the same four bits. One detector on CH1
+is the supported configuration.
+
+### What the limits actually are
+
+The bin width is a **ladder**, not a granularity: the device multiplies
+its 4 ps base resolution by powers of two, giving 4, 8, 16 … 512 ps and
+nothing between, which `counter_constraints()` states as `allowed` rather
+than approximating with a step that would accept 12 ps. The base
+resolution is re-read from the device on connect, so a unit that reports
+otherwise wins over the constant.
+
+`dtime` is 12 bits, so **no readout can hold more than 4096 bins** — and
+at the coarsest 512 ps that caps the recorded window at 2.097 µs. A longer
+request comes back adjusted, with the reason, rather than clamped:
+`configure_gates` returns what was really set and the caller must use it.
+
+### Verification, and what remains unverified
+
+Function signatures come from PicoQuant's own `phlib.h`; the limits from
+their `phdefin.h` values. The T3 bit layout and the 65536 wraparound were
+confirmed against two independent sources — PicoQuant's own documentation
+and `phconvert`'s `rtPicoHarp300T3` definition (`channel_bit=4,
+time_bit=16, dtime_bit=12, WRAPAROUND=65536`), the reader most of the
+field uses for `.ptu` files.
+
+`decode_t3` is a pure function over 32-bit words and is tested exactly,
+against synthetic streams whose histograms are known in advance. That is
+the part worth the most: a sign error in the sync correction produces a
+plausible histogram rather than an error, and the physics would be blamed
+first.
+
+Everything else is tested through a stand-in for `phlib`, because the real
+library ships with PicoQuant's driver installation and there is no PyPI
+package — so there is no extra to install, only their driver. **Not run
+against hardware.** `labpilot probe picoharp_300` is the first thing to
+run on it.
+
 ## The instrument catalog
 
 306 instruments are catalogued across 95 manufacturers: mock/test-fixture

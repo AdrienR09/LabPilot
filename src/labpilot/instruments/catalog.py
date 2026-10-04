@@ -422,6 +422,14 @@ INSTRUMENT_CATALOG.extend([
     # The counting half of a pulsed rig, and the first non-mock one: its
     # TimeDifferences measurement is the (gate, time_bin) contract.
     InstrumentMetadata("swabian_time_tagger", "Swabian", "Time Tagger", "Swabian Time Tagger", InstrumentType.DETECTOR_1D, InstrumentBackend.VENDOR, connection_types=['usb_serial_number'], tags=['counter', 'gated-counter', 'photon-counting', 'tcspc', 'odmr', 'pulsed']),
+    # The photon counter for a pulsed NV rig. T3 mode gives, per photon,
+    # which sync period it arrived in and how long after that sync — the
+    # (gate, time_bin) pair `GatedCounterMixin` asks for. The device does
+    # no per-readout histogramming itself, so the adapter accumulates on a
+    # reader thread. ctypes against PicoQuant's phlib; there is no PyPI
+    # package, so there is no extra, only their driver. Not run against
+    # hardware — see PicoHarp300Adapter's docstring.
+    InstrumentMetadata("picoharp_300", "PicoQuant", "PicoHarp 300", "PicoQuant PicoHarp 300", InstrumentType.DETECTOR_1D, InstrumentBackend.VENDOR, connection_types=['usb_serial_number'], tags=['counter', 'gated-counter', 'photon-counting', 'tcspc', 'odmr', 'pulsed']),
     InstrumentMetadata("spincore_pulse_blaster", "SpinCore", "PulseBlaster ESR-PRO", "SpinCore PulseBlaster", InstrumentType.GENERIC, InstrumentBackend.VENDOR, connection_types=['pci'], tags=['pulser', 'sequencer', 'ttl', 'digital', 'odmr', 'pulsed']),
     # Every Ocean Optics / Ocean Insight spectrometer as one entry: the
     # model is a setting, and OceanOptics/models.toml (transcribed from

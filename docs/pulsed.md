@@ -67,6 +67,7 @@ instruments, so it opens and runs with everything disconnected.
 | `instruments/gated_counter_mixin.py` — `GatedCounterMixin` | **Done.** `configure_gates` returns what it actually set; `get_trace()` is a 2-D `Dataset` with real axes. |
 | `instruments/mock/pulse_rig.py` — `MockPulser` + `MockGatedCounter` | **Done.** Real granularity, minimum element and activation configs; NV physics with a decaying readout transient. |
 | `instruments/Swabian/pulse_streamer.py`, `instruments/SpinCore/pulse_blaster.py` | **Done.** Optional extras, both `describe()`-able with no SDK installed. |
+| `instruments/Swabian/time_tagger.py`, `instruments/PicoQuant/picoharp300.py` | **Done.** The two real gated counters. The Time Tagger histograms per readout in hardware; the PicoHarp streams T3 records and the adapter accumulates them. Neither run against hardware yet — see their docstrings and `labpilot probe`. |
 | `core/pulse/extract.py` — `conv_deriv`, `threshold` | **Done.** Finds the laser pulse in the raw record; parameters per method, never shared. |
 | `core/pulse/analyse.py` — `mean`, `mean_norm`, `mean_reference` | **Done.** One value per swept point, with Poisson errors. |
 | `core/run/plans.py` — `PulsedMeasurementPlan` | **Done.** Accumulation is the iterated axis; the result is a `(sweeps, tau)` history. |
