@@ -139,23 +139,35 @@ except KeyError:
     if POWER_PARAMETER:
         raise
 
-result = execute(
-    ScanPlan(
-        axes=[
-            ScanAxis(
-                swept, "source", float(SWEEP_START), float(SWEEP_STOP),
-                int(SWEEP_POINTS), unit=schema.units.get(swept, ""),
-            )
-        ],
-        detector="detector",
-        repeats=int(AVERAGES),
-        # `hold` parks a parameter once before the grid starts, which is
-        # exactly what a power setpoint is.
-        hold={level: float(SWEEP_POWER)} if level else {},
-        hold_device="source",
-        name="odmr_sweep",
+# A sweep against a source whose RF output is off measures a flat line,
+# and `hold` cannot switch it on: on most real sources the output is an
+# action (`cw_on`/`off`), not a settable. So switch it on here when the
+# source says it can, and off again whatever happens — an abort would
+# otherwise leave the RF on with nobody watching.
+actions = set(schema.action_names)
+if "cw_on" in actions:
+    source.cw_on()
+try:
+    result = execute(
+        ScanPlan(
+            axes=[
+                ScanAxis(
+                    swept, "source", float(SWEEP_START), float(SWEEP_STOP),
+                    int(SWEEP_POINTS), unit=schema.units.get(swept, ""),
+                )
+            ],
+            detector="detector",
+            repeats=int(AVERAGES),
+            # `hold` parks a parameter once before the grid starts, which is
+            # exactly what a power setpoint is.
+            hold={level: float(SWEEP_POWER)} if level else {},
+            hold_device="source",
+            name="odmr_sweep",
+        )
     )
-)
+finally:
+    if "off" in actions:
+        source.off()
 
 # The result is (repeats, points) when averaging and (points,) when not —
 # `repeat` is a real axis, so the matrix the ODMR view draws is a reshape

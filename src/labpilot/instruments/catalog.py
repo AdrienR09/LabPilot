@@ -53,6 +53,9 @@ class InstrumentBackend(str, Enum):
     PYLABLIB = "pylablib"
     TEST_FIXTURE = "test_fixture"
     VENDOR = "vendor"  # the manufacturer's own SDK, an optional extra
+    # Plain SCPI over a socket or VISA — no driver package at all, which
+    # is why it is not VENDOR: there is no extra to install.
+    SCPI = "scpi"
 
 
 @dataclass
@@ -426,6 +429,13 @@ INSTRUMENT_CATALOG.extend([
     # exposure limits. Built against seabreeze's documented API but not
     # run against hardware — see OceanOpticsAdapter's docstring.
     InstrumentMetadata("ocean_optics", "Ocean Optics", "Ocean Insight", "Ocean Optics Spectrometer (any model)", InstrumentType.DETECTOR_1D, InstrumentBackend.VENDOR, connection_types=['ocean_optics'], tags=['spectrometer', 'spectroscopy', 'ocean-optics', 'seabreeze', 'usb']),
+    # The microwave source for ODMR. Siglent's four other catalogue
+    # entries are oscilloscopes and power supplies, so this is the first
+    # signal generator from them. SCPI on TCP 5025 — the IP address on
+    # the instrument's LAN screen is the whole configuration. Frequency
+    # and level limits are read from the instrument on connect; the
+    # model table is only a fallback. Not yet run against hardware.
+    InstrumentMetadata("siglent_ssg", "Siglent", "SSG-series", "Siglent SSG Signal Generator", InstrumentType.SOURCE, InstrumentBackend.SCPI, connection_types=['tcp', 'visa'], tags=['microwave', 'rf', 'signal-generator', 'source', 'odmr', 'scpi']),
     InstrumentMetadata("laser_quantum_finesse", "Laser Quantum", "Finesse", "Laser Quantum Finesse Laser", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, tags=['laser', 'cw']),
     InstrumentMetadata("basler", "Basler", "ace", "Basler ace Camera", InstrumentType.DETECTOR_2D, InstrumentBackend.PYLABLIB, tags=['camera']),
     InstrumentMetadata("photometrics_pvcam", "Photometrics", "PVCAM", "Photometrics PVCAM Camera", InstrumentType.DETECTOR_2D, InstrumentBackend.PYLABLIB, tags=['camera', 'scientific']),

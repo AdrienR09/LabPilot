@@ -445,6 +445,70 @@ mode, and a cooler setpoint on the cooled models. The spectrum comes back
 as a `Dataset` whose `intensities` names `wavelengths` as its axis, so
 plots and HDF5 files get the x-scale without being told.
 
+## Siglent SSG microwave sources
+
+The source an ODMR sweep steps. Siglent appears four other times in the
+catalogue — two oscilloscopes and two bench power supplies — so this is the
+first signal generator from them, and it is what unblocked `odmr_sweep` on
+real hardware.
+
+```python
+source = create_adapter("siglent_ssg", {"host": "192.168.1.42"})
+```
+
+**The IP address on the instrument's own LAN screen is the whole
+configuration.** It speaks SCPI on TCP port 5025, the standard raw-socket
+interface, so there is nothing to install — no VISA runtime, no GPIB card,
+no vendor SDK. A `resource=` string still works through pyvisa for a unit
+reached over USBTMC instead (`instruments/_scpi.py`).
+
+### It asks the instrument what it can do
+
+A hand-entered frequency range is how a schema comes to disagree with its
+hardware, and the SSG family spans 2.1 GHz to 6 GHz across models that
+differ by one digit. So on connect the adapter asks `:FREQ? MIN`,
+`:FREQ? MAX`, `:POW? MIN` and `:POW? MAX`, and what comes back becomes the
+schema's limits — which `validate_write` then enforces. An out-of-range
+setpoint is refused by numbers the instrument itself supplied, and the
+parameter's description says where they came from.
+
+That matters more than it sounds for NV work: **an SSG3021X stops at
+2.1 GHz and so cannot reach the 2.87 GHz zero-field splitting at all.**
+With the limits read from the instrument, that is a clear refusal at the
+point the sweep is set up rather than a silent clamp and a flat spectrum.
+
+`MODELS` in the adapter is only the fallback, for a unit that does not
+answer those queries — a few answer `:FREQ? MAX` with the current setpoint
+rather than an error, which is detected and rejected. The table is
+transcribed from published specifications and has **not** been checked
+against hardware. An unrecognised model gets a deliberately wide range
+instead of a guess, because refusing a legitimate setpoint is the failure
+that sends someone looking for a hardware fault.
+
+`*IDN?` is checked for the model as well as the manufacturer: an SDS is an
+oscilloscope and an SPD a power supply, a bench often has two of them on
+one subnet, and `:FREQ` sent to a scope is accepted-looking nonsense.
+
+### The sweep is stepped in software, deliberately
+
+The SSG has an internal sweep generator. The adapter does not use it.
+`reset_scan()`/`trigger_next()` step the CW frequency one setpoint at a
+time, which is what `odmr_sweep` needs — it sets a frequency, reads the
+detector, sets the next. Each setpoint is followed by `*OPC?`, which
+returns only once the command has landed, so a point is never measured at
+the previous point's frequency; `synchronise=False` drops that round trip
+where throughput matters more.
+
+What this costs: the dwell per point is on the host's clock, not the
+instrument's. For CW ODMR, where the counter gate is far longer than a
+socket write, that is immaterial. For a pulsed sequence where the
+microwave step must land inside a gate, it is not — and that case belongs
+to the pulser, which has the timing.
+
+Not yet run against hardware. `labpilot probe siglent_ssg --param
+host=192.168.1.42` is the first thing to run on it, and it is what turns
+the paragraphs above into facts.
+
 ## The instrument catalog
 
 306 instruments are catalogued across 95 manufacturers: mock/test-fixture

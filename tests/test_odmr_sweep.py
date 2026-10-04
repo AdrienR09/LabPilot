@@ -229,3 +229,42 @@ async def test_the_result_is_json_serialisable_for_the_wire():
     import json
 
     json.dumps(await sweep(AVERAGES=2))
+
+
+async def test_the_source_output_is_switched_on_and_off_again():
+    """A sweep against a source whose RF output is off measures a flat
+    line, and `hold` cannot switch it on — on a real source the output is
+    an action, not a settable. Nothing used to call it.
+
+    Off again afterwards, so neither a finished nor an aborted run leaves
+    the RF on with nobody watching.
+    """
+    session = await rig()
+    source = session.get("source")
+    assert not source._adapter._output_on
+
+    await run_script(session, ODMR, {"SWEEP_POINTS": 5, "AVERAGES": 1})
+
+    assert not source._adapter._output_on
+    assert source._adapter._mode == "cw"
+
+
+class _NoActions(adapter_registry.get(SOURCE)):  # type: ignore[misc]
+    """The same source with nothing declared in `actions` — a real source
+    that has no on/off concept at all, which several do."""
+
+    @property
+    def schema(self):
+        return super().schema.model_copy(update={"actions": ()})
+
+
+async def test_a_source_with_no_output_action_still_sweeps():
+    """`cw_on` is looked for in the source's declared actions, so a source
+    without one is not broken by the attempt to switch it on."""
+    session = Session()
+    for role, adapter in (("source", _NoActions()), ("detector", adapter_registry.get(DETECTOR)())):
+        await adapter.connect()
+        session.register(adapter, role)
+
+    result = await run_script(session, ODMR, {"SWEEP_POINTS": 4, "AVERAGES": 1})
+    assert len(result["sweep_values"]) == 4

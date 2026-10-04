@@ -320,9 +320,14 @@ async def test_a_stage_keeps_travelling_when_only_the_loop_is_cancelled():
     async def travel_after(*, stop: bool) -> float:
         await stage.write({"x": 8.0})  # a move in flight, as an abort leaves one
         await asyncio.sleep(0.05)
-        before = (await stage.read())["x"]
         if stop:
             await stage.stop()
+        # Sampled *after* the stop, not before it. `stop()` reads the
+        # position and commands that, so anything the stage covers while
+        # the stop is itself in flight is travel the stop has not had a
+        # chance to prevent — counting it made this test fail whenever the
+        # machine was loaded enough to delay one round trip.
+        before = (await stage.read())["x"]
         await asyncio.sleep(0.5)
         return abs((await stage.read())["x"] - before)
 
