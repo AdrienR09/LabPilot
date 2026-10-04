@@ -14,6 +14,7 @@ fixes.
 
 from labpilot.core.lab.handle import InstrumentHandle
 from labpilot.core.lab.lab import Lab, UnknownInstrumentError
+from labpilot.core.lab.naming import slug, unique_id
 from labpilot.core.lab.spec import InstrumentSpec
 
 __all__ = [
@@ -21,4 +22,6 @@ __all__ = [
     "InstrumentSpec",
     "Lab",
     "UnknownInstrumentError",
+    "slug",
+    "unique_id",
 ]

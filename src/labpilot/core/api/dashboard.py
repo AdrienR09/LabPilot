@@ -36,6 +36,7 @@ from labpilot.core.lab import (
     InstrumentSpec,
     Lab,
     UnknownInstrumentError,
+    unique_id,
 )
 from labpilot.core.session import Session
 from labpilot.instruments import available_catalog
@@ -254,9 +255,17 @@ class DashboardManager:
         connection_params: dict[str, Any],
     ) -> InstrumentStatus:
         """Instantiate (but don't connect) a new instrument from the catalog."""
-        instrument_id = instrument_id or f"{adapter_key}_{len(self.lab) + 1}"
-        if instrument_id in self.lab:
-            raise ValueError(f"Instrument id {instrument_id!r} already exists")
+        # An explicit id is taken at its word and may collide; a derived
+        # one is allocated against the ids already in use. The name the
+        # user typed is what everything else then addresses the instrument
+        # by — see core/lab/naming.py for why that is not an f-string.
+        if instrument_id:
+            if instrument_id in self.lab:
+                raise ValueError(f"Instrument id {instrument_id!r} already exists")
+        else:
+            instrument_id = unique_id(
+                name or adapter_key, set(self.lab.ids), fallback=adapter_key
+            )
 
         spec = InstrumentSpec(
             id=instrument_id,
