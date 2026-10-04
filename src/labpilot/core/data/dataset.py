@@ -32,6 +32,7 @@ land without a flag day.
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from collections.abc import Mapping
@@ -459,6 +460,240 @@ class Dataset(dict):
                     value = str(value) if value is not None else ""
                 if value != "":
                     group.attrs[f"{prefix}/{key}"] = value
+
+        # The plan's parameters and the device schemas, in the subgroups
+        # files on disk already use. They were written by `RunStore` until
+        # now, *after* this method had written everything else — so an
+        # auto-saved run carried them and `dataset.to_hdf5("rabi.h5")`
+        # from a console did not. The file someone emails is exactly the
+        # one that has to say what the sweep bounds were.
+        if self.meta.params:
+            params = group.require_group("params")
+            for key, value in dict(self.meta.params).items():
+                try:
+                    params.attrs[key] = value
+                except TypeError:
+                    params.attrs[key] = json.dumps(value, default=str)
+        if self.meta.devices:
+            devices = group.require_group("devices")
+            for name, schema in dict(self.meta.devices).items():
+                devices.attrs[name] = json.dumps(schema, default=str)
+
+    # --- Reading it back --------------------------------------------------
+
+    @classmethod
+    def from_hdf5(cls, source: Any) -> Dataset:
+        """The inverse of `to_hdf5`: a file or group back as a `Dataset`.
+
+        `to_hdf5` has existed since the persistence layer was wired and
+        this has not, which made every saved run a file you could write
+        and not open — `lp.runs` listed data nothing could read back.
+
+        Accepts a path or an open `h5py` group. A run written by
+        `RunStore` nests the dataset under a `run` group with the format
+        version at the root, so a path is resolved to whichever of the two
+        actually holds the data rather than making the caller know.
+        """
+        if isinstance(source, (str, Path)):
+            import h5py
+
+            with h5py.File(source, "r") as handle:
+                return cls.from_hdf5(_dataset_group(handle))
+        return _read_group(source)
+
+    # --- Handing it to the analysis layer ---------------------------------
+
+    def to_xarray(self) -> Any:
+        """This dataset as an `xarray.Dataset`, coordinates and all.
+
+        The deliberate end of the data model: xarray, scipy and
+        `core/analysis/fits.py` *are* the analysis layer, so the useful
+        thing to build is the bridge, not a fourth array library.
+
+        It is short because `to_hdf5` already writes real HDF5 dimension
+        scales — the axes were always there, with units, and nothing had
+        turned them into labelled coordinates in memory.
+
+            ds = lp.open(uid).to_xarray()
+            ds.counts.sel(x=0.5, y=0.0, method="nearest")
+            ds.counts.mean(dim="y")
+        """
+        try:
+            import xarray as xr
+        except ImportError as exc:
+            raise ImportError(
+                "to_xarray() needs xarray: pip install 'labpilot[analysis]'. "
+                "The data is already in the file either way — the axes are "
+                "real HDF5 dimension scales, so h5py or MATLAB read them too."
+            ) from exc
+
+        coordinates: dict[str, Any] = {}
+        for array in self.arrays.values():
+            for axis in array.axes:
+                if axis.name not in coordinates and len(axis):
+                    coordinates[axis.name] = xr.DataArray(
+                        axis.values, dims=(axis.name,),
+                        attrs={"units": axis.unit, "kind": axis.kind}
+                        | ({"device": axis.device} if axis.device else {}),
+                    )
+
+        variables: dict[str, Any] = {}
+        for array in self.arrays.values():
+            if array.name in coordinates:
+                continue  # it is a coordinate, not a variable
+            # Name any dimension the axes do not cover, so an array whose
+            # trailing shape is undeclared still becomes a DataArray
+            # rather than failing the whole conversion.
+            dims = [
+                array.axes[index].name if index < len(array.axes)
+                else f"{array.name}_dim{index}"
+                for index in range(array.values.ndim)
+            ]
+            variables[array.name] = xr.DataArray(
+                array.values, dims=dims,
+                coords={d: coordinates[d] for d in dims if d in coordinates},
+                attrs={"units": array.unit},
+            )
+
+        return xr.Dataset(
+            variables,
+            attrs={
+                "run_uid": self.meta.run_uid,
+                "plan_name": self.meta.plan_name,
+                "timestamp": self.meta.timestamp,
+                **{f"software/{k}": v for k, v in dict(self.meta.software).items()},
+                **{f"context/{k}": v for k, v in dict(self.meta.context).items()},
+                **{f"params/{k}": v for k, v in dict(self.meta.params).items()},
+            },
+        )
+
+
+def _dataset_group(handle: Any) -> Any:
+    """Whichever group in an opened file holds the dataset.
+
+    `RunStore` writes `run/` under a root carrying `created_with` and
+    `format_version`; `Dataset.to_hdf5(path)` writes at the root. Both are
+    legitimate files to be handed, and a reader that only understood one
+    of them would fail on half the files this project produces.
+    """
+    # `to_hdf5` always creates an `axes` group, even for a 0-D reading, so
+    # its presence is an exact test for "the dataset is here".
+    if "axes" not in handle and "run" in handle:
+        return handle["run"]
+    return handle
+
+
+def _read_group(group: Any) -> Dataset:
+    """One HDF5 group back as a `Dataset`."""
+    axes: dict[str, Axis] = {}
+    if "axes" in group:
+        for name, scale in group["axes"].items():
+            axes[name] = Axis(
+                name=name,
+                values=np.asarray(scale[()]),
+                unit=_attr(scale, "units", ""),
+                kind=_attr(scale, "kind", "index"),
+                device=_attr(scale, "device", "") or None,
+            )
+
+    arrays: dict[str, DataArray] = {}
+    for name, item in group.items():
+        if name in ("axes", "devices", "params") or not hasattr(item, "shape"):
+            continue
+        values = np.asarray(item[()])
+        # The dimension labels `to_hdf5` wrote are how an array finds its
+        # axes again: the alternative is matching lengths, which pairs the
+        # wrong coordinate onto a square scan.
+        ordered = tuple(
+            axes[label] for label in _dimension_labels(item) if label in axes
+        )
+        arrays[name] = DataArray(
+            name=name, values=values, unit=_attr(item, "units", ""), axes=ordered
+        )
+
+    # An axis that no array referenced is still part of the measurement —
+    # a per-point time base on a dataset whose only array is 1-D, say —
+    # so it is kept as an array of its own rather than dropped.
+    for name, axis in axes.items():
+        if name not in arrays:
+            arrays[name] = DataArray(
+                name=name, values=axis.values, unit=axis.unit, axes=(axis,)
+            )
+
+    return Dataset(arrays, _read_meta(group))
+
+
+def _read_meta(group: Any) -> RunMeta:
+    attributes = dict(group.attrs)
+    prefixed: dict[str, dict[str, Any]] = {
+        "software": {}, "context": {}, "params": {}
+    }
+    for key, value in attributes.items():
+        prefix, _, name = str(key).partition("/")
+        if name and prefix in prefixed:
+            prefixed[prefix][name] = _plain(value)
+
+    devices: dict[str, Any] = {}
+    # Written by `to_hdf5` as a subgroup, and by older `RunStore` files the
+    # same way, so both read back.
+    if "devices" in group:
+        for name, raw in dict(group["devices"].attrs).items():
+            try:
+                devices[name] = json.loads(raw)
+            except (TypeError, ValueError):
+                devices[name] = _plain(raw)
+    # `params` is a subgroup. A `params/<key>` attribute is also read, so
+    # a file written by a future version that flattens them the way
+    # `software` and `context` are flattened still loads.
+    if "params" in group:
+        prefixed["params"] = {
+            key: _plain(value) for key, value in dict(group["params"].attrs).items()
+        } | prefixed["params"]
+
+    return RunMeta(
+        run_uid=str(attributes.get("run_uid", "")),
+        plan_name=str(attributes.get("plan_name", "")),
+        timestamp=float(attributes.get("timestamp", 0.0) or 0.0),
+        device=str(attributes["device"]) if "device" in attributes else None,
+        devices=devices,
+        params=prefixed["params"],
+        software=prefixed["software"],
+        context=prefixed["context"],
+    )
+
+
+def _dimension_labels(item: Any) -> list[str]:
+    """The `dims[i].label` h5py wrote, with empty labels skipped."""
+    labels = []
+    try:
+        for dimension in range(item.ndim):
+            label = item.dims[dimension].label
+            if label:
+                labels.append(str(label))
+    except Exception:
+        return []
+    return labels
+
+
+def _attr(item: Any, key: str, default: Any) -> Any:
+    value = item.attrs.get(key, default)
+    return _plain(value)
+
+
+def _plain(value: Any) -> Any:
+    """An HDF5 attribute as an ordinary Python value.
+
+    h5py hands back `bytes` for strings and numpy scalars for numbers, and
+    both compare unequal to what was written — which makes a round-trip
+    test fail for reasons that have nothing to do with the data.
+    """
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return [_plain(v) for v in value.tolist()]
+    return value
 
 
 def _axes_for(

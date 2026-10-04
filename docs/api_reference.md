@@ -107,6 +107,7 @@ table.
 |---|---|---|
 | GET | `/api/runs` | Every saved run, newest first — the provenance index |
 | POST | `/api/runs/scan` | `{axes: [{name, device, start, stop, points}], detector, name?, hold?}` → `{run_id}`. 409 if an instrument is not connected |
+| GET | `/api/runs/{id}/record` | One **saved** run's catalogue row, including `data_path`. 404 if it is not indexed. `/state` and `/result` describe a run in flight; this is the finished one on disk |
 | GET | `/api/runs/{id}/state` | `{running, completed, total, paused, aborting, plan_name}` |
 | GET | `/api/runs/{id}/result` | The last live frame while running, the full result once finished |
 | POST | `/api/runs/{id}/stop` | Stop at the next point boundary, keeping the measured points |

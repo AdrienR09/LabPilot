@@ -39,14 +39,16 @@ from __future__ import annotations
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 import h5py
 
 from labpilot.core.config.paths import labpilot_home
-from labpilot.core.data.dataset import Dataset
 from labpilot.core.storage.catalogue import Catalogue
+
+if TYPE_CHECKING:
+    from labpilot.core.data.dataset import Dataset
 
 __all__ = ["RunStore", "run_data_dir"]
 
@@ -133,6 +135,18 @@ class RunStore:
         async with self._catalogue() as catalogue:
             return await catalogue.search(limit=limit)
 
+    async def get_run(self, run_uid: str) -> dict[str, Any] | None:
+        """One run's catalogue row, including the path to its file.
+
+        Listing was the only way in, which meant finding a run older than
+        the listing's limit was impossible — and the row is what says
+        where the data actually is.
+        """
+        if not self.catalogue_path.exists():
+            return None
+        async with self._catalogue() as catalogue:
+            return await catalogue.get_run(run_uid)
+
     # --- Internals --------------------------------------------------------
 
     def _path_for(self, dataset: Dataset) -> Path:
@@ -144,26 +158,20 @@ class RunStore:
         return directory / f"{stamp}_{_safe(dataset.meta.plan_name)}_{uid}.h5"
 
     def _write(self, dataset: Dataset) -> Path:
+        """One file, written by one writer.
+
+        The plan parameters and the device schemas used to be added here,
+        after `to_hdf5` had written everything else — so an auto-saved run
+        carried them and `dataset.to_hdf5("rabi.h5")` from the console did
+        not. A file someone emails is exactly the one that needs to say
+        what the sweep bounds were, so `to_hdf5` writes them now and this
+        only chooses the path and stamps the format.
+        """
         path = self._path_for(dataset)
         with h5py.File(path, "w") as f:
             f.attrs["created_with"] = "LabPilot"
             f.attrs["format_version"] = "2.0"
             dataset.to_hdf5(f.create_group("run"))
-            if dataset.meta.devices:
-                devices = f["run"].create_group("devices")
-                for name, schema in dataset.meta.devices.items():
-                    import json
-
-                    devices.attrs[name] = json.dumps(schema, default=str)
-            if dataset.meta.params:
-                params = f["run"].create_group("params")
-                for key, value in dataset.meta.params.items():
-                    try:
-                        params.attrs[key] = value
-                    except TypeError:
-                        import json
-
-                        params.attrs[key] = json.dumps(value, default=str)
         return path
 
     async def _index(

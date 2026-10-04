@@ -328,6 +328,12 @@ class LabPilotClient:
         _check(resp)
         return resp.json()["data"]
 
+    def get_run_record(self, run_id: str) -> dict[str, Any]:
+        """One saved run's catalogue row — see GET /api/runs/{id}/record."""
+        resp = self._client.get(f"/api/runs/{run_id}/record")
+        _check(resp)
+        return resp.json()["data"]
+
     def get_run_state(self, run_id: str) -> dict[str, Any]:
         """{running, completed, total, paused, ...} — see
         GET /api/runs/{id}/state."""

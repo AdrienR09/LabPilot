@@ -70,6 +70,7 @@ apd.set_integration_time(50.0)       # however this device spells it, in its own
 lp.scan(over={'stage.x': (0, 10, 51)}, read='apd')   # a run, without writing a workflow
 lp.runs                              # every saved run, newest first
 lp.run('<id>')                       # a handle on a run already in flight
+lp.open('<id>')                      # a saved run read back from its file
 
 lp.workflows                         # ['641a113f-...', ...] every loaded workflow's id
 wf = lp.workflow('641a113f-...')
@@ -146,8 +147,13 @@ from here or from the Workflows tab:
 
 ```python
 lp.runs[0]                            # the newest saved run
+ds = lp.open(lp.runs[0]['run_uid'])   # read it back: axes, units, sample context
+ds.to_xarray().data.mean(dim='y')     # selection and reductions by label
 run.result().to_hdf5('scan.h5')       # or write a copy wherever you like
 ```
+
+See [analysis.md](analysis.md) for what is in the file and how to read
+one without LabPilot installed.
 
 ### One plan, both places
 

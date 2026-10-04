@@ -482,6 +482,25 @@ def create_app(config_dir: Path | None = None) -> FastAPI:
             data={"run_id": run_id, "name": name or getattr(plan, "name", plan_name)},
         )
 
+    @app.get("/api/runs/{run_id}/record", response_model=ApiResponse)
+    async def get_run_record(run_id: str, server: LabPilotServer = Depends(get_server)):
+        """One saved run's catalogue row, including where its file is.
+
+        `/state` and `/result` describe a run in flight; this is the
+        finished one on disk. Without it the only way to find a run was to
+        list and search, which cannot reach a run older than the listing's
+        limit.
+        """
+        try:
+            record = await server.workflow_engine.runs.get_run(run_id)
+        except Exception as e:
+            raise HTTPException(
+                status_code=503, detail=f"Run catalogue unavailable: {e}"
+            ) from e
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"No saved run {run_id!r}")
+        return ApiResponse(success=True, data=record)
+
     @app.get("/api/runs/{run_id}/state", response_model=ApiResponse)
     async def get_run_state(run_id: str, server: LabPilotServer = Depends(get_server)):
         """How far through a run is, and whether it is still going."""

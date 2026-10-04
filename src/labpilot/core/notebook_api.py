@@ -418,6 +418,32 @@ class RunHandle:
             time.sleep(poll_interval)
         return self
 
+    def dataset(self) -> Any:
+        """This run read back from its saved file, as a `Dataset`.
+
+        The difference from `result()` matters once a run is over:
+        `result()` asks the server for the last frame it is holding in
+        memory, and `dataset()` opens the HDF5 file the run was written
+        to. The file is the one with the axes, the units, the plan's
+        parameters and the sample context in it, and it is still there
+        after a restart.
+
+        Until now there was no way to open it at all — `to_hdf5` existed
+        and nothing read it back, so `lp.runs` listed data that could only
+        be looked at in another program.
+        """
+        from labpilot.core.data.dataset import Dataset
+
+        record = self._client.get_run_record(self.id)
+        path = record.get("data_path")
+        if not path:
+            raise FileNotFoundError(
+                f"Run {self.id} is indexed but has no file — the write "
+                f"failed and only the catalogue entry survived. `result()` "
+                f"may still have it if the server is the same process."
+            )
+        return Dataset.from_hdf5(path)
+
     def result(self) -> Any:
         """What the scan measured, as a `Dataset`.
 
@@ -644,6 +670,27 @@ class LabPilotSession:
         """Every saved run, newest first — the provenance index every run
         is written into as it finishes."""
         return self.client.list_runs()
+
+    def open(self, source: str) -> Any:
+        """A saved run as a `Dataset` — by run id, or by path.
+
+            ds = lp.open(lp.runs[0]["run_uid"])
+            ds.primary().values.shape
+            ds.to_xarray().counts.sel(x=0.5, method="nearest")
+
+        Takes a path as well as an id because a file someone sent you is
+        the other half of the same job, and both end up in the same
+        object. A path is anything that exists on disk or ends in a
+        recognised extension, so a run id is never mistaken for one.
+        """
+        from pathlib import Path
+
+        from labpilot.core.data.dataset import Dataset
+
+        candidate = Path(source).expanduser()
+        if candidate.exists() or candidate.suffix in (".h5", ".hdf5", ".nxs"):
+            return Dataset.from_hdf5(candidate)
+        return RunHandle(self.client, source).dataset()
 
     @property
     def workflows(self) -> list[str]:

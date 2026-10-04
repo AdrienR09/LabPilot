@@ -107,6 +107,13 @@ gui = [
     "pymodaq_gui >= 5.1",
 ]
 
+# `Dataset.to_xarray()` — labelled coordinate selection and reductions.
+# An extra rather than a dependency because the framework never needs it:
+# the bridge is one method, and nothing in an acquisition path imports it.
+analysis = [
+    "xarray >= 2023.1",
+]
+
 # Native IPython console window (see ui/desktop/console_window.py) — a
 # real out-of-process kernel shown in a Qt widget (qtconsole), not a
 # browser/iframe notebook.
@@ -126,7 +133,7 @@ app = [
 # Everything that installs cleanly from PyPI on any platform. Hardware
 # extras are deliberately excluded — see each of them above for why.
 full = [
-    "labpilot[gui,console,pymeasure,pylablib]",
+    "labpilot[gui,console,analysis,pymeasure,pylablib]",
 ]
 # A lab PC: the desktop app plus every instrument driver that comes from
 # PyPI. Wider than `full`, which leaves the hardware extras out — on a
@@ -139,7 +146,7 @@ full = [
 # no PyPI package at all — they arrive with their vendor's installer. See
 # docs/bring_up.md for which instrument needs which.
 lab = [
-    "labpilot[app,pymeasure,pylablib,ni,ni-fpga,oceanoptics,swabian,spincore]",
+    "labpilot[app,analysis,pymeasure,pylablib,ni,ni-fpga,oceanoptics,swabian,spincore]",
 ]
 dev = [
     "pytest >= 7.4.0",

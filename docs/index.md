@@ -33,15 +33,17 @@ you're looking for something specific.
 5. **[Workflows](workflows.md)** — the script contract
    (`REQUIRED_INSTRUMENTS`/`RESULT_UI`/`CAPABILITIES`), plans, presets,
    running and editing workflows, and writing a new template.
-6. **[Console](console.md)** — the native IPython console built into the
+6. **[Getting at the data](analysis.md)** — opening a saved run,
+   what is in the file, and the xarray bridge.
+7. **[Console](console.md)** — the native IPython console built into the
    Manager, and its `lp` session object.
-7. **[API Reference](api_reference.md)** — every REST endpoint, the
+8. **[API Reference](api_reference.md)** — every REST endpoint, the
    WebSocket event stream, and the `LabPilotClient`/`LabPilotSession`
    Python API.
-8. **[The Manager UI](manager_ui.md)** — a tour of every tab.
-9. **[Pulsed measurements](pulsed.md)** — the sequence model, the editor,
+9. **[The Manager UI](manager_ui.md)** — a tour of every tab.
+10. **[Pulsed measurements](pulsed.md)** — the sequence model, the editor,
    the plan and the two real gated counters.
-10. **[Troubleshooting](troubleshooting.md)** — common problems and fixes.
+11. **[Troubleshooting](troubleshooting.md)** — common problems and fixes.
 
 ## Architecture at a glance
 
