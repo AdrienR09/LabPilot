@@ -509,6 +509,36 @@ Not yet run against hardware. `labpilot probe siglent_ssg --param
 host=192.168.1.42` is the first thing to run on it, and it is what turns
 the paragraphs above into facts.
 
+## Reading a frame from any camera
+
+All nine hand-written pylablib camera adapters — Hamamatsu, both Andors,
+Basler, Photometrics, Princeton, both Thorlabs, pco — read a frame through
+one shared helper, `PylablibCameraControls.frame_sync`. It exists because
+they all previously used `read_oldest_image()`, which pylablib documents as
+returning **`None`** when no un-read frame is available, and then wrapped it
+in `np.array(...)` — giving a 0-d object array. So a camera that was
+connected but not staged answered `read()` with a thing shaped like nothing,
+declared in its own schema as a 2-D image.
+
+That is not an exotic path. It is what `labpilot probe` does to a camera,
+what `lp["cam"].read()` does in the console, and what a live preview does
+before anyone starts a scan.
+
+`frame_sync` distinguishes the two cases: **acquiring** (staged, or armed by
+a scan) waits for the next frame and takes it from the queue, because taking
+it without waiting returns `None` whenever the read lands between frames,
+which at long exposures is most of the time; **idle** snaps, which starts an
+acquisition, takes one frame and stops again. It never returns `None` and
+never an object array, and a camera that produces nothing within the timeout
+raises an error naming the likeliest cause — an external trigger that never
+came.
+
+`camera_status()` is the companion: vendor, model, serial and full sensor
+size, best effort. Every one of those is a question `labpilot probe` should
+be able to answer about a camera and none was declared before. It is wired
+into the Hamamatsu; the other eight gain it when someone has one on the
+bench to check it against.
+
 ## Mad City Labs stages
 
 The two halves of a coarse/fine positioner: millimetres of stepper travel
@@ -665,6 +695,118 @@ library ships with PicoQuant's driver installation and there is no PyPI
 package — so there is no extra to install, only their driver. **Not run
 against hardware.** `labpilot probe picoharp_300` is the first thing to
 run on it.
+
+## NKT SuperK supercontinuum lasers
+
+A SuperK Fianium or Extreme over NKT's Interbus protocol on a serial port.
+Both share the same main-module interface, so one adapter covers them.
+
+```python
+laser = create_adapter("nkt_superk", {"port": "COM4"})
+```
+
+**The register map is not retyped.** Interbus is a register protocol —
+emission is `0x30`, the power setpoint `0x37` in units of 0.1%, the inlet
+temperature `0x11` in tenths of a degree — and pylablib's
+`SuperKExtremeInterbusModule` already encodes that table with its scale
+factors. This adapter addresses registers *by name*, so there is one place
+for those numbers to be wrong instead of two, and the scale factors are
+exactly the detail that turns 60% into 600% silently.
+
+Emission is `3`, not `1`. That is NKT's convention and the one value in
+the protocol worth naming in code.
+
+The laser is found on the bus **by its type byte**, not by address: a rack
+carries the laser plus whatever filters are fitted, and taking the first
+module that answers points the adapter at an acousto-optic filter and then
+writes an emission register it does not have. A VARIA or SELECT is a
+separate module on the same bus and would be a separate adapter against
+the same transport.
+
+### It will not switch your laser on or off behind your back
+
+Connecting does not enable emission, which should not need saying.
+Disconnecting does not disable it either, by default — which does. A Class
+4 laser whose emission is tied to a software connection goes dark because
+a window was closed or a backend was restarted, possibly an hour into a
+measurement that needed that long to stabilise. The key switch and the
+hardware interlock are the safety system. `stop_emission_on_disconnect=True`
+chooses the other policy, and it is a real choice either way.
+
+`emitting` is read from the module's **status bits**, not from the
+emission register: that is whether light is actually coming out, not what
+was last asked for, and an open interlock makes those two disagree.
+
+**The watchdog is deliberately not exposed.** The SuperK can shut itself
+down unless the host keeps talking to it, which is a genuine safety
+feature — and enabling it means promising something will keep servicing
+it. This adapter cannot promise its own process stays alive, and a
+half-kept promise is worse than none: the laser switches off mid-run. Set
+it from NKT's own software, where the promise is theirs.
+
+Not run against hardware. `labpilot probe nkt_superk --param port=COM4`
+settles the module address and which registers your unit answers.
+
+## Pi Imaging SPAD512
+
+A 512-row SPAD array: every pixel is its own single-photon detector, so a
+frame is photon counts per pixel rather than integrated charge. The
+SwissSPAD lineage.
+
+```python
+camera = create_adapter("spad512", {"port": 63110, "library_path": "..."})
+```
+
+**The connection is to their software, not to the camera.** Pi Imaging's
+own desktop application owns the camera and serves a TCP port on
+`127.0.0.1`; `SPAD512S.py`, which ships with it, is a client of that port.
+So this connects to localhost, their application must be running, and the
+port is the one it shows. Two consequences worth knowing before anyone
+goes looking for a cable: this will never work headless or from another
+machine, and the camera cannot be shared with their live view while a
+measurement runs.
+
+The adapter wraps **their library**, not the wire protocol. The commands
+are short (`I` for an intensity run, `R` for temperatures, `PU` for
+pile-up correction) but the framing, the reshape order and the 16-bit byte
+interleaving are theirs and are all easy to get subtly wrong in ways that
+produce an image rather than an error.
+
+Three things the adapter is responsible for:
+
+- **The integration time's unit depends on the bit depth.** Their library
+  documents `intTime` as milliseconds at 6 bits and above and
+  *microseconds* at 1 and 4 — so the same number is a thousandfold
+  different exposure depending on another setting. This takes
+  milliseconds always and converts.
+- **Iterations are summed, not averaged.** Summing is what keeps the
+  result Poisson-distributed, which is what every error bar downstream is
+  computed from.
+- **Their constructor does not raise on a refused connection** — it
+  returns `None` from `__init__`, leaving a half-built object whose first
+  real call fails somewhere unhelpful. The handshake is checked instead.
+
+`laser_clock` is the first thing to look at on a rig that is counting
+nothing: zero means the excitation sync is not reaching the camera.
+
+### Gated imaging is not adapted yet, on purpose
+
+The gated mode is the interesting one — a stack of images, each shifted a
+known number of picoseconds from the laser clock — and it is left out
+rather than guessed at, for two reasons. Its natural output is
+`(gate_step, row, column)`, which is neither the 2-D frame a `detector`
+returns nor the `(gate, time_bin)` of `GatedCounterMixin`, which describes
+a single-pixel counter; it wants a contract that does not exist yet, and
+inventing one from a datasheet is how a contract comes out wrong. And the
+only copy of `get_gated_intensity` available to check against had been
+patched by a third party — its own comments describe fixing the streaming
+mode and the reshape — so it is not a reliable reference for what the
+vendor's version does.
+
+Intensity imaging, the camera's identity, its four temperatures and both
+clock frequencies are here, and together they are the whole of a
+first-light diagnosis. Gated imaging comes after someone has run this
+against the camera.
 
 ## The instrument catalog
 

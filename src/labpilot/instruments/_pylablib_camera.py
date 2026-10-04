@@ -22,6 +22,20 @@ supports it — mixing this in does not make a capability appear. Where the
 underlying class had no route at all (DCAM frame rate, which is derived from
 exposure, not set directly) the declaration was removed instead.
 
+## And one shared defect on the read path
+
+All nine hand-written camera adapters read a frame with
+`read_oldest_image()`, which pylablib documents as returning **`None`**
+when no un-read frame is available — then wrap it in `np.array(...)`,
+producing a 0-d object array. So a camera that is connected but not
+staged answered `read()` with a thing shaped like nothing, declared in
+its schema as a 2-D image.
+
+That is the first thing `labpilot probe` does to a camera, and it is also
+what a console `lp["cam"].read()` does. `frame_sync` below is the one
+place that is fixed: snap when idle, wait then read when acquiring, and
+never hand back `None`.
+
 Expects the host adapter to hold its open camera on `self._camera` and to
 provide `AdapterBase._to_thread`.
 """
@@ -29,6 +43,8 @@ provide `AdapterBase._to_thread`.
 from __future__ import annotations
 
 from typing import Any
+
+import numpy as np
 
 __all__ = ["PylablibCameraControls"]
 
@@ -130,3 +146,67 @@ class PylablibCameraControls:
         except Exception:
             return None
         return next((name for name in candidates if name in available), None)
+
+    # --- Reading ------------------------------------------------------------
+
+    def frame_sync(self, timeout: float = 5.0) -> np.ndarray:
+        """One frame, however the camera happens to be set up.
+
+        Two cases, and conflating them is the bug this replaces:
+
+        - **Acquiring** (the adapter has been staged, or a scan armed it):
+          wait for the next frame and take it from the queue. Taking it
+          without waiting returns `None` whenever the read happens to
+          land between frames, which is most of the time at long
+          exposures.
+        - **Idle**: `snap()`, which starts an acquisition, takes one
+          frame and stops again. This is what makes a one-off read — a
+          probe, a console `read()`, a live preview before a scan — work
+          on a camera nobody has staged.
+
+        Never returns `None`, and never an object array: a frame shaped
+        like nothing passes every downstream type check and fails at the
+        plot.
+        """
+        camera = self._camera_or_raise()
+        if camera.acquisition_in_progress():
+            camera.wait_for_frame(timeout=timeout)
+            frame = camera.read_oldest_image()
+        else:
+            frame = camera.snap(timeout=timeout)
+        if frame is None:
+            raise RuntimeError(
+                f"{type(camera).__name__} returned no frame within {timeout:g} s. "
+                f"With an external trigger selected, nothing arrives until the "
+                f"trigger does."
+            )
+        return np.asarray(frame)
+
+    def camera_status(self) -> dict[str, Any]:
+        """Vendor, model, serial and sensor size, best effort.
+
+        Every one of these is a question `labpilot probe` should be able
+        to answer about a camera and none of them was declared. Best
+        effort because the information call is the one most likely to
+        differ between vendor SDKs, and a missing serial number is not a
+        reason to fail a read.
+        """
+        camera = self._camera_or_raise()
+        status: dict[str, Any] = {
+            "vendor": "", "model": "", "serial_number": "", "camera_version": "",
+            "sensor_width": 0, "sensor_height": 0,
+        }
+        try:
+            info = camera.get_device_info()
+        except Exception:
+            info = ()
+        for key, value in zip(
+            ("vendor", "model", "serial_number", "camera_version"), info, strict=False
+        ):
+            status[key] = str(value)
+        try:
+            width, height = camera.get_detector_size()
+            status["sensor_width"], status["sensor_height"] = int(width), int(height)
+        except Exception:
+            pass
+        return status

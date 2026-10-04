@@ -13,8 +13,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
-
 try:
     from pylablib.devices import Andor
 except ImportError:
@@ -172,13 +170,7 @@ if Andor is not None:
             if self._camera is None:
                 raise RuntimeError("Camera not connected")
 
-            # Read latest frame
-            frame = self._camera.read_oldest_image()
-
-            # Convert to numpy array if needed
-            if not isinstance(frame, np.ndarray):
-                frame = np.array(frame)
-
+            frame = self.frame_sync()
             return {"frame": frame}
 
         def _self_test_sync(self) -> None:
@@ -306,9 +298,7 @@ if Andor is not None:
             if self._camera is None:
                 raise RuntimeError("Not connected")
 
-            frame = self._camera.read_oldest_image()
-            if not isinstance(frame, np.ndarray):
-                frame = np.array(frame)
+            frame = self.frame_sync()
 
             return {"frame": frame}
 

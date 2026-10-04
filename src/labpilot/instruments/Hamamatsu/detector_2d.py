@@ -14,14 +14,13 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
-
 try:
     from pylablib.devices import DCAM
 except ImportError:
     DCAM = None
 
 if DCAM is not None:
+    from labpilot.core.device.parameter import Parameter, ParamRole
     from labpilot.core.device.schema import DeviceSchema
     from labpilot.instruments._base import AdapterBase, adapter_registry
     from labpilot.instruments._pylablib_camera import PylablibCameraControls
@@ -51,17 +50,48 @@ if DCAM is not None:
             return DeviceSchema(
                 name=self._name,
                 kind="detector",
-                readable={"frame": "ndarray2d"},
-                # No "framerate": DCAM derives the frame period from exposure
-                # and readout rather than accepting a setpoint — pylablib
-                # exposes get_frame_period() but no setter, so declaring it
-                # settable would render a GUI control that cannot work.
-                settable={
-                    "exposure": "float64",
-                    "roi": "tuple",
-                },
-                units={"frame": "counts", "exposure": "s"},
-                limits={"exposure": (0.00001, 10.0)},
+                parameters=(
+                    Parameter(
+                        "frame", shape=(None, None), unit="counts",
+                        description="One image, snapped if the camera is idle",
+                    ),
+                    Parameter(
+                        "exposure", unit="s", settable=True, role=ParamRole.SETTING,
+                        limits=(0.00001, 10.0),
+                    ),
+                    # No "framerate": DCAM derives the frame period from
+                    # exposure and readout rather than accepting a setpoint —
+                    # pylablib exposes get_frame_period() but no setter, so
+                    # declaring it settable would render a GUI control that
+                    # cannot work.
+                    Parameter(
+                        "roi", dtype="str", settable=True, readable=False,
+                        role=ParamRole.SETTING,
+                        description="(hstart, hend, vstart, vend) in pixels",
+                    ),
+                    # Which camera this is, which the adapter could not say
+                    # before: `labpilot probe` on an unknown camera reported
+                    # a frame and nothing to identify the instrument by.
+                    Parameter("vendor", dtype="str", role=ParamRole.STATUS),
+                    Parameter("model", dtype="str", role=ParamRole.STATUS),
+                    Parameter("serial_number", dtype="str", role=ParamRole.STATUS),
+                    Parameter("camera_version", dtype="str", role=ParamRole.STATUS),
+                    Parameter(
+                        "sensor_width", dtype="i8", unit="px", role=ParamRole.STATUS,
+                        description="Full sensor, whatever the ROI is set to",
+                    ),
+                    Parameter(
+                        "sensor_height", dtype="i8", unit="px", role=ParamRole.STATUS,
+                    ),
+                    Parameter(
+                        "frame_period", unit="s", role=ParamRole.STATUS,
+                        description=(
+                            "What the camera derived from the exposure and its "
+                            "readout — the real frame rate, which is not a "
+                            "setpoint on DCAM"
+                        ),
+                    ),
+                ),
                 trigger_modes=["software", "hardware", "free_run"],
                 tags=["Hamamatsu", "camera", "DCAM", "Orca", "ImagEM"],
             )
@@ -114,10 +144,15 @@ if DCAM is not None:
             if self._camera is None:
                 raise RuntimeError("Not connected")
 
-            frame = self._camera.read_oldest_image()
-            if not isinstance(frame, np.ndarray):
-                frame = np.array(frame)
-
-            return {"frame": frame}
+            reading: dict[str, Any] = {
+                "frame": self.frame_sync(),
+                "exposure": float(self._camera.get_exposure()),
+                **self.camera_status(),
+            }
+            try:
+                reading["frame_period"] = float(self._camera.get_frame_period())
+            except Exception:
+                reading["frame_period"] = 0.0
+            return reading
 
     adapter_registry.register("hamamatsu_dcam", DCAMAdapter)

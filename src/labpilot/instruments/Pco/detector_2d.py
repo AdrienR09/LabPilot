@@ -13,8 +13,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
-
 try:
     from pylablib.devices import PCO
 except ImportError:
@@ -90,9 +88,7 @@ if PCO is not None:
         def _read_sync(self) -> dict[str, Any]:
             if self._camera is None:
                 raise RuntimeError("Not connected")
-            frame = self._camera.read_oldest_image()
-            if not isinstance(frame, np.ndarray):
-                frame = np.array(frame)
+            frame = self.frame_sync()
             return {"frame": frame}
 
     adapter_registry.register("pco", PCOAdapter)

@@ -453,6 +453,22 @@ INSTRUMENT_CATALOG.extend([
     InstrumentMetadata("mcl_nano_drive", "Mad City Labs", "Nano-Drive", "MCL Nano-Drive Piezo Stage", InstrumentType.ACTUATOR_ND, InstrumentBackend.VENDOR, connection_types=['none'], tags=['motor', 'piezo', 'nanopositioner', 'closed-loop', 'confocal', 'scanner']),
     InstrumentMetadata("mcl_micro_drive", "Mad City Labs", "Micro-Drive", "MCL Micro-Drive Stepper Stage", InstrumentType.ACTUATOR_ND, InstrumentBackend.VENDOR, connection_types=['none'], tags=['motor', 'stepper', 'coarse', 'confocal']),
     InstrumentMetadata("siglent_ssg", "Siglent", "SSG-series", "Siglent SSG Signal Generator", InstrumentType.SOURCE, InstrumentBackend.SCPI, connection_types=['tcp', 'visa'], tags=['microwave', 'rf', 'signal-generator', 'source', 'odmr', 'scpi']),
+    # Supercontinuum white-light laser over NKT's Interbus on a serial
+    # port. The register map (emission 0x30, power 0x37 in 0.1% steps) is
+    # pylablib's, addressed by name so the scale factors live in one
+    # place. Found on the bus by its type byte, because a SELECT or VARIA
+    # answers on the same bus. Never switches emission on or off except
+    # when asked. Not run against hardware.
+    # A 512-row SPAD array: every pixel its own single-photon detector,
+    # so a frame is photon counts rather than integrated charge. Reached
+    # through Pi Imaging's own application, which owns the camera and
+    # serves a TCP port on this machine — so it is localhost, their
+    # software must be running, and it will never work headless.
+    # Intensity mode only; gated imaging wants a contract that does not
+    # exist yet (see SPAD512Adapter's docstring). Not run against
+    # hardware.
+    InstrumentMetadata("spad512", "Pi Imaging", "SPAD512S", "Pi Imaging SPAD512 Photon-Counting Camera", InstrumentType.DETECTOR_2D, InstrumentBackend.VENDOR, connection_types=['tcp'], tags=['camera', 'spad', 'photon-counting', 'swissspad', 'array', 'detector']),
+    InstrumentMetadata("nkt_superk", "NKT Photonics", "SuperK", "NKT SuperK Fianium / Extreme", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, connection_types=['serial'], tags=['laser', 'supercontinuum', 'white-light', 'source', 'pulsed']),
     InstrumentMetadata("laser_quantum_finesse", "Laser Quantum", "Finesse", "Laser Quantum Finesse Laser", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, tags=['laser', 'cw']),
     InstrumentMetadata("basler", "Basler", "ace", "Basler ace Camera", InstrumentType.DETECTOR_2D, InstrumentBackend.PYLABLIB, tags=['camera']),
     InstrumentMetadata("photometrics_pvcam", "Photometrics", "PVCAM", "Photometrics PVCAM Camera", InstrumentType.DETECTOR_2D, InstrumentBackend.PYLABLIB, tags=['camera', 'scientific']),
