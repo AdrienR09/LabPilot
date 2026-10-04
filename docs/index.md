@@ -22,23 +22,26 @@ you're looking for something specific.
 
 1. **[Getting Started](getting_started.md)** — install, launch, run your
    first workflow.
-2. **[Capabilities](capabilities.md)** — what the framework can and cannot
+2. **[Bringing up a lab PC](bring_up.md)** — the same thing for a machine
+   wired to real instruments: which vendor drivers, how to declare a rig,
+   and `labpilot probe --all` to check every schema against its hardware.
+3. **[Capabilities](capabilities.md)** — what the framework can and cannot
    do today, in one page.
-3. **[Instruments](instruments.md)** — the `DeviceSchema`/`AdapterBase`
+4. **[Instruments](instruments.md)** — the `DeviceSchema`/`AdapterBase`
    contract, the instrument catalog, connecting/configuring instruments,
    and writing a new adapter.
-4. **[Workflows](workflows.md)** — the script contract
+5. **[Workflows](workflows.md)** — the script contract
    (`REQUIRED_INSTRUMENTS`/`RESULT_UI`/`CAPABILITIES`), plans, presets,
    running and editing workflows, and writing a new template.
-5. **[Console](console.md)** — the native IPython console built into the
+6. **[Console](console.md)** — the native IPython console built into the
    Manager, and its `lp` session object.
-6. **[API Reference](api_reference.md)** — every REST endpoint, the
+7. **[API Reference](api_reference.md)** — every REST endpoint, the
    WebSocket event stream, and the `LabPilotClient`/`LabPilotSession`
    Python API.
-7. **[The Manager UI](manager_ui.md)** — a tour of every tab.
-8. **[Pulsed measurements](pulsed.md)** — status: **not built yet**, and
-   what would be needed.
-9. **[Troubleshooting](troubleshooting.md)** — common problems and fixes.
+8. **[The Manager UI](manager_ui.md)** — a tour of every tab.
+9. **[Pulsed measurements](pulsed.md)** — the sequence model, the editor,
+   the plan and the two real gated counters.
+10. **[Troubleshooting](troubleshooting.md)** — common problems and fixes.
 
 ## Architecture at a glance
 

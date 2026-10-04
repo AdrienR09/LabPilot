@@ -128,6 +128,19 @@ app = [
 full = [
     "labpilot[gui,console,pymeasure,pylablib]",
 ]
+# A lab PC: the desktop app plus every instrument driver that comes from
+# PyPI. Wider than `full`, which leaves the hardware extras out — on a
+# machine about to be wired to instruments, having them is the point. The
+# platform markers inside each extra keep this installable on macOS,
+# where NI ships nothing.
+#
+# It cannot cover everything: the PicoHarp, the Mad City Labs stages, the
+# SPAD512, the Time Tagger and the Andor and Hamamatsu C libraries have
+# no PyPI package at all — they arrive with their vendor's installer. See
+# docs/bring_up.md for which instrument needs which.
+lab = [
+    "labpilot[app,pymeasure,pylablib,ni,ni-fpga,oceanoptics,swabian,spincore]",
+]
 dev = [
     "pytest >= 7.4.0",
     "pytest-asyncio >= 0.21.0",

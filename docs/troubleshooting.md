@@ -46,3 +46,49 @@ after a backend restart.** Instrument-set persistence loads the adapter
 but doesn't automatically re-register it into the live session on
 startup — reconnect it from the Devices tab (or `lp['<id>'].connect()`)
 once after a restart.
+
+---
+
+## On a lab PC
+
+**`WinError 10013` binding a port, with nothing listening on it.** Hyper-V,
+WSL2 and Docker Desktop reserve blocks of TCP ports at boot, and a bind
+inside one fails while every "is this port free?" check says it is. See the
+reservations with
+`netsh interface ipv4 show excludedportrange protocol=tcp`. `labpilot app`
+already handles it — it *binds* to test a port rather than connecting, and
+picks another when the preferred one is unavailable. Only
+`labpilot start --port` needs choosing by hand.
+
+**An instrument is in the catalogue but will not connect.** Almost always a
+vendor library that is not installed, and `labpilot probe <adapter>` says
+which: a missing driver package is reported as such rather than as a bad
+address, because every adapter imports its SDK at connect time, not at
+import. [bring_up.md](bring_up.md) lists which instrument needs which
+installer.
+
+**`labpilot probe` says the hardware disagrees with the schema.** That is
+the probe working. Almost every adapter here was written from a manual and
+has never met the instrument it describes, so a first probe finding
+something is expected — and the hardware is right. The output names the
+disagreement (a parameter declared readable that never came back, a pixel
+count that is not what the model table says, a position outside its own
+declared travel); that is a report worth sending.
+
+**`labpilot probe --all` says every instrument is unreachable.** Check one
+on its own with `--offline` first: if that prints a schema, the adapter and
+the config are fine and the problem is drivers or addresses. The TODO
+placeholders `labpilot rig-init` leaves behind are reported as unreachable
+until they are filled in, which is deliberate — a blank address would read
+as "not needed".
+
+**A camera returns something that is not an image.** This was a real, fixed
+bug in all nine pylablib camera adapters: an unstaged camera answered
+`read()` with a 0-d object array, because pylablib's `read_oldest_image()`
+returns `None` when no frame is queued. If you are on an old checkout,
+update.
+
+**A sweep against a real microwave source measures a flat line.** Also a
+real, fixed bug: `odmr_sweep` never switched the source's output on. It now
+calls `cw_on` before the sweep and `off` in a `finally`. On an older
+checkout, turn the output on by hand first.

@@ -24,7 +24,10 @@ Examples:
   labpilot start --port 8765         Start server on port 8765
   labpilot start --load session.json Load specific session configuration
   labpilot probe mock_basic_detector_0d  Connect one instrument and check its schema
+  labpilot probe --all               Probe every instrument in your saved rig
   labpilot probe ocean_optics --offline  Print its declared schema, connecting nothing
+  labpilot rig-templates             Ready-made instrument sets for a whole rig
+  labpilot rig-init nv_confocal      Install one as your instrument set
   labpilot list-adapters             List all available instrument adapters
   labpilot list-adapters --tags camera   Filter adapters by tags
   labpilot --version                 Show version information
@@ -94,8 +97,11 @@ Examples:
     start_parser.add_argument(
         "--host",
         type=str,
-        default="0.0.0.0",
-        help="Host to bind server to (default: 0.0.0.0)",
+        default="127.0.0.1",
+        help="Host to bind the backend to (default: 127.0.0.1, i.e. this "
+             "machine only). Binding a wider address exposes full, "
+             "unauthenticated instrument control to the network — see the "
+             "warning `labpilot start` prints if you do.",
     )
     start_parser.add_argument(
         "--load",
@@ -135,7 +141,23 @@ Examples:
     )
     probe_parser.add_argument(
         "adapter_key",
-        help="Adapter to probe, as `labpilot list-adapters` prints it",
+        nargs="?",
+        help="Adapter to probe, as `labpilot list-adapters` prints it. Omit it "
+             "with --all to probe a whole saved rig instead.",
+    )
+    probe_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Probe every instrument in the active instrument set, using the "
+             "connection parameters it already holds. This is what bring-up "
+             "looks like: one command, a table at the end.",
+    )
+    probe_parser.add_argument(
+        "--config",
+        default="",
+        metavar="NAME",
+        help="Probe this saved instrument set instead of the active one "
+             "(implies --all)",
     )
     probe_parser.add_argument(
         "--resource",
@@ -166,6 +188,54 @@ Examples:
         action="store_true",
         help="Emit the whole probe as JSON instead of a report, for a script or a "
              "bug report",
+    )
+
+    # Ready-made instrument sets, so a lab PC is not set up by hand
+    subparsers.add_parser(
+        "rig-templates",
+        help="List the ready-made instrument sets shipped with LabPilot",
+        description=(
+            "Setting up a lab PC otherwise means the Devices dialog once per "
+            "instrument: pick the adapter out of several hundred, name it, "
+            "choose a connection method, type an address. A template is a "
+            "saved instrument set shipped with the package, so installing one "
+            "writes the same config that dialog would have produced."
+        ),
+    )
+
+    rig_init_parser = subparsers.add_parser(
+        "rig-init",
+        help="Install a ready-made instrument set and make it active",
+        description=(
+            "Writes a template out as ~/.labpilot/config/instruments/<name>.cfg "
+            "and activates it. From then on it is an ordinary config: editable "
+            "in the Devices tab and switchable like any other. Addresses nobody "
+            "can know in advance are left as TODO placeholders and listed for "
+            "you to fill in."
+        ),
+    )
+    rig_init_parser.add_argument(
+        "template",
+        help="Template name, as `labpilot rig-templates` lists it",
+    )
+    rig_init_parser.add_argument(
+        "--as",
+        dest="config_name",
+        default="",
+        metavar="NAME",
+        help="Save it under this name instead of the template's own",
+    )
+    rig_init_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace an existing config of that name. Refused otherwise: a "
+             "config with real addresses typed into it is exactly what you "
+             "would not want replaced by placeholders.",
+    )
+    rig_init_parser.add_argument(
+        "--no-activate",
+        action="store_true",
+        help="Write it without making it the active instrument set",
     )
 
     # List adapters
@@ -205,6 +275,10 @@ Examples:
         from labpilot.core.probe import probe
 
         sys.exit(probe(args))
+    elif args.command == "rig-templates":
+        _list_rig_templates()
+    elif args.command == "rig-init":
+        sys.exit(_rig_init(args))
     elif args.command == "list-adapters":
         _list_adapters(args)
     else:
@@ -248,8 +322,37 @@ def _check_bindable(host: str, port: int) -> None:
             sys.exit(1)
 
 
+#: Addresses that reach beyond this machine. Binding one is a legitimate
+#: thing to want and a dangerous default, so it is allowed and announced.
+_EXPOSED_HOSTS = ("0.0.0.0", "::", "")
+
+
+def _warn_if_exposed(host: str) -> None:
+    """Say plainly what binding a public address means here.
+
+    There is no authentication anywhere in the API: anything that can
+    reach it can move a stage, open a laser shutter and start a pulse
+    sequence. That is acceptable on `127.0.0.1` and is not a thing to
+    discover afterwards on a lab network, so the one moment it can be
+    said usefully is here.
+
+    `labpilot start` used to default to `0.0.0.0`, which meant every
+    headless backend was exposed without anyone choosing it.
+    """
+    if host not in _EXPOSED_HOSTS:
+        return
+    print(
+        f"⚠️  Binding {host} exposes this backend to the whole network, and\n"
+        f"   the API has no authentication: anything that can reach it can\n"
+        f"   move a stage, switch a laser on and start a pulse sequence.\n"
+        f"   Use --host 127.0.0.1 unless you meant this.",
+        file=sys.stderr,
+    )
+
+
 def _start_server(args):
     """Start the LabPilot server."""
+    _warn_if_exposed(args.host)
     _check_bindable(args.host, args.port)
     try:
         import uvicorn
@@ -301,6 +404,80 @@ def _start_server(args):
     except Exception as e:
         print(f"❌ Failed to start server: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def _list_rig_templates() -> None:
+    """Print the shipped instrument sets, with what each still needs."""
+    from labpilot.core.config.rig_templates import templates
+
+    found = templates()
+    if not found:
+        print("No rig templates are shipped with this install.")
+        return
+
+    print(f"🧰 {len(found)} rig templates\n")
+    for template in found:
+        print(f"  {template.key}")
+        print(f"     {template.description}")
+        print(f"     {len(template.devices)} instruments: "
+              f"{', '.join(template.adapter_keys)}")
+        missing = template.missing_adapters()
+        if missing:
+            print(f"     ⚠️  not registered here (vendor SDK missing?): "
+                  f"{', '.join(missing)}")
+        for note in template.todo:
+            print(f"     · {note}")
+        print()
+    print("Install one with:  labpilot rig-init <name>")
+
+
+def _rig_init(args) -> int:
+    """Install a template as the active instrument set."""
+    from labpilot.core.config.instrument_sets import InstrumentSetError
+    from labpilot.core.config.rig_templates import install
+
+    try:
+        path, template = install(
+            args.template,
+            name=args.config_name,
+            activate=not args.no_activate,
+            overwrite=args.overwrite,
+        )
+    except InstrumentSetError as error:
+        print(f"❌ {error}", file=sys.stderr)
+        return 1
+
+    print(f"✅ Wrote {path}")
+    if not args.no_activate:
+        print("   It is now the active instrument set.")
+
+    missing = template.missing_adapters()
+    if missing:
+        # Written anyway: a config is a declaration, and the driver can
+        # arrive after it.
+        print(
+            f"\n⚠️  These did not register on this machine, so they will not "
+            f"connect until their vendor SDK is installed:\n"
+            f"     {', '.join(missing)}"
+        )
+
+    # The notes are prose and say *why*; the detected placeholders are
+    # exact. Printing both unfiltered listed `mw.host` twice, so a note
+    # that already names a parameter speaks for it.
+    notes = list(template.todo)
+    silent = [
+        f"{identifier}.{key} = {placeholder}"
+        for identifier, key, placeholder in template.unresolved()
+        if not any(f"{identifier}.{key}" in note for note in notes)
+    ]
+    if notes or silent:
+        print("\n📝 Still to fill in:")
+        for line in notes + silent:
+            print(f"     {line}")
+        print("\n   Edit them in the Devices tab, or in the file above.")
+
+    print("\nThen check the whole rig against its hardware:\n     labpilot probe --all")
+    return 0
 
 
 def _list_adapters(args):

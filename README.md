@@ -117,6 +117,13 @@ extra costs a clear error when you connect *that* instrument and nothing at all
 otherwise. `labpilot list-adapters` lists all 300-odd either way, because an
 adapter describes itself without its driver.
 
+**Setting up a PC wired to instruments?** `pip install -e ".[lab]"` brings
+every driver that comes from PyPI, and
+[docs/bring_up.md](docs/bring_up.md) is the ordered walk-through: which
+vendor drivers each instrument needs, `labpilot rig-init` to declare the
+rig in one command, and `labpilot probe --all` to check every schema
+against its hardware before anything moves.
+
 ## Running
 
 ```bash
@@ -124,6 +131,9 @@ labpilot app                       # everything: backend, front end, manager win
 labpilot app --no-window           # same, for a browser instead of the Qt window
 labpilot start                     # the backend alone, on :8000
 labpilot probe <adapter>           # check one instrument against its declared schema
+labpilot probe --all               # ...or every instrument in your saved rig
+labpilot rig-templates             # ready-made instrument sets for a whole rig
+labpilot rig-init nv_confocal      # install one and make it active
 labpilot list-adapters             # see what's connectable
 labpilot list-adapters --tags camera
 labpilot-manager                   # the desktop app, against a running backend

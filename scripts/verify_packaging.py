@@ -12,9 +12,9 @@ three failures this script exists to catch are invisible:
   point of use rather than at import, so an install without it fitted
   nothing and only said so mid-run. The dev environment had it.
 - **A file that is not in the wheel.** The model tables, the UI block
-  configs, the workflow templates and their presets are data, and data is
-  only packaged if the build backend was told to package it. The source
-  tree has them either way.
+  configs, the workflow templates and their presets, and the rig
+  templates are data, and data is only packaged if the build backend was
+  told to package it. The source tree has them either way.
 - **An import that needs a particular working directory.** The desktop
   modules used to import each other flat (`from components.x import y`),
   which resolves only with `src/labpilot/ui/desktop` on `sys.path` —
@@ -147,13 +147,15 @@ def main() -> int:
             "from labpilot.instruments import adapter_registry;"
             "from labpilot.instruments.NI.models import load_models;"
             "from labpilot.core.workflow.presets import load_presets;"
-            "print(len(adapter_registry.list()), len(load_models()), len(load_presets()))"
+            "from labpilot.core.config.rig_templates import templates;"
+            "print(len(adapter_registry.list()), len(load_models()), "
+            "len(load_presets()), len(templates()))"
         )
         out = run([str(python), "-c", probe], cwd=elsewhere)
         check("imports resolve to the installed package", out.returncode == 0,
               out.stderr.strip()[-400:])
         if out.returncode == 0:
-            adapters, models, presets = (int(v) for v in out.stdout.split())
+            adapters, models, presets, rigs = (int(v) for v in out.stdout.split())
             # A floor, not the full count. Neither install here brings the
             # driver extras, and the ~240 pymeasure and pylablib stubs
             # register only when their library is importable — which is the
@@ -166,6 +168,9 @@ def main() -> int:
             )
             check("the NI model table loads", models > 40, f"{models}")
             check("the workflow presets load", presets > 0, f"{presets}")
+            # The newest data directory, and the one a fresh lab PC needs
+            # first: `labpilot rig-init` reads it.
+            check("the rig templates ship", rigs > 0, f"{rigs}")
 
         print("\n5. Every declared dependency is really declared")
         # The one that was missing: fits are imported lazily, so a bare

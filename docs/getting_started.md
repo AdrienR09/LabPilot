@@ -128,6 +128,12 @@ labpilot list-adapters                # see what's connectable
 labpilot list-adapters --tags camera  # filter by DeviceSchema tag
 ```
 
+> **Setting up a machine that is wired to instruments?**
+> [bring_up.md](bring_up.md) is the ordered version of this: which
+> vendor drivers each instrument needs, `labpilot rig-init` to declare
+> the rig in one command, and `labpilot probe --all` to check the whole
+> thing before anything moves.
+
 ## Your first real instrument
 
 Before wiring anything into a measurement, ask the instrument to answer for

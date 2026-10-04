@@ -27,9 +27,17 @@ It generalises `scripts/ni_probe.py`, which does the same job for one
 vendor and prints a `models.toml` block to paste into the user override.
 That script stays: a DAQ card's inventory is table data, not a schema.
 
+`--all` does the same for every instrument in a saved instrument set,
+which is what bring-up actually looks like: eight instruments, one
+command, and a table at the end saying which agreed. It uses each
+instrument's saved connection parameters, so the config is the single
+place an address is written down.
+
 Exit codes are meant for a shell: 0 when the hardware agrees with the
 declaration, 1 when it disagrees (the schema needs correcting, and the
-output says how), 2 when the probe could not get far enough to tell.
+output says how), 2 when the probe could not get far enough to tell. For
+`--all` it is the worst of them, so one unreachable instrument fails the
+run.
 """
 
 from __future__ import annotations
@@ -48,7 +56,14 @@ if TYPE_CHECKING:
     from labpilot.core.data.dataset import Dataset
     from labpilot.core.device.schema import DeviceSchema
 
-__all__ = ["Finding", "compare_reading", "compare_schemas", "describe_schema", "probe"]
+__all__ = [
+    "Finding",
+    "compare_reading",
+    "compare_schemas",
+    "describe_schema",
+    "probe",
+    "probe_rig",
+]
 
 OK, DISAGREES, CANNOT_TELL = 0, 1, 2
 
@@ -259,7 +274,11 @@ def _span(values: np.ndarray) -> str:
     try:
         numbers = np.asarray(values, dtype=float).ravel()
     except (TypeError, ValueError):
-        return repr(values.ravel()[0])[:40]
+        # `.item()` rather than `repr`: a numpy string reprs as
+        # `np.str_('rabi')`, which is about numpy and not about the
+        # instrument.
+        first = values.ravel()[0]
+        return repr(first.item() if hasattr(first, "item") else first)[:40]
     finite = numbers[np.isfinite(numbers)]
     if finite.size == 0:
         return "all non-finite"
@@ -276,6 +295,14 @@ def probe(args: Any) -> int:
     from labpilot.instruments import adapter_registry
 
     say = _printer(args)
+    if getattr(args, "all", False) or getattr(args, "config", ""):
+        return probe_rig(args)
+    if not getattr(args, "adapter_key", ""):
+        say(
+            "❌ Name an adapter to probe, or use --all to probe every "
+            "instrument in your saved instrument set."
+        )
+        return CANNOT_TELL
     try:
         adapter_cls = adapter_registry.get(args.adapter_key)
     except KeyError:
@@ -291,8 +318,23 @@ def probe(args: Any) -> int:
     try:
         adapter = adapter_cls(**kwargs)
     except TypeError as error:
+        # The argument *names* are wrong.
         say(f"❌ {args.adapter_key} rejected those arguments: {error}")
         say(_required(adapter_cls))
+        return CANNOT_TELL
+    except Exception as error:
+        # The argument *values* are wrong — a card model that is not in
+        # the table, an axis that does not exist. Just as much "cannot
+        # tell" as a bad name, and catching only `TypeError` meant a
+        # `--all` run died on the first such instrument instead of
+        # reporting it and carrying on.
+        say(f"❌ {args.adapter_key} could not be built: "
+            f"{type(error).__name__}: {error}")
+        if getattr(args, "offline", False):
+            # Reviewing a rig on a laptop should not be blocked by an
+            # address nobody has filled in yet, so fall back to the
+            # schema the adapter describes with placeholder arguments.
+            return _describe_only(args, adapter_cls, say)
         return CANNOT_TELL
 
     return asyncio.run(_probe(adapter, args, say))
@@ -313,6 +355,8 @@ async def _probe(adapter: Any, args: Any, say: Any) -> int:
 
     if getattr(args, "offline", False):
         say("")
+        for key, value in kwargs_shown(args):
+            say(f"   would connect with {key} = {value!r}")
         say("   (--offline: nothing was connected)")
         return _finish(args, say, report, [], connected=False)
 
@@ -381,6 +425,148 @@ def _finish(args, say, report, findings, *, connected: bool) -> int:
     if not connected:
         return OK
     return DISAGREES if fatal else OK
+
+
+def _describe_only(args: Any, adapter_cls: type, say: Any) -> int:
+    """The schema an adapter describes with no arguments at all.
+
+    `AdapterBase.describe()` constructs a throwaway instance with
+    placeholder arguments, which is how all 314 adapters appear in the
+    catalogue without hardware. It is the right fallback when the saved
+    arguments are not usable yet — the declaration is still worth reading,
+    and it is what `--offline` was asked for.
+    """
+    schema = adapter_cls.describe()
+    if schema is None:
+        say("   ...and cannot describe itself without arguments either.")
+        return CANNOT_TELL
+    say("")
+    say("── declared, with placeholder arguments ──")
+    say("\n".join(describe_schema(schema)))
+    say("")
+    say("   (--offline: nothing was connected)")
+    say("")
+    say("── verdict: not tested against hardware ──")
+    _emit_json(
+        args, say,
+        {"adapter_key": args.adapter_key, "declared": schema.model_dump(mode="json")},
+    )
+    return OK
+
+
+# --- A whole rig ------------------------------------------------------------
+
+
+def probe_rig(args: Any) -> int:
+    """Probe every instrument in a saved instrument set.
+
+    Each one gets the connection parameters the config holds, so an
+    address is written down once — in the config the Devices dialog and
+    `labpilot rig-init` both produce — rather than retyped per probe.
+
+    One instrument's failure never stops the others: the point of this
+    command is the table at the end, and an unreachable spectrometer
+    should not hide a disagreeing counter.
+    """
+    from labpilot.core.config.instrument_sets import (
+        InstrumentSetError,
+        InstrumentSetPersistence,
+    )
+
+    say = _printer(args)
+    store = InstrumentSetPersistence()
+    name = getattr(args, "config", "") or store.get_active_name()
+    if not name:
+        say(
+            "❌ No instrument set to probe. Set one up in the Devices tab, or "
+            "install a ready-made one:\n"
+            "     labpilot rig-templates\n"
+            "     labpilot rig-init nv_confocal"
+        )
+        return CANNOT_TELL
+    try:
+        specs = store.load(name)
+    except InstrumentSetError as error:
+        say(f"❌ {error}")
+        return CANNOT_TELL
+    if not specs:
+        say(f"❌ The instrument set {name!r} has no instruments in it.")
+        return CANNOT_TELL
+
+    say(f"🔎 Probing every instrument in {name!r} — {len(specs)} of them")
+    say("")
+
+    outcomes: list[tuple[str, str, int]] = []
+    report: dict[str, Any] = {"config": name, "instruments": {}}
+    for spec in specs:
+        say("=" * 70)
+        one = _for_spec(args, spec)
+        try:
+            code = probe(one)
+        except Exception as error:
+            # Belt and braces around the whole point of this command: an
+            # unreachable spectrometer must not hide a disagreeing
+            # counter, whatever shape its failure takes.
+            say(f"❌ {spec.id}: {type(error).__name__}: {error}")
+            code = CANNOT_TELL
+        outcomes.append((spec.id, spec.adapter_key, code))
+        report["instruments"][spec.id] = {"adapter_key": spec.adapter_key, "exit": code}
+        say("")
+
+    # An offline run tested nothing, so it must not report agreement.
+    # Saying "every instrument agrees" after connecting to none of them
+    # is the exact false reassurance this command exists to avoid.
+    offline = bool(getattr(args, "offline", False))
+    verdicts = _OFFLINE_VERDICT if offline else _VERDICT
+
+    say("=" * 70)
+    say(f"── {name}: {len(outcomes)} instruments ──")
+    width = max(len(identifier) for identifier, _, _ in outcomes)
+    for identifier, adapter_key, code in outcomes:
+        say(f"   {verdicts[code]}  {identifier:<{width}}  {adapter_key}")
+    worst = max(code for _, _, code in outcomes)
+    say("")
+    if offline:
+        say("   Nothing was connected. Drop --offline to check these against "
+            "the hardware.")
+    elif worst == OK:
+        say("   ✓ every instrument agrees with its declared schema")
+    else:
+        say("   Nothing was written and nothing moved.")
+    report["offline"] = offline
+    _emit_json(args, say, report)
+    return worst
+
+
+_VERDICT = {OK: "✓ agrees    ", DISAGREES: "✗ disagrees ", CANNOT_TELL: "· unreachable"}
+_OFFLINE_VERDICT = {
+    OK: "· declared  ",
+    DISAGREES: "✗ disagrees ",
+    CANNOT_TELL: "· unreadable",
+}
+
+
+def _for_spec(args: Any, spec: Any) -> Any:
+    """One instrument's probe arguments, from its saved spec.
+
+    `--param` on a `--all` run is deliberately not merged in: it would
+    apply the same value to every instrument, which is never what was
+    meant.
+    """
+    import argparse
+
+    connection = dict(spec.connection or {})
+    return argparse.Namespace(
+        adapter_key=spec.adapter_key,
+        resource=connection.pop("resource", None),
+        param=[f"{key}={value}" for key, value in connection.items()],
+        offline=getattr(args, "offline", False),
+        no_read=getattr(args, "no_read", False),
+        json=False,
+        quiet=getattr(args, "json", False),
+        all=False,
+        config="",
+    )
 
 
 # --- Arguments --------------------------------------------------------------
@@ -487,7 +673,10 @@ def _connect_hint(error: Exception) -> str:
 
 
 def _printer(args: Any):
-    quiet = getattr(args, "json", False)
+    # `quiet` and `json` are separate: on a `--all` run the parent emits
+    # one JSON report and the children must stay silent, so they are told
+    # to be quiet without being told to emit anything.
+    quiet = getattr(args, "json", False) or getattr(args, "quiet", False)
 
     def say(text: str) -> None:
         if not quiet:
