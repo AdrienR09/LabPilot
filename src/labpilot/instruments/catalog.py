@@ -443,6 +443,15 @@ INSTRUMENT_CATALOG.extend([
     # the instrument's LAN screen is the whole configuration. Frequency
     # and level limits are read from the instrument on connect; the
     # model table is only a fallback. Not yet run against hardware.
+    # The two halves of a coarse/fine positioner: millimetres of stepper
+    # travel under microns of closed-loop piezo. Two separate MCL DLLs with
+    # two separate APIs, sharing their handle model and error codes
+    # (instruments/MadCityLabs/_madlib.py). The Nano-Drive reports its own
+    # axes and travel; the Micro-Drive cannot report its travel, so that
+    # one number is declared. ctypes against MCL's driver — no PyPI
+    # package, so no extra. Neither run against hardware.
+    InstrumentMetadata("mcl_nano_drive", "Mad City Labs", "Nano-Drive", "MCL Nano-Drive Piezo Stage", InstrumentType.ACTUATOR_ND, InstrumentBackend.VENDOR, connection_types=['none'], tags=['motor', 'piezo', 'nanopositioner', 'closed-loop', 'confocal', 'scanner']),
+    InstrumentMetadata("mcl_micro_drive", "Mad City Labs", "Micro-Drive", "MCL Micro-Drive Stepper Stage", InstrumentType.ACTUATOR_ND, InstrumentBackend.VENDOR, connection_types=['none'], tags=['motor', 'stepper', 'coarse', 'confocal']),
     InstrumentMetadata("siglent_ssg", "Siglent", "SSG-series", "Siglent SSG Signal Generator", InstrumentType.SOURCE, InstrumentBackend.SCPI, connection_types=['tcp', 'visa'], tags=['microwave', 'rf', 'signal-generator', 'source', 'odmr', 'scpi']),
     InstrumentMetadata("laser_quantum_finesse", "Laser Quantum", "Finesse", "Laser Quantum Finesse Laser", InstrumentType.SOURCE, InstrumentBackend.PYLABLIB, tags=['laser', 'cw']),
     InstrumentMetadata("basler", "Basler", "ace", "Basler ace Camera", InstrumentType.DETECTOR_2D, InstrumentBackend.PYLABLIB, tags=['camera']),

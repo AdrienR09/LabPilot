@@ -509,6 +509,80 @@ Not yet run against hardware. `labpilot probe siglent_ssg --param
 host=192.168.1.42` is the first thing to run on it, and it is what turns
 the paragraphs above into facts.
 
+## Mad City Labs stages
+
+The two halves of a coarse/fine positioner: millimetres of stepper travel
+under microns of closed-loop piezo. MCL ship two separate libraries with
+two separate APIs, which share their handle model, error codes and 1-based
+axis numbering — so those live in `instruments/MadCityLabs/_madlib.py` and
+the adapters differ only where the hardware does.
+
+```python
+fine = create_adapter("mcl_nano_drive", {})                  # microns, absolute
+coarse = create_adapter("mcl_micro_drive", {"travel_mm": 25.4})
+```
+
+### The Nano-Drive says how far it goes
+
+`MCL_GetCalibration(axis)` returns that axis's travel in microns and
+`MCL_GetProductInfo` returns a bitmap of which axes physically exist. So a
+100 µm XY stage declares `(0, 100)` on x and y and **no z at all**, rather
+than offering a third control that silently fails and a scan axis a plan
+will happily try to step.
+
+That matters more here than on most instruments: a piezo's limits are its
+whole safety story, since there is no mechanical slip to absorb an
+over-travel command, and `validate_write` enforces exactly these numbers.
+
+It is closed-loop, so a commanded position is read back from the stage's
+own sensor and `move_and_settle` waits on that — the scan's next point is
+not taken until the stage says it has arrived.
+
+One trap, handled: `MCL_SingleReadN` returns a double that is either a
+position or a negative error code. Travel starts at zero, so a negative
+value cannot be a position — but carried into a dataset it would look like
+a stage that had travelled backwards past its own home.
+
+### The Micro-Drive's model is relative; ours is absolute
+
+`MCL_MDMove(axis, velocity, distance)` moves a *distance*, and the
+encoders are the only thing that knows where the stage is. So each move is
+read-encoder, compute-delta, command, wait — and the delta is **measured
+rather than remembered**, because a stepper that stalled or that someone
+nudged by hand is at a position nothing in the process knows.
+
+`travel_mm` is the one limit in either adapter that is a number someone
+typed: `MCL_MDInformation` reports the encoder resolution, the step size
+and the velocity bounds, but no library call reports the travel. The
+default is 25.4 mm, MCL's common one-inch stage.
+
+`MCL_MDStatus`'s limit bits are **active low** — a clear bit means that
+limit is reached — so `at_limit` reports e.g. `"y reverse"`. Reading them
+the obvious way round reports every axis as permanently jammed, which is
+why the convention has its own test.
+
+`stop` halts every axis, which on a stepper is the difference between an
+abort and an abort that keeps travelling. `zero_encoders` is not a home:
+nothing moves, and it is how a stage with no absolute reference gets an
+origin.
+
+### Verified, and not
+
+Signatures, error codes, the packed `ProductInformation` layout and the
+1-based axes were each checked against two independent open
+implementations (ScopeFoundry's `HW_mcl_stage` and ZhuangLab's
+`storm-control` for the Nano-Drive; `MCLMicroDrive` and MCL's own
+documentation for the Micro-Drive). Both adapters deliberately do **not**
+call `MCL_ReleaseAllHandles`, which both of those wrappers do on startup:
+it releases the handle any other process or adapter holds, so two stages
+cannot be used at once and a second window silently steals the first one's
+stage.
+
+ctypes against MCL's driver; no PyPI package, so no extra to install.
+**Neither run against hardware.** `labpilot probe mcl_nano_drive` is what
+settles the travel ranges and the axis count; for the Micro-Drive it also
+confirms the axis count and the status-bit order.
+
 ## PicoHarp 300 as a gated counter
 
 The photon counter for a pulsed NV rig, and the real instrument the whole
