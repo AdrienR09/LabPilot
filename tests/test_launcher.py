@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import socket
+from html.parser import HTMLParser
 
 import pytest
 from fastapi.testclient import TestClient
@@ -286,3 +287,103 @@ def test_the_fallback_does_not_turn_a_404_into_a_405(served):
 def test_the_fallback_does_not_serve_files_outside_the_bundle(served, attempt):
     response = served.get(attempt)
     assert "root:" not in response.text
+
+
+# --- The first paint must not depend on the network ------------------------
+#
+# The built page loaded two webfont stylesheets from fonts.googleapis.com
+# with a plain `rel="stylesheet"`, which is render-blocking. On a lab PC
+# with no internet — or behind a firewall that drops the connection rather
+# than refusing it — Chromium painted nothing while it waited, so the Qt
+# manager window sat completely dark with its title stuck at "Loading 0%".
+# Nothing in the app is remote except those fonts, and Tailwind already
+# declares local fallbacks for both, so this is pure cost.
+
+
+class _Externals(HTMLParser):
+    """Remote resources that hold up the first paint."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.blocking: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = {name: (value or "") for name, value in attrs}
+        href = attributes.get("href", "") or attributes.get("src", "")
+        if not href.startswith(("http://", "https://")):
+            return
+        if tag == "link" and attributes.get("rel", "").lower() == "stylesheet":
+            # `media="print"` (swapped to "all" on load) is the standard way
+            # to fetch a stylesheet without blocking the render.
+            if attributes.get("media", "all").lower() in ("", "all"):
+                self.blocking.append(href)
+        elif tag == "script" and "defer" not in attributes and "async" not in attributes:
+            self.blocking.append(href)
+
+
+def _blocking_remote_resources(html: str) -> list[str]:
+    parser = _Externals()
+    parser.feed(html)
+    return parser.blocking
+
+
+def test_the_front_end_source_blocks_its_first_paint_on_nothing_remote():
+    source = frontend_source_dir()
+    if source is None:
+        pytest.skip("no front-end sources in this install")
+    blocking = _blocking_remote_resources((source / "index.html").read_text())
+    assert not blocking, (
+        "These are fetched from the internet before the page can paint, so the app "
+        f"hangs on a machine with no network: {blocking}"
+    )
+
+
+def test_the_built_bundle_blocks_its_first_paint_on_nothing_remote():
+    build = frontend_build_dir()
+    if build is None:
+        pytest.skip("no built bundle in this install")
+    blocking = _blocking_remote_resources((build / "index.html").read_text())
+    assert not blocking, (
+        "The built page blocks its first paint on the internet — rebuild it "
+        f"(`labpilot app --build`) if the sources are already fixed: {blocking}"
+    )
+
+
+# --- Handing the window its rendering escape hatch -------------------------
+#
+# A manager window that opens blank on a machine where the same URL loads
+# fine in a browser is a QtWebEngine problem, not a server one, and the
+# remedies are Chromium flags in the window's own process. `--safe-graphics`
+# has to reach it; the flags themselves are composed there, before anything
+# builds a QApplication.
+
+
+class _FakePopen:
+    def __init__(self, command, **kwargs):
+        self.command = command
+        self.kwargs = kwargs
+        self.returncode = None
+
+    def poll(self):
+        return None
+
+
+def _manager_command(monkeypatch, **kwargs) -> list[str]:
+    import labpilot.core.launcher as launcher
+
+    monkeypatch.setattr(launcher.subprocess, "Popen", _FakePopen)
+    spawned = launcher._start_manager("http://localhost:8000", "http://localhost:8000", **kwargs)
+    return spawned.command
+
+
+def test_the_window_renders_normally_unless_safe_graphics_is_asked_for(monkeypatch):
+    assert "--safe-graphics" not in _manager_command(monkeypatch)
+
+
+def test_safe_graphics_reaches_the_window_process(monkeypatch):
+    assert "--safe-graphics" in _manager_command(monkeypatch, safe_graphics=True)
+
+
+def test_the_window_is_always_told_not_to_start_its_own_server(monkeypatch):
+    """Without this it starts a second backend on its own default port."""
+    assert "--external-backend" in _manager_command(monkeypatch)

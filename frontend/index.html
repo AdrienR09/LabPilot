@@ -7,11 +7,21 @@
     <title>LabPilot - AI Laboratory Automation</title>
     <meta name="description" content="AI-native laboratory experiment operating system" />
 
-    <!-- Preload fonts -->
+    <!-- Webfonts, loaded so that they can never delay the first paint.
+         A plain <link rel="stylesheet"> is render-blocking, so on a lab PC
+         with no internet — or behind a firewall that drops the connection
+         rather than refusing it — Chromium paints nothing until the request
+         gives up. Inside the Qt manager window that looked like a hung,
+         completely dark app whose title sat at "Loading 0%".
+
+         media="print" makes the stylesheet non-blocking; the onload swaps it
+         back to "all" once it has actually arrived. If it never arrives, the
+         fallback stacks in tailwind.config.js (system-ui, Monaco) apply and
+         the app is fully usable — the typeface is the only thing lost. -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 
     <!-- Theme script to prevent flash -->
     <script>

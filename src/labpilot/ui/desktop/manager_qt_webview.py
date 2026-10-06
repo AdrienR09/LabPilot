@@ -5,10 +5,11 @@ Uses QWebEngineView to display the React app you already built
 Includes QtBridge for React-Qt communication
 """
 
+import os
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QAction
 from PyQt6.QtWebChannel import QWebChannel
 from PyQt6.QtWebEngineCore import QWebEngineSettings
@@ -19,6 +20,45 @@ from labpilot.ui.desktop.console_window import ConsoleWindow
 from labpilot.ui.desktop.main import LabPilotStyle
 from labpilot.ui.desktop.managed_server import ManagedServer
 from labpilot.ui.desktop.qt_bridge import QtBridge
+
+# Long enough that a slow first paint is not reported as a fault, short
+# enough to beat someone's patience with a dark window.
+LOAD_STALL_WARNING_S = 20.0
+
+# QtWebEngine is a full Chromium, and it picks up the machine's system proxy
+# configuration — which on a managed lab PC is usually a corporate proxy, often
+# via an auto-detected (WPAD) or PAC script. The page this window loads is
+# served by a backend on this same machine, so a proxy is never the right route
+# for it, and routing it through one that cannot answer stalls the load
+# indefinitely: the window stays dark and its title sits at "Loading 0%". An
+# ordinary browser escapes this because its own proxy settings bypass local
+# addresses, which is why the same URL opens there and not here.
+#
+# --disable-gpu is NOT in this list: it costs real rendering performance and is
+# only needed on a machine whose graphics driver QtWebEngine cannot use (or
+# over a remote-desktop session). `--safe-graphics` adds it on request.
+BASE_CHROMIUM_FLAGS = ("--no-proxy-server",)
+SAFE_GRAPHICS_FLAGS = ("--disable-gpu", "--disable-gpu-compositing", "--disable-software-rasterizer")
+CHROMIUM_FLAGS_ENV = "QTWEBENGINE_CHROMIUM_FLAGS"
+
+
+def apply_chromium_flags(*, safe_graphics: bool = False) -> str:
+    """Set the Chromium flags, and return what they ended up as.
+
+    Must run before anything constructs a `QApplication`: QtWebEngine reads
+    this variable once, while it initialises. Flags the caller already put in
+    the environment are kept and placed last, so an explicit setting wins over
+    every default here.
+    """
+    flags = [*BASE_CHROMIUM_FLAGS]
+    if safe_graphics:
+        flags += SAFE_GRAPHICS_FLAGS
+    inherited = os.environ.get(CHROMIUM_FLAGS_ENV, "").strip()
+    if inherited:
+        flags.append(inherited)
+    composed = " ".join(flags)
+    os.environ[CHROMIUM_FLAGS_ENV] = composed
+    return composed
 
 
 class LabPilotManagerWindow(QMainWindow):
@@ -93,6 +133,19 @@ class LabPilotManagerWindow(QMainWindow):
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.PluginsEnabled, True)
 
+        # Say so when a load never finishes, rather than sitting dark.
+        # Chromium reports no error for a request that hangs — it just
+        # stops making progress — so a page whose first paint waits on an
+        # unreachable host looks identical to a crashed app. That happened
+        # for real: the built index.html loaded two render-blocking
+        # webfont stylesheets from fonts.googleapis.com, and on a lab PC
+        # with no internet the window stayed dark with its title at
+        # "Loading 0%" and nothing anywhere said why.
+        self._stall_timer = QTimer(self)
+        self._stall_timer.setSingleShot(True)
+        self._stall_timer.setInterval(int(LOAD_STALL_WARNING_S * 1000))
+        self._stall_timer.timeout.connect(self.on_load_stalled)
+
         # Load React app
         self.web_view.setUrl(QUrl(self.react_url))
 
@@ -107,6 +160,28 @@ class LabPilotManagerWindow(QMainWindow):
         """Called when page loading starts"""
         print(f"📱 Page loading started: {self.react_url}")
         self.setWindowTitle("LabPilot Manager - Loading...")
+        self._stall_timer.start()
+
+    def on_load_stalled(self):
+        """The page has been loading for an implausibly long time."""
+        print(
+            f"\n⚠️  {self.react_url} has not finished loading after "
+            f"{LOAD_STALL_WARNING_S:.0f}s. The window will stay blank until it does.\n"
+            "   Usually one of:\n"
+            "   • the page is waiting on a host it cannot reach — a resource served "
+            "from the internet on a machine that has none, which hangs rather than "
+            "failing when a firewall drops the connection;\n"
+            f"   • nothing is listening at {self.react_url} (check the backend started);\n"
+            "   • the front-end bundle is there but incomplete.\n"
+            "   Open the same URL in a browser. If it loads there, the server and the "
+            "bundle are fine and the problem is this embedded browser — on a managed PC "
+            "usually a system proxy it routes localhost through, or security software "
+            "blocking QtWebEngineProcess. Try:\n"
+            "     labpilot app --safe-graphics\n"
+            "   and, failing that, work in a browser with `labpilot app --no-window`.",
+            flush=True,
+        )
+        self.setWindowTitle("LabPilot Manager - still loading… (see the terminal)")
 
     def on_load_progress(self, progress: int):
         """Called when page loading progresses"""
@@ -116,6 +191,7 @@ class LabPilotManagerWindow(QMainWindow):
 
     def on_load_finished(self, success: bool):
         """Called when page finishes loading"""
+        self._stall_timer.stop()
         if success:
             print("✅ React app loaded successfully")
             print("📡 Qt Bridge object is registered")
@@ -244,6 +320,13 @@ def main():
              "(e.g. a standalone `labpilot start`, possibly on a different machine).",
     )
     parser.add_argument(
+        "--safe-graphics",
+        action="store_true",
+        help="Render without the GPU. For a machine whose graphics driver QtWebEngine "
+             "cannot use, or a remote-desktop session, where the window is otherwise "
+             "blank or black.",
+    )
+    parser.add_argument(
         "--backend-url",
         default="http://localhost:8000",
         help="URL of an already-running backend API — only used with --external-backend "
@@ -251,6 +334,9 @@ def main():
     )
 
     args = parser.parse_args()
+
+    flags = apply_chromium_flags(safe_graphics=args.safe_graphics)
+    print(f"🧭 QtWebEngine flags: {flags}", flush=True)
 
     managed_server: ManagedServer | None = None
     if args.external_backend:

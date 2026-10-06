@@ -270,25 +270,27 @@ def _start_dev_server(source: Path, npm: str, port: int, backend_url: str) -> su
     )
 
 
-def _start_manager(frontend_url: str, backend_url: str) -> subprocess.Popen:
+def _start_manager(
+    frontend_url: str, backend_url: str, *, safe_graphics: bool = False
+) -> subprocess.Popen:
     """The Qt shell, pointed at the backend this command already owns.
 
     `--external-backend` matters: without it the manager starts a *second*
     server on its own default port.
     """
-    return subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "labpilot.ui.desktop.manager_qt_webview",
-            "--url",
-            frontend_url,
-            "--external-backend",
-            "--backend-url",
-            backend_url,
-        ],
-        **_spawn_kwargs(),
-    )
+    command = [
+        sys.executable,
+        "-m",
+        "labpilot.ui.desktop.manager_qt_webview",
+        "--url",
+        frontend_url,
+        "--external-backend",
+        "--backend-url",
+        backend_url,
+    ]
+    if safe_graphics:
+        command.append("--safe-graphics")
+    return subprocess.Popen(command, **_spawn_kwargs())
 
 
 def _install_shutdown_handlers() -> None:
@@ -422,7 +424,9 @@ def run_app(args) -> int:
             waited_on, waited_name = backend, "backend"
         else:
             _say("🪟 Opening the manager window …")
-            manager = _start_manager(frontend_url, backend_url)
+            manager = _start_manager(
+                frontend_url, backend_url, safe_graphics=getattr(args, "safe_graphics", False)
+            )
             children.append(("manager", manager))
             waited_on, waited_name = manager, "manager"
 

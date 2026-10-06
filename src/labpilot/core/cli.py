@@ -85,6 +85,13 @@ Examples:
         action="store_true",
         help="Don't open the Qt manager window — print a URL to open in a browser instead",
     )
+    app_parser.add_argument(
+        "--safe-graphics",
+        action="store_true",
+        help="Render the manager window without the GPU. For a machine whose graphics "
+             "driver QtWebEngine cannot use, or a remote-desktop session, where the "
+             "window is otherwise blank or black.",
+    )
 
     # Start server command
     start_parser = subparsers.add_parser("start", help="Start LabPilot server")

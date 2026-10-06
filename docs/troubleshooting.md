@@ -51,6 +51,46 @@ once after a restart.
 
 ## On a lab PC
 
+**The manager window opens completely dark, with its title stuck at
+`Loading 0%`.** The window's title tracks Chromium's load progress, so
+`Loading 0%` means the page never arrived — as opposed to a window that
+reached `LabPilot Manager ✅` and is *still* dark, which is a rendering
+problem rather than a loading one. The window now prints the likely causes
+itself after 20 seconds instead of staying silent.
+
+Split it in one step: **open the same URL in a browser** (the terminal prints
+it, or use `labpilot app --no-window`). That tells you which half is broken,
+and the two halves have nothing in common.
+
+*The browser works too.* Then the server, the port and the bundle are all
+fine, and the problem is the embedded Chromium. On a managed or lab PC it is
+usually one of:
+
+* **A system proxy.** QtWebEngine picks up the machine's proxy configuration,
+  including an auto-detected (WPAD) or PAC one, and a corporate proxy that
+  cannot answer for `localhost` stalls the load forever. A browser escapes
+  this because its own settings bypass local addresses. `labpilot app` now
+  passes `--no-proxy-server`, since the page it loads is served from this
+  same machine; on an older checkout, `git pull`.
+* **Security software blocking `QtWebEngineProcess.exe`.** Chromium renders
+  in a child process, and a blocked one leaves the window blank with no error
+  anywhere. Look for it in Task Manager while the window is open: if it is
+  not there, that is the answer, and it needs an exclusion.
+* **A graphics driver QtWebEngine cannot use**, or a remote-desktop session.
+  Try `labpilot app --safe-graphics`, which renders without the GPU.
+
+Until it is sorted, `labpilot app --no-window` is a complete workaround —
+the browser UI is the same application, not a reduced one.
+
+*The browser is blank as well.* Then the page itself is at fault: the front
+end is not built (`labpilot app --build`), or it is waiting on a resource it
+cannot reach. That last one was a real, fixed bug — the built `index.html`
+loaded two webfont stylesheets from `fonts.googleapis.com` with a plain
+`rel="stylesheet"`, which is render-blocking, so on a PC with no internet
+Chromium painted nothing while it waited. They are now loaded non-blocking
+and the app falls back to `system-ui`. On an older checkout, `git pull` and
+`labpilot app --build`.
+
 **`WinError 10013` binding a port, with nothing listening on it.** Hyper-V,
 WSL2 and Docker Desktop reserve blocks of TCP ports at boot, and a bind
 inside one fails while every "is this port free?" check says it is. See the
