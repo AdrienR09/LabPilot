@@ -55,6 +55,7 @@ from labpilot.core.device.parameter import Parameter, ParamRole
 from labpilot.core.device.schema import DeviceSchema
 from labpilot.core.errors import DeviceError
 from labpilot.instruments._base import AdapterBase, adapter_registry
+from labpilot.instruments._vendor_library import VendorLibrary
 from labpilot.instruments.MadCityLabs._madlib import AXIS_NUMBERS, MclLibrary
 
 __all__ = ["MicroDriveAdapter", "limits_reached"]
@@ -136,6 +137,17 @@ class MicroDriveAdapter(AdapterBase):
         self._encoder_resolution = 0.0
         self._step_size = 0.0
         self._velocity_limits = (0.0, 0.0)
+
+    @classmethod
+    def vendor_library(cls) -> VendorLibrary:
+        """See the Nano-Drive's: same mechanism, different library."""
+        return VendorLibrary(
+            parameter="library",
+            product="Mad City Labs Micro-Drive",
+            vendor="Mad City Labs",
+            candidates=_MicroDriveLib.candidates,
+            installer="Mad City Labs' Micro-Drive driver installation",
+        )
 
     # --- What it is --------------------------------------------------------
 

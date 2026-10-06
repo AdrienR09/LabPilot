@@ -51,6 +51,7 @@ from labpilot.core.device.parameter import Parameter, ParamRole
 from labpilot.core.device.schema import DeviceSchema
 from labpilot.core.errors import DeviceError
 from labpilot.instruments._base import AdapterBase, adapter_registry
+from labpilot.instruments._vendor_library import VendorLibrary
 from labpilot.instruments.MadCityLabs._madlib import (
     AXIS_NUMBERS,
     MclLibrary,
@@ -111,6 +112,21 @@ class NanoDriveAdapter(AdapterBase):
         self._travel: dict[str, float] = dict.fromkeys(self._axes, DEFAULT_TRAVEL_UM)
         self._info = ProductInformation()
         self._serial = ""
+
+    @classmethod
+    def vendor_library(cls) -> VendorLibrary:
+        """What `library=` wants, for the UI's "find it for me" control.
+
+        The candidate list is `_Madlib`'s own, so the place the UI reports
+        is the place a connect will actually load from.
+        """
+        return VendorLibrary(
+            parameter="library",
+            product="Mad City Labs Nano-Drive",
+            vendor="Mad City Labs",
+            candidates=_Madlib.candidates,
+            installer="Mad City Labs' Nano-Drive driver installation",
+        )
 
     # --- What it is --------------------------------------------------------
 

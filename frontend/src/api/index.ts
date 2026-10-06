@@ -322,6 +322,26 @@ export const getDashboardInstruments = (): Promise<DashboardInstrument[]> =>
 export const getCatalog = (): Promise<CatalogEntry[]> =>
   client.get<CatalogEntry[]>('/dashboard/catalog');
 
+// Where a vendor DLL is, asked before connecting. Read-only on the server:
+// it stats the adapter's own candidate paths and reads a PE header, loading
+// nothing. A 404 means the adapter needs no vendor library.
+export interface VendorLibraryLocation {
+  parameter: string;
+  product: string;
+  vendor: string;
+  installer: string;
+  found: boolean;
+  path: string;
+  architecture: string;
+  interpreter: string;
+  mismatched: boolean;
+  searched: string[];
+  message: string;
+}
+
+export const locateVendorLibrary = (adapterKey: string): Promise<VendorLibraryLocation> =>
+  client.get<VendorLibraryLocation>(`/dashboard/catalog/${adapterKey}/vendor-library`);
+
 export const createInstrument = (
   adapterKey: string,
   opts: { id?: string; name?: string; connectionParams?: Record<string, any> } = {}

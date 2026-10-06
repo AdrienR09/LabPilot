@@ -100,6 +100,39 @@ CONNECTION_METHODS: dict[str, ConnectionMethod] = {
             ConnectionField("model", "str", "Model (blank = ask the device)", ""),
         ),
     ),
+    # A Pulse Streamer is reached over the network, but by an address its
+    # own constructor calls `resource` rather than a host/port pair — so it
+    # is not the `tcp` method, whose fields the adapter would discard.
+    "hostname": ConnectionMethod(
+        "hostname", "Hostname / IP address",
+        (ConnectionField("resource", "str", "Hostname or IP address", "192.168.1.100"),),
+    ),
+    # A PulseBlaster is a PCI card with no address at all: spinapi selects it
+    # by index. The clock rate and channel count are the settings that decide
+    # what a sequence compiles to, so they belong in the same form.
+    "spincore": ConnectionMethod(
+        "spincore", "SpinCore board",
+        (
+            ConnectionField("board", "int", "Board index", 0),
+            ConnectionField("clock_mhz", "float", "Clock (MHz)", 500.0),
+            ConnectionField("channels", "int", "Digital channels", 24),
+        ),
+    ),
+    # A library that ships with the manufacturer's driver installation and
+    # has no PyPI package: both Mad City Labs stages and the PicoHarp. The
+    # field is optional on purpose — blank means "search the usual places",
+    # which is what works on a standard installation. `_vendor_library.py`
+    # is what fills it in when that is not enough, and the adapter class
+    # declares its own candidates via `vendor_library()`.
+    "vendor_library": ConnectionMethod(
+        "vendor_library", "Vendor library (DLL)",
+        (
+            ConnectionField(
+                "library", "str",
+                "Library path — blank to search the default locations", "",
+            ),
+        ),
+    ),
     "none": ConnectionMethod("none", "No connection (mock/simulated)", ()),
 }
 

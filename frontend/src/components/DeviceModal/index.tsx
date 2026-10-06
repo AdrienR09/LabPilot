@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Search, X, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
+import { Search, X, ChevronDown, ChevronRight, AlertTriangle, FolderSearch, Check } from 'lucide-react';
 import { useLabPilotStore } from '@/store';
-import type { CatalogEntry } from '@/api';
+import { locateVendorLibrary } from '@/api';
+import type { CatalogEntry, VendorLibraryLocation } from '@/api';
 import clsx from 'clsx';
 
 interface DeviceModalProps {
@@ -48,8 +49,69 @@ const CONNECTION_METHODS: Record<string, { label: string; fields: ConnectionFiel
     ],
   },
   usb_serial_number: { label: 'USB (serial number)', fields: [{ name: 'serial_number', dtype: 'str', label: 'Device serial number' }] },
+  // An NI card is not reached by an address: DAQmx knows it by the name
+  // NI-MAX gave it. What has to be said instead is which card it is and what
+  // is plugged into which terminal — see instruments/NI/channels.py for the
+  // one-line channel syntax, which exists so the wiring fits in one field.
+  ni_daqmx: {
+    label: 'NI-DAQmx device',
+    fields: [
+      { name: 'device', dtype: 'str', label: 'NI-MAX device name', default: 'Dev1' },
+      { name: 'model', dtype: 'str', label: 'Card model', default: 'PCIe-6363' },
+      { name: 'channels', dtype: 'str', label: 'Channels (name=terminal, comma separated)', default: 'x=ao0, y=ao1, apd=ctr0/pfi8' },
+    ],
+  },
+  // An R-Series card is an FPGA: what it does is whatever gateware was
+  // compiled onto it, so the bitfile is the real setting. Blank is a
+  // first-class choice — the pulsed measurement then picks the image its
+  // sequence needs from ~/.labpilot/config/ni_rseries.toml.
+  ni_fpga: {
+    label: 'NI R-Series (FPGA)',
+    fields: [
+      { name: 'resource', dtype: 'str', label: 'RIO resource name', default: 'RIO0' },
+      { name: 'model', dtype: 'str', label: 'Card model', default: 'generic' },
+      { name: 'bitfile', dtype: 'str', label: 'Bitfile (.lvbitx; blank = chosen from the library)' },
+    ],
+  },
+  ocean_optics: {
+    label: 'Ocean Optics (USB)',
+    fields: [
+      { name: 'serial_number', dtype: 'str', label: 'Serial number (blank = first found)' },
+      { name: 'model', dtype: 'str', label: 'Model (blank = ask the device)' },
+    ],
+  },
+  // Reached over the network, but by an address its constructor calls
+  // `resource` rather than a host/port pair — so not the `tcp` method,
+  // whose fields the adapter would discard.
+  hostname: {
+    label: 'Hostname / IP address',
+    fields: [{ name: 'resource', dtype: 'str', label: 'Hostname or IP address', default: '192.168.1.100' }],
+  },
+  // A PCI card with no address: spinapi selects it by index. The clock rate
+  // and channel count decide what a sequence compiles to, so they belong in
+  // the same form.
+  spincore: {
+    label: 'SpinCore board',
+    fields: [
+      { name: 'board', dtype: 'int', label: 'Board index', default: 0 },
+      { name: 'clock_mhz', dtype: 'float', label: 'Clock (MHz)', default: 500.0 },
+      { name: 'channels', dtype: 'int', label: 'Digital channels', default: 24 },
+    ],
+  },
+  // A library that comes with the manufacturer's driver installation and has
+  // no PyPI package. Blank means "search the usual places", which is what
+  // works on a standard installation — hence no default and the Find button
+  // below, which asks the backend where it actually is.
+  vendor_library: {
+    label: 'Vendor library (DLL)',
+    fields: [{ name: 'library', dtype: 'str', label: 'Library path — blank to search the default locations' }],
+  },
   none: { label: 'No connection (mock/simulated)', fields: [] },
 };
+
+// The field that the Find button fills in. Named rather than inferred so the
+// button appears only beside the control it can actually complete.
+const LIBRARY_FIELD = 'library';
 
 export function DeviceModal({ isOpen }: DeviceModalProps) {
   const { catalog, catalogLoading, loadCatalog, createDeviceFromCatalog, devicesLoading, devicesError, hideDeviceModal } = useLabPilotStore();
@@ -60,6 +122,31 @@ export function DeviceModal({ isOpen }: DeviceModalProps) {
   const [connectionMethod, setConnectionMethod] = useState('');
   const [connectionFields, setConnectionFields] = useState<Record<string, string>>({});
   const [collapsedTypes, setCollapsedTypes] = useState<Set<string>>(new Set());
+  const [library, setLibrary] = useState<VendorLibraryLocation | null>(null);
+  const [librarySearching, setLibrarySearching] = useState(false);
+  const [libraryError, setLibraryError] = useState<string | null>(null);
+
+  // Asking the backend where the DLL is. Its own candidate list is the one
+  // searched, so a hit here is where a connect will load from. On success the
+  // path is written into the field: the point is to save the typing, and a
+  // found path that still has to be copied by hand saves none of it.
+  const findLibrary = async () => {
+    if (!selected) return;
+    setLibrarySearching(true);
+    setLibraryError(null);
+    setLibrary(null);
+    try {
+      const found = await locateVendorLibrary(selected.adapter_key);
+      setLibrary(found);
+      if (found.found) {
+        setConnectionFields((prev) => ({ ...prev, [LIBRARY_FIELD]: found.path }));
+      }
+    } catch (error) {
+      setLibraryError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLibrarySearching(false);
+    }
+  };
 
   useEffect(() => {
     if (isOpen && catalog.length === 0 && !catalogLoading) {
@@ -100,9 +187,15 @@ export function DeviceModal({ isOpen }: DeviceModalProps) {
     });
   };
 
+  const clearLibrarySearch = () => {
+    setLibrary(null);
+    setLibraryError(null);
+  };
+
   const handleSelect = (item: CatalogEntry) => {
     setSelected(item);
     setCustomName(item.display_name);
+    clearLibrarySearch();
     const firstMethod = item.connection_types[0] || 'none';
     setConnectionMethod(firstMethod);
     const defaults: Record<string, string> = {};
@@ -114,6 +207,7 @@ export function DeviceModal({ isOpen }: DeviceModalProps) {
 
   const handleMethodChange = (method: string) => {
     setConnectionMethod(method);
+    clearLibrarySearch();
     const defaults: Record<string, string> = {};
     for (const field of CONNECTION_METHODS[method]?.fields || []) {
       if (field.default !== undefined) defaults[field.name] = String(field.default);
@@ -295,14 +389,74 @@ export function DeviceModal({ isOpen }: DeviceModalProps) {
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                   {field.label}
                 </label>
-                <input
-                  type={field.dtype === 'str' ? 'text' : 'number'}
-                  step={field.dtype === 'float' ? 'any' : undefined}
-                  value={connectionFields[field.name] ?? ''}
-                  onChange={(e) => setConnectionFields((prev) => ({ ...prev, [field.name]: e.target.value }))}
-                  placeholder={field.default !== undefined ? String(field.default) : ''}
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
+                <div className="flex gap-2">
+                  <input
+                    type={field.dtype === 'str' ? 'text' : 'number'}
+                    step={field.dtype === 'float' ? 'any' : undefined}
+                    value={connectionFields[field.name] ?? ''}
+                    onChange={(e) => setConnectionFields((prev) => ({ ...prev, [field.name]: e.target.value }))}
+                    placeholder={field.default !== undefined ? String(field.default) : ''}
+                    className="flex-1 min-w-0 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                  {field.name === LIBRARY_FIELD && (
+                    <button
+                      type="button"
+                      onClick={findLibrary}
+                      disabled={librarySearching}
+                      title="Look for the library in the places this instrument's driver installs it"
+                      className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-md border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+                    >
+                      <FolderSearch className="w-4 h-4" />
+                      {librarySearching ? 'Searching…' : 'Find'}
+                    </button>
+                  )}
+                </div>
+
+                {field.name === LIBRARY_FIELD && libraryError && (
+                  <p className="mt-2 text-xs text-red-600 dark:text-red-400">
+                    Could not search: {libraryError}
+                  </p>
+                )}
+
+                {field.name === LIBRARY_FIELD && library && (
+                  <div
+                    className={clsx(
+                      'mt-2 rounded-md border px-3 py-2 text-xs',
+                      // A library found but of the wrong word size is a
+                      // failure, not a success: it cannot be loaded. Colouring
+                      // it green because a file turned up would be a lie.
+                      library.found && !library.mismatched
+                        ? 'border-green-300 bg-green-50 text-green-800 dark:border-green-700 dark:bg-green-900/30 dark:text-green-200'
+                        : 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200'
+                    )}
+                  >
+                    <div className="flex items-start gap-1.5">
+                      {library.found && !library.mismatched ? (
+                        <Check className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                      ) : (
+                        <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                      )}
+                      <span>{library.message}</span>
+                    </div>
+                    {library.found && library.architecture && (
+                      <p className="mt-1 pl-5 opacity-80">
+                        {library.architecture} library, {library.interpreter} Python.
+                      </p>
+                    )}
+                    {!library.found && library.searched.length > 0 && (
+                      <details className="mt-1.5 pl-5">
+                        <summary className="cursor-pointer opacity-80">
+                          Where it looked ({library.searched.length})
+                        </summary>
+                        <ul className="mt-1 space-y-0.5 font-mono break-all opacity-80">
+                          {library.searched.map((place) => (
+                            <li key={place}>{place}</li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
 

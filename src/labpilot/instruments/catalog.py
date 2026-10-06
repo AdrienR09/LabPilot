@@ -156,12 +156,12 @@ INSTRUMENT_CATALOG: list[InstrumentMetadata] = [
 
     # PyMeasure dedicated adapters (6) — hand-written, better schemas than the
     # generic introspection fallback. src/labpilot/instruments/<Manufacturer>/<type>.py
-    _pymeasure("keithley_2400", "Keithley", "2400", "Keithley SourceMeter 2400", InstrumentType.SOURCE, ["VISA"], ["visa", "smu", "v-source", "i-measure"]),
-    _pymeasure("keithley_2600", "Keithley", "2600", "Keithley SourceMeter 2600 Dual SMU", InstrumentType.SOURCE, ["VISA"], ["visa", "smu", "dual-channel"]),
-    _pymeasure("keithley_6221", "Keithley", "6221", "Keithley 6221 AC/DC Current Source", InstrumentType.SOURCE, ["VISA"], ["visa", "current-source"]),
-    _pymeasure("srs_sr830", "SRS", "SR830", "SRS SR830 Lock-in Amplifier", InstrumentType.DETECTOR_0D, ["VISA"], ["visa", "lock-in", "signal-recovery"]),
-    _pymeasure("srs_sr860", "SRS", "SR860", "SRS SR860 Lock-in Amplifier", InstrumentType.DETECTOR_0D, ["VISA"], ["visa", "lock-in", "high-freq"]),
-    _pymeasure("thorlabs_pm100", "Thorlabs", "PM100USB", "Thorlabs PM100 Power Meter", InstrumentType.DETECTOR_0D, ["VISA", "USB"], ["visa", "power-meter", "optical"]),
+    _pymeasure("keithley_2400", "Keithley", "2400", "Keithley SourceMeter 2400", InstrumentType.SOURCE, ["visa"], ["visa", "smu", "v-source", "i-measure"]),
+    _pymeasure("keithley_2600", "Keithley", "2600", "Keithley SourceMeter 2600 Dual SMU", InstrumentType.SOURCE, ["visa"], ["visa", "smu", "dual-channel"]),
+    _pymeasure("keithley_6221", "Keithley", "6221", "Keithley 6221 AC/DC Current Source", InstrumentType.SOURCE, ["visa"], ["visa", "current-source"]),
+    _pymeasure("srs_sr830", "SRS", "SR830", "SRS SR830 Lock-in Amplifier", InstrumentType.DETECTOR_0D, ["visa"], ["visa", "lock-in", "signal-recovery"]),
+    _pymeasure("srs_sr860", "SRS", "SR860", "SRS SR860 Lock-in Amplifier", InstrumentType.DETECTOR_0D, ["visa"], ["visa", "lock-in", "high-freq"]),
+    _pymeasure("thorlabs_pm100", "Thorlabs", "PM100USB", "Thorlabs PM100 Power Meter", InstrumentType.DETECTOR_0D, ["visa"], ["visa", "power-meter", "optical"]),
 ]
 
 
@@ -418,7 +418,7 @@ INSTRUMENT_CATALOG.extend([
     # Pulsed sequencers — src/labpilot/instruments/{Swabian,SpinCore}/. Both need
     # the manufacturer's own package, and both `describe()` without it, so
     # they are listed and searchable on a machine with no hardware.
-    InstrumentMetadata("swabian_pulse_streamer", "Swabian", "Pulse Streamer 8/2", "Swabian Pulse Streamer", InstrumentType.GENERIC, InstrumentBackend.VENDOR, connection_types=['ethernet'], tags=['pulser', 'sequencer', 'ttl', 'digital', 'odmr', 'pulsed']),
+    InstrumentMetadata("swabian_pulse_streamer", "Swabian", "Pulse Streamer 8/2", "Swabian Pulse Streamer", InstrumentType.GENERIC, InstrumentBackend.VENDOR, connection_types=['hostname'], tags=['pulser', 'sequencer', 'ttl', 'digital', 'odmr', 'pulsed']),
     # The counting half of a pulsed rig, and the first non-mock one: its
     # TimeDifferences measurement is the (gate, time_bin) contract.
     InstrumentMetadata("swabian_time_tagger", "Swabian", "Time Tagger", "Swabian Time Tagger", InstrumentType.DETECTOR_1D, InstrumentBackend.VENDOR, connection_types=['usb_serial_number'], tags=['counter', 'gated-counter', 'photon-counting', 'tcspc', 'odmr', 'pulsed']),
@@ -429,8 +429,8 @@ INSTRUMENT_CATALOG.extend([
     # reader thread. ctypes against PicoQuant's phlib; there is no PyPI
     # package, so there is no extra, only their driver. Not run against
     # hardware — see PicoHarp300Adapter's docstring.
-    InstrumentMetadata("picoharp_300", "PicoQuant", "PicoHarp 300", "PicoQuant PicoHarp 300", InstrumentType.DETECTOR_1D, InstrumentBackend.VENDOR, connection_types=['usb_serial_number'], tags=['counter', 'gated-counter', 'photon-counting', 'tcspc', 'odmr', 'pulsed']),
-    InstrumentMetadata("spincore_pulse_blaster", "SpinCore", "PulseBlaster ESR-PRO", "SpinCore PulseBlaster", InstrumentType.GENERIC, InstrumentBackend.VENDOR, connection_types=['pci'], tags=['pulser', 'sequencer', 'ttl', 'digital', 'odmr', 'pulsed']),
+    InstrumentMetadata("picoharp_300", "PicoQuant", "PicoHarp 300", "PicoQuant PicoHarp 300", InstrumentType.DETECTOR_1D, InstrumentBackend.VENDOR, connection_types=['vendor_library', 'usb_serial_number'], tags=['counter', 'gated-counter', 'photon-counting', 'tcspc', 'odmr', 'pulsed']),
+    InstrumentMetadata("spincore_pulse_blaster", "SpinCore", "PulseBlaster ESR-PRO", "SpinCore PulseBlaster", InstrumentType.GENERIC, InstrumentBackend.VENDOR, connection_types=['spincore'], tags=['pulser', 'sequencer', 'ttl', 'digital', 'odmr', 'pulsed']),
     # Every Ocean Optics / Ocean Insight spectrometer as one entry: the
     # model is a setting, and OceanOptics/models.toml (transcribed from
     # python-seabreeze's own per-model table) supplies its pixel count and
@@ -450,8 +450,8 @@ INSTRUMENT_CATALOG.extend([
     # axes and travel; the Micro-Drive cannot report its travel, so that
     # one number is declared. ctypes against MCL's driver — no PyPI
     # package, so no extra. Neither run against hardware.
-    InstrumentMetadata("mcl_nano_drive", "Mad City Labs", "Nano-Drive", "MCL Nano-Drive Piezo Stage", InstrumentType.ACTUATOR_ND, InstrumentBackend.VENDOR, connection_types=['none'], tags=['motor', 'piezo', 'nanopositioner', 'closed-loop', 'confocal', 'scanner']),
-    InstrumentMetadata("mcl_micro_drive", "Mad City Labs", "Micro-Drive", "MCL Micro-Drive Stepper Stage", InstrumentType.ACTUATOR_ND, InstrumentBackend.VENDOR, connection_types=['none'], tags=['motor', 'stepper', 'coarse', 'confocal']),
+    InstrumentMetadata("mcl_nano_drive", "Mad City Labs", "Nano-Drive", "MCL Nano-Drive Piezo Stage", InstrumentType.ACTUATOR_ND, InstrumentBackend.VENDOR, connection_types=['vendor_library'], tags=['motor', 'piezo', 'nanopositioner', 'closed-loop', 'confocal', 'scanner']),
+    InstrumentMetadata("mcl_micro_drive", "Mad City Labs", "Micro-Drive", "MCL Micro-Drive Stepper Stage", InstrumentType.ACTUATOR_ND, InstrumentBackend.VENDOR, connection_types=['vendor_library'], tags=['motor', 'stepper', 'coarse', 'confocal']),
     InstrumentMetadata("siglent_ssg", "Siglent", "SSG-series", "Siglent SSG Signal Generator", InstrumentType.SOURCE, InstrumentBackend.SCPI, connection_types=['tcp', 'visa'], tags=['microwave', 'rf', 'signal-generator', 'source', 'odmr', 'scpi']),
     # Supercontinuum white-light laser over NKT's Interbus on a serial
     # port. The register map (emission 0x30, power 0x37 in 0.1% steps) is

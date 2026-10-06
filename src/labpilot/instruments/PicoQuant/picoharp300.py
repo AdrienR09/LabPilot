@@ -105,6 +105,7 @@ from labpilot.core.device.parameter import Parameter, ParamRole
 from labpilot.core.device.schema import DeviceSchema
 from labpilot.core.errors import DeviceError
 from labpilot.instruments._base import AdapterBase, adapter_registry
+from labpilot.instruments._vendor_library import VendorLibrary
 from labpilot.instruments.gated_counter_mixin import (
     BIN_WIDTH,
     GATES,
@@ -208,6 +209,14 @@ def decode_t3(
     )
 
 
+#: What `phlib` is called, per platform. One list, read by both the loader
+#: and `vendor_library()` — a UI that reported different names from the ones
+#: a connect tries would be worse than no UI.
+LIBRARY_NAMES: tuple[str, ...] = (
+    ("phlib64.dll", "phlib.dll") if sys.platform == "win32" else ("libph300.so",)
+)
+
+
 class PicoHarp300Adapter(GatedCounterMixin, AdapterBase):
     """A PicoHarp 300 counting photons into per-readout histograms.
 
@@ -280,6 +289,19 @@ class PicoHarp300Adapter(GatedCounterMixin, AdapterBase):
         self._tally = threading.Lock()
 
     # --- What it is --------------------------------------------------------
+
+    @classmethod
+    def vendor_library(cls) -> VendorLibrary:
+        """What `library=` wants. PicoQuant's installer puts `phlib` on the
+        library search path rather than in a fixed directory, so there are
+        names to look for and no candidate paths."""
+        return VendorLibrary(
+            parameter="library",
+            product="PicoHarp 300",
+            vendor="PicoQuant",
+            candidates=LIBRARY_NAMES,
+            installer="PicoQuant's PicoHarp driver installation",
+        )
 
     @property
     def schema(self) -> DeviceSchema:
@@ -390,11 +412,7 @@ class PicoHarp300Adapter(GatedCounterMixin, AdapterBase):
     # --- The library -------------------------------------------------------
 
     def _load(self) -> Any:
-        candidates = (
-            [self._library] if self._library
-            else ["phlib64.dll", "phlib.dll"] if sys.platform == "win32"
-            else ["libph300.so"]
-        )
+        candidates = [self._library] if self._library else list(LIBRARY_NAMES)
         loader = ctypes.WinDLL if sys.platform == "win32" else ctypes.CDLL
         errors = []
         for candidate in candidates:

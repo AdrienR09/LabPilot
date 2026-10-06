@@ -120,16 +120,39 @@ reported as such rather than as a bad address, because every adapter imports
 its SDK at connect time, not at import. [bring_up.md](bring_up.md) lists which
 instrument needs which installer.
 
+**An instrument needs a vendor DLL and you do not know where it is.** Three
+adapters talk to hardware through a library that arrives with the
+manufacturer's driver installation and has no PyPI package: both Mad City
+Labs stages (`Madlib.dll`, `MicroDrive.dll`) and the PicoHarp 300
+(`phlib64.dll`). Pick **Vendor library (DLL)** as the connection method and
+press **Find**: the backend searches the adapter's own candidate paths plus
+the library search path, fills the field in on a hit, and on a miss lists
+every place it looked. Leaving the field blank is also fine — that means
+"search the usual places", which is what works on a standard installation.
+The search loads nothing and touches no hardware, so it is safe to press
+with the instrument powered on.
+
 **A Mad City Labs stage will not connect, and `Madlib.dll` is installed.**
-Check the word size. MCL ship a 32-bit and a 64-bit build, and loading the
-wrong one into Python fails with `WinError 193`, whose own wording — "not a
-valid Win32 application" — suggests a corrupt file rather than an
-architecture mismatch. The adapter now searches
-`C:\Program Files (x86)\Mad City Labs\…` as well, precisely so a 32-bit
-install is *found* and reported as the wrong word size instead of as a
-missing file, and the error names the interpreter's own word size. Either
-install the matching build or run LabPilot under the Python that matches the
-library you have.
+Check the word size — **Find** reports it. MCL ship a 32-bit and a 64-bit
+build, and loading the wrong one into Python fails with `WinError 193`, whose
+own wording ("not a valid Win32 application") suggests a corrupt file rather
+than an architecture mismatch. The word size is read out of the DLL's PE
+header rather than discovered by loading it, so **Find** says
+"found it, but it is 32-bit and this Python is 64-bit" before you ever
+connect. The adapter also searches `C:\Program Files (x86)\Mad City Labs\…`
+on purpose, so a 32-bit install is *found* and reported as the wrong word
+size instead of as a missing file. Either install the matching build or run
+LabPilot under the Python that matches the library you have.
+
+**An instrument's connection form is empty, or its method dropdown shows a
+raw key like `VISA`.** A fixed bug. The Devices modal carries a hand-written
+mirror of the backend's connection-method table, and the two had drifted:
+`ni_daqmx`, `ni_fpga` and `ocean_optics` existed only in the backend, so
+choosing an NI card, an R-Series FPGA or an Ocean Optics spectrometer
+rendered no fields at all and created the instrument with none of its
+wiring. Six more entries named `'VISA'` where the key is `'visa'`, with the
+same result. A test now fails if the two tables disagree, and another if any
+catalogue entry names a method that does not exist. `git pull` fixes it.
 
 **`labpilot probe` says the hardware disagrees with the schema.** That is
 the probe working. Almost every adapter here was written from a manual and

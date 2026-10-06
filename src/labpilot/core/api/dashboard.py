@@ -40,7 +40,8 @@ from labpilot.core.lab import (
     unique_id,
 )
 from labpilot.core.session import Session
-from labpilot.instruments import available_catalog
+from labpilot.instruments import adapter_registry, available_catalog
+from labpilot.instruments._vendor_library import find_library
 from labpilot.instruments.factory import UnknownAdapterError
 
 
@@ -782,6 +783,55 @@ async def get_catalog():
         for m in available_catalog()
     ]
     return {"success": True, "data": catalog}
+
+
+@router.get("/catalog/{adapter_key}/vendor-library")
+async def locate_vendor_library(adapter_key: str):
+    """Look for the vendor library this adapter needs, without connecting.
+
+    Backs the "find it for me" control beside the library path field. The
+    adapter class declares its own candidate list, so what this reports is
+    where a connect would actually load from — a search that answered from
+    a separate list of its own would be worse than no search.
+
+    Read-only: it stats files and reads a PE header, loads nothing, and
+    touches no hardware. A 404 means the adapter does not need a vendor
+    library, which is a fact about the adapter rather than a failure.
+    """
+    try:
+        adapter_cls = adapter_registry.get(adapter_key)
+    except KeyError as e:
+        raise HTTPException(
+            status_code=404, detail=f"No adapter registered under {adapter_key!r}"
+        ) from e
+
+    declare = getattr(adapter_cls, "vendor_library", None)
+    if declare is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{adapter_key} does not need a vendor library",
+        )
+
+    spec = declare()
+    location = find_library(spec)
+    if not location.found:
+        logger.info("Vendor library for %s not found: %s", adapter_key, location.message)
+    return {
+        "success": True,
+        "data": {
+            "parameter": spec.parameter,
+            "product": spec.product,
+            "vendor": spec.vendor,
+            "installer": spec.installer,
+            "found": location.found,
+            "path": location.path,
+            "architecture": location.architecture,
+            "interpreter": location.interpreter,
+            "mismatched": location.mismatched,
+            "searched": list(location.searched),
+            "message": location.message,
+        },
+    }
 
 
 @router.post("/instruments", status_code=201)
