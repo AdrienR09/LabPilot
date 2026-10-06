@@ -202,8 +202,10 @@ class ConfigPersistence:
             with open(temp_path, 'w') as f:
                 json.dump(config_dict, f, indent=2, default=self._json_serializer)
 
-            # Atomic move
-            temp_path.rename(self.session_config_path)
+            # Atomic move. `replace` rather than `rename`: only `replace`
+            # overwrites an existing target on Windows, where `rename` raises
+            # FileExistsError (WinError 183) on every save after the first.
+            temp_path.replace(self.session_config_path)
 
             return self.session_config_path
 

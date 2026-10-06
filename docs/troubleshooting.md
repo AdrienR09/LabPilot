@@ -91,6 +91,17 @@ Chromium painted nothing while it waited. They are now loaded non-blocking
 and the app falls back to `system-ui`. On an older checkout, `git pull` and
 `labpilot app --build`.
 
+**`FileExistsError: [WinError 183]` saving a config, naming a `.cfg.tmp`
+file.** A fixed bug, Windows-only. All four config stores write to a `.tmp`
+file and move it into place, and they made the move with `Path.rename` —
+which, unlike `Path.replace`, cannot overwrite an existing target on Windows.
+So the *second* save of any config failed: adding a second instrument, saving
+a workflow set, or changing a template parameter. The failure was worse than
+the traceback suggested, because the new content stayed stranded in the
+`.tmp` file while the old content remained in place. `git pull` fixes it, and
+the stale `.tmp` is picked up and consumed by the next save — nothing to
+clean up by hand.
+
 **`WinError 10013` binding a port, with nothing listening on it.** Hyper-V,
 WSL2 and Docker Desktop reserve blocks of TCP ports at boot, and a bind
 inside one fails while every "is this port free?" check says it is. See the

@@ -70,4 +70,9 @@ class TemplateParamPersistence:
         path = self._path(template_name)
         temp_path = path.with_suffix(".json.tmp")
         temp_path.write_text(json.dumps(params, indent=2, default=str))
-        temp_path.rename(path)
+        # `replace`, not `rename`: both are atomic, but only `replace` overwrites
+        # an existing target on Windows. `Path.rename` maps to MoveFile without
+        # MOVEFILE_REPLACE_EXISTING there, so it raises FileExistsError (WinError
+        # 183) on every save after the first — leaving the new content stranded in
+        # the .tmp file and the old content in place.
+        temp_path.replace(path)

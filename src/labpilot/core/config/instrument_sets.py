@@ -97,7 +97,12 @@ class InstrumentSetPersistence:
         }
         temp_path = path.with_suffix(".cfg.tmp")
         temp_path.write_text(json.dumps(payload, indent=2))
-        temp_path.rename(path)
+        # `replace`, not `rename`: both are atomic, but only `replace` overwrites
+        # an existing target on Windows. `Path.rename` maps to MoveFile without
+        # MOVEFILE_REPLACE_EXISTING there, so it raises FileExistsError (WinError
+        # 183) on every save after the first — leaving the new content stranded in
+        # the .tmp file and the old content in place.
+        temp_path.replace(path)
         return path
 
     def load(self, name: str) -> list[InstrumentSpec]:
