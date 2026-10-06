@@ -577,3 +577,56 @@ async def test_reading_a_disconnected_stage_is_refused(microdrive):
     await adapter.disconnect()
     with pytest.raises(DeviceError, match="not connected"):
         adapter._read_sync()
+
+
+# --- When the library will not load ----------------------------------------
+#
+# A failed connect reaches the user as an HTTP 502 whose body carries this
+# message, so it is the only thing they have to go on. Two cases are worth
+# distinguishing, because the remedies have nothing in common: the library is
+# not installed, or it is installed and built for the other word size.
+
+
+def _load_failure(monkeypatch, library_class, error: OSError) -> str:
+    def refuse(_path):
+        raise error
+
+    monkeypatch.setattr(ctypes, "CDLL", refuse)
+    with pytest.raises(ImportError) as caught:
+        library_class().load()
+    return str(caught.value)
+
+
+def test_a_missing_library_says_it_comes_from_the_vendor_not_pypi():
+    from labpilot.instruments.MadCityLabs.nano_drive import _Madlib
+
+    message = _load_failure(
+        pytest.MonkeyPatch(), _Madlib, OSError("cannot open shared object file")
+    )
+    assert "Mad City Labs' own library" in message
+    assert "pip-install" in message
+    assert "word size" not in message
+
+
+def test_a_library_of_the_wrong_word_size_says_so():
+    """WinError 193 on a DLL that plainly exists means one thing, and
+    Windows' own wording ("not a valid Win32 application") says anything
+    but. MCL ship both builds, so this is a one-line remedy once named."""
+    from labpilot.instruments.MadCityLabs.nano_drive import _Madlib
+
+    refused = OSError()
+    refused.winerror = 193
+
+    message = _load_failure(pytest.MonkeyPatch(), _Madlib, refused)
+    assert "wrong word size" in message
+    assert ("64-bit" in message) or ("32-bit" in message)
+
+
+def test_a_thirty_two_bit_install_location_is_searched():
+    """So that it is *found* and reports the word size, rather than being
+    absent from the attempt list and reported as a missing file."""
+    from labpilot.instruments.MadCityLabs.micro_drive import _MicroDriveLib
+    from labpilot.instruments.MadCityLabs.nano_drive import _Madlib
+
+    for library_class in (_Madlib, _MicroDriveLib):
+        assert any("(x86)" in path for path in library_class.candidates), library_class

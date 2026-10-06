@@ -112,11 +112,24 @@ picks another when the preferred one is unavailable. Only
 `labpilot start --port` needs choosing by hand.
 
 **An instrument is in the catalogue but will not connect.** Almost always a
-vendor library that is not installed, and `labpilot probe <adapter>` says
-which: a missing driver package is reported as such rather than as a bad
-address, because every adapter imports its SDK at connect time, not at
-import. [bring_up.md](bring_up.md) lists which instrument needs which
-installer.
+vendor library that is not installed. The reason travels in the HTTP 502's
+body, which the browser UI shows and the terminal does not — so `labpilot
+probe <adapter>` is the quickest way to read it, and the server now logs it
+as a `WARNING` with its traceback as well. A missing driver package is
+reported as such rather than as a bad address, because every adapter imports
+its SDK at connect time, not at import. [bring_up.md](bring_up.md) lists which
+instrument needs which installer.
+
+**A Mad City Labs stage will not connect, and `Madlib.dll` is installed.**
+Check the word size. MCL ship a 32-bit and a 64-bit build, and loading the
+wrong one into Python fails with `WinError 193`, whose own wording — "not a
+valid Win32 application" — suggests a corrupt file rather than an
+architecture mismatch. The adapter now searches
+`C:\Program Files (x86)\Mad City Labs\…` as well, precisely so a 32-bit
+install is *found* and reported as the wrong word size instead of as a
+missing file, and the error names the interpreter's own word size. Either
+install the matching build or run LabPilot under the Python that matches the
+library you have.
 
 **`labpilot probe` says the hardware disagrees with the schema.** That is
 the probe working. Almost every adapter here was written from a manual and

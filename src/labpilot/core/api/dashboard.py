@@ -10,6 +10,7 @@ Provides browser-based dashboard for managing instruments and workflows:
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Any
 
@@ -76,6 +77,14 @@ def _jsonable(value: Any) -> Any:
     if hasattr(value, "model_dump"):
         return value.model_dump()
     return str(value)
+
+
+# Every failure below is also raised to the caller as an HTTP error, which
+# carries the reason in its body. Logging it as well is what makes a lab
+# bring-up tractable: uvicorn's access log prints the status code and never
+# the body, so a connect that failed for a missing vendor DLL appeared in the
+# terminal as a bare `502 Bad Gateway` with the explanation nowhere in sight.
+logger = logging.getLogger(__name__)
 
 
 class InstrumentStatus(BaseModel):
@@ -585,6 +594,7 @@ async def read_instrument_data(instrument_id: str):
         data = await handle.read()
         return {"success": True, "data": _jsonable_read(data)}
     except Exception as e:
+        logger.warning("Read from %s failed: %s", instrument_id, e, exc_info=True)
         raise HTTPException(status_code=502, detail=f"Read failed: {e}")
 
 
@@ -619,6 +629,7 @@ async def write_instrument_settings(instrument_id: str, request: WriteSettingsRe
     except (ValueError, KeyError) as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
+        logger.warning("Write to %s failed: %s", instrument_id, e, exc_info=True)
         raise HTTPException(status_code=502, detail=f"Write failed: {e}")
 
 
@@ -645,6 +656,7 @@ async def _set_staged(instrument_id: str, staged: bool):
         raise HTTPException(status_code=409, detail=str(e)) from e
     except Exception as e:
         verb = "Stage" if staged else "Unstage"
+        logger.warning("%s on %s failed: %s", verb, instrument_id, e, exc_info=True)
         raise HTTPException(status_code=502, detail=f"{verb} failed: {e}") from e
 
 
@@ -662,6 +674,7 @@ async def stop_instrument(instrument_id: str):
     except UnsupportedOperationError as e:
         raise HTTPException(status_code=501, detail=str(e)) from e
     except Exception as e:
+        logger.warning("Stop on %s failed: %s", instrument_id, e, exc_info=True)
         raise HTTPException(status_code=502, detail=f"Stop failed: {e}") from e
 
 
@@ -703,6 +716,7 @@ async def call_instrument_action(
     except ConnectionError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
+        logger.warning("Action on %s failed: %s", instrument_id, e, exc_info=True)
         raise HTTPException(status_code=502, detail=f"Action failed: {e}")
 
 
@@ -796,6 +810,7 @@ async def connect_instrument(instrument_id: str):
     except UnknownInstrumentError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
+        logger.warning("Connecting %s failed: %s", instrument_id, e, exc_info=True)
         raise HTTPException(status_code=502, detail=f"Connection failed: {e}")
 
 
@@ -809,6 +824,7 @@ async def disconnect_instrument(instrument_id: str):
     except UnknownInstrumentError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
+        logger.warning("Disconnecting %s failed: %s", instrument_id, e, exc_info=True)
         raise HTTPException(status_code=502, detail=f"Disconnect failed: {e}")
 
 

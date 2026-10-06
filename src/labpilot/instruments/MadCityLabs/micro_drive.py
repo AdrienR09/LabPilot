@@ -87,6 +87,9 @@ def limits_reached(status: int, axes: tuple[str, ...]) -> dict[str, str]:
 class _MicroDriveLib(MclLibrary):
     candidates = (
         r"C:\Program Files\Mad City Labs\MicroDrive\MicroDrive.dll",
+        # See the Nano-Drive's list: a 32-bit install is tried so that the
+        # failure names the word size rather than a missing file.
+        r"C:\Program Files (x86)\Mad City Labs\MicroDrive\MicroDrive.dll",
         "MicroDrive.dll",
         "libmicrodrive.so",
     )

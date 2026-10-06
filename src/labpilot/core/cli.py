@@ -293,6 +293,29 @@ Examples:
         parser.print_help()
 
 
+def _log_config(level: str) -> dict:
+    """uvicorn's own logging config, with LabPilot's loggers added.
+
+    uvicorn configures handlers for its own loggers and leaves the root one
+    alone, so a `logger.warning` from `labpilot` reached stderr only through
+    `logging.lastResort` — the bare message, with no level and no timestamp,
+    reading like a stray print beside uvicorn's own lines. Routing our
+    loggers through uvicorn's `default` handler makes a failed connect look
+    like part of the log it is part of.
+    """
+    import copy
+
+    import uvicorn.config
+
+    config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
+    config["loggers"]["labpilot"] = {
+        "handlers": ["default"],
+        "level": level.upper(),
+        "propagate": False,
+    }
+    return config
+
+
 def _check_bindable(host: str, port: int) -> None:
     """Fail early, and legibly, when the port cannot be bound.
 
@@ -401,6 +424,7 @@ def _start_server(args):
             host=args.host,
             port=args.port,
             log_level=args.log_level,
+            log_config=_log_config(args.log_level),
             reload=args.reload,
         )
 

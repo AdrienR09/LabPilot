@@ -70,6 +70,11 @@ class _Madlib(MclLibrary):
     candidates = (
         r"C:\Program Files\Mad City Labs\NanoDrive\Madlib.dll",
         r"C:\Program Files\Mad City Labs\NanoDrive\madlib.dll",
+        # A 32-bit installation, which lands here on 64-bit Windows. Tried on
+        # purpose even though it cannot load into 64-bit Python: finding it
+        # and failing on the word size says what is wrong, where leaving it
+        # out just says the file does not exist.
+        r"C:\Program Files (x86)\Mad City Labs\NanoDrive\Madlib.dll",
         "Madlib.dll",
         "libmadlib.so",
     )

@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import struct
 import sys
 from typing import Any
 
@@ -114,6 +115,17 @@ class ProductInformation(ctypes.Structure):
         )
 
 
+#: Windows' "not a valid Win32 application" — a 32-bit DLL loaded into 64-bit
+#: Python, or the reverse. The commonest Mad City Labs installation mistake,
+#: and the one whose own error message explains itself least.
+_ERROR_BAD_EXE_FORMAT = 193
+
+
+def _word_size() -> str:
+    """"64-bit" or "32-bit", for this interpreter."""
+    return "64-bit" if struct.calcsize("P") == 8 else "32-bit"
+
+
 class MclLibrary:
     """One loaded MCL library plus one claimed handle.
 
@@ -141,12 +153,19 @@ class MclLibrary:
     def load(self) -> None:
         paths = [self._path] if self._path else list(self.candidates)
         errors = []
+        wrong_architecture = False
         for path in paths:
             try:
                 # cdecl, not stdcall: both of MCL's libraries are cdecl and
                 # both open wrappers load them with `cdll`.
                 self._dll = ctypes.CDLL(path)
             except OSError as exc:
+                # WinError 193 is "not a valid Win32 application", which for a
+                # DLL that plainly exists means one thing: it was built for the
+                # other word size. MCL ship a 32-bit and a 64-bit Madlib, and
+                # the message names neither, so it reads like a corrupt file.
+                if getattr(exc, "winerror", None) == _ERROR_BAD_EXE_FORMAT:
+                    wrong_architecture = True
                 errors.append(f"{path}: {exc}")
                 continue
             for name in self.doubles:
@@ -157,6 +176,13 @@ class MclLibrary:
             f"which comes with their driver installation rather than from "
             f"PyPI — there is no package to pip-install. Pass library=<path> "
             f"if it is installed somewhere else.\n  " + "\n  ".join(errors)
+            + (
+                f"\n  The library was found but is the wrong word size for this "
+                f"interpreter, which is {_word_size()}. MCL ship both; install "
+                f"the matching one, or run LabPilot under the Python that "
+                f"matches the library you have."
+                if wrong_architecture else ""
+            )
             + ("" if sys.platform == "win32" else
                "\n  MCL ship Windows libraries; this is not Windows.")
         )
